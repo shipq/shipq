@@ -5,6 +5,7 @@ go 1.25.4
 require (
 	github.com/go-sql-driver/mysql v1.9.3
 	github.com/jackc/pgx/v5 v5.8.0
+	github.com/portsql/nanoid v0.0.0-20260111232130-a2286000c3f8 // pinned to commit a2286000c3f87b54a98716b9860425997aaeed58
 	modernc.org/sqlite v1.43.0
 )
 
