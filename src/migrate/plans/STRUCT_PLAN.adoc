@@ -1,0 +1,161 @@
+= Phase 1: Schema & Migration Plan Structure
+:toc:
+:toclevels: 2
+
+== Overview
+
+This phase focuses on pure Go logic - no SQL generation or database interaction.
+We're testing that the `MigrationPlan` API correctly:
+
+1. Updates the `Schema` struct when tables are added/modified/dropped
+2. Appends `Migration` entries to the `Migrations` slice
+3. Handles error cases appropriately
+
+== Current State
+
+The `MigrationPlan` struct in `plan.go`:
+
+[source,go]
+----
+type MigrationPlan struct {
+    Schema     Schema      `json:"schema"`
+    Migrations []Migration `json:"migrations"`
+}
+
+type Schema struct {
+    Name   string               `json:"name"`
+    Tables map[string]ddl.Table `json:"tables"`
+}
+
+type Migration struct {
+    Instructions MigrationInstructions `json:"instructions"`
+    Name         string                `json:"name"`
+}
+----
+
+== Test Cases for `plan_test.go`
+
+=== AddTable Tests
+
+[cols="1,3"]
+|===
+| Test Name | Description
+
+| `TestAddTable_UpdatesSchema`
+| After calling `AddTable("users", ...)`, verify `Schema.Tables["users"]` exists
+
+| `TestAddTable_WithColumns`
+| Verify the table has the expected columns with correct types and modifiers
+
+| `TestAddTable_WithIndexes`
+| Verify indexes are created correctly (single column, composite, unique)
+
+| `TestAddTable_AppendsMigration`
+| Verify a new `Migration` entry is appended to `Migrations` slice
+
+| `TestAddTable_MigrationName`
+| Verify the migration has a descriptive name (e.g., "create_users_table")
+
+| `TestAddTable_DuplicateError`
+| Return error when adding a table that already exists in Schema
+|===
+
+=== UpdateTable Tests
+
+[cols="1,3"]
+|===
+| Test Name | Description
+
+| `TestUpdateTable_ModifiesSchema`
+| After adding a column, verify it appears in `Schema.Tables[tableName].Columns`
+
+| `TestUpdateTable_AddColumn`
+| Verify new column appears with correct type and modifiers
+
+| `TestUpdateTable_DropColumn`
+| Verify column is removed from schema
+
+| `TestUpdateTable_RenameColumn`
+| Verify column name changes in schema
+
+| `TestUpdateTable_AddIndex`
+| Verify new index appears in table's index list
+
+| `TestUpdateTable_DropIndex`
+| Verify index is removed from schema
+
+| `TestUpdateTable_AppendsMigration`
+| Verify a new `Migration` entry is appended for the alteration
+
+| `TestUpdateTable_NotFoundError`
+| Return error when updating a table that doesn't exist
+|===
+
+=== DropTable Tests
+
+[cols="1,3"]
+|===
+| Test Name | Description
+
+| `TestDropTable_RemovesFromSchema`
+| After dropping, verify table no longer exists in `Schema.Tables`
+
+| `TestDropTable_AppendsMigration`
+| Verify a new `Migration` entry is appended
+
+| `TestDropTable_NotFoundError`
+| Return error when dropping a table that doesn't exist
+|===
+
+=== Migration Accumulation Tests
+
+[cols="1,3"]
+|===
+| Test Name | Description
+
+| `TestMigrationPlan_MultipleMigrations`
+| Create table, update it, drop it - verify 3 migrations in order
+
+| `TestMigrationPlan_Idempotent`
+| Running same operations on fresh plan produces same migrations
+|===
+
+== Implementation Notes
+
+=== What `AddTable` Should Do
+
+1. Build the table using `ddl.TableBuilder`
+2. Add the built table to `Schema.Tables[name]`
+3. Create a `Migration` with:
+   - `Name`: e.g., "create_users_table"
+   - `Instructions`: Empty for now (SQL generation is Phase 2+)
+4. Append migration to `Migrations` slice
+5. Return the updated `*MigrationPlan`
+
+=== What `UpdateTable` Should Do
+
+1. Look up existing table in `Schema.Tables`
+2. Apply alterations using `ddl.AlterTableBuilder`
+3. Update the table in `Schema.Tables` based on operations
+4. Create a `Migration` with alteration info
+5. Append migration to `Migrations` slice
+
+=== What `DropTable` Should Do
+
+1. Verify table exists in `Schema.Tables`
+2. Delete from `Schema.Tables`
+3. Create a `Migration` for the drop
+4. Append migration to `Migrations` slice
+
+== Success Criteria
+
+All tests in `plan_test.go` pass:
+
+[source,bash]
+----
+go test -v ./migrate/... -run "TestAddTable|TestUpdateTable|TestDropTable|TestMigration"
+----
+
+== Next Phase
+
+Once this is complete, move to `POSTGRES_PLAN.adoc` for the first database vertical slice.

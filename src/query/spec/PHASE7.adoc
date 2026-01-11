@@ -1,0 +1,1204 @@
+= Phase 7: Advanced SQL Features
+
+Add support for aggregates, DISTINCT, subqueries, set operations, and CTEs.
+
+== Overview
+
+With basic CRUD operations working across all three databases, we now add more
+powerful SQL features that enable complex reporting and data analysis queries.
+
+=== Features to Implement
+
+1. **Aggregates**: COUNT, SUM, AVG, MIN, MAX
+2. **DISTINCT**: SELECT DISTINCT and COUNT(DISTINCT ...)
+3. **Subqueries**: Subqueries in WHERE clauses
+4. **Set Operations**: UNION, INTERSECT, EXCEPT
+5. **CTEs**: WITH clauses (Common Table Expressions)
+
+=== Out of Scope (for now)
+
+- Window functions (OVER, PARTITION BY, ROW_NUMBER, etc.)
+- UPSERT / ON CONFLICT
+
+== Step 1: AST Extensions
+
+=== 1.1 Aggregate Expressions
+
+Add new expression types for aggregate functions:
+
+[source,go]
+----
+// expr.go - New aggregate expression types
+
+// AggregateFunc represents an aggregate function type.
+type AggregateFunc string
+
+const (
+    AggCount AggregateFunc = "COUNT"
+    AggSum   AggregateFunc = "SUM"
+    AggAvg   AggregateFunc = "AVG"
+    AggMin   AggregateFunc = "MIN"
+    AggMax   AggregateFunc = "MAX"
+)
+
+// AggregateExpr represents an aggregate function call.
+// Examples: COUNT(*), SUM(amount), AVG(price)
+type AggregateExpr struct {
+    Func     AggregateFunc
+    Arg      Expr   // The column/expression to aggregate (nil for COUNT(*))
+    Distinct bool   // COUNT(DISTINCT ...) or other distinct aggregates
+}
+
+func (AggregateExpr) exprNode() {}
+----
+
+=== 1.2 DISTINCT Select
+
+Extend AST to support SELECT DISTINCT:
+
+[source,go]
+----
+// ast.go - Add Distinct field
+
+type AST struct {
+    Kind       QueryKind
+    Distinct   bool      // NEW: SELECT DISTINCT
+    FromTable  TableRef
+    // ... rest unchanged
+}
+----
+
+=== 1.3 Subquery Expressions
+
+Add subquery support for WHERE clauses:
+
+[source,go]
+----
+// expr.go - Subquery expression
+
+// SubqueryExpr represents a subquery used as an expression.
+// Can be used with IN, EXISTS, comparison operators, or as a scalar.
+type SubqueryExpr struct {
+    Query *AST   // The nested query
+}
+
+func (SubqueryExpr) exprNode() {}
+
+// ExistsExpr represents EXISTS (subquery).
+type ExistsExpr struct {
+    Subquery *AST
+    Negated  bool  // NOT EXISTS
+}
+
+func (ExistsExpr) exprNode() {}
+----
+
+=== 1.4 Set Operations (UNION, INTERSECT, EXCEPT)
+
+Add a new query kind for set operations:
+
+[source,go]
+----
+// ast.go - Set operation support
+
+// SetOpKind represents set operation types.
+type SetOpKind string
+
+const (
+    SetOpUnion     SetOpKind = "UNION"
+    SetOpUnionAll  SetOpKind = "UNION ALL"
+    SetOpIntersect SetOpKind = "INTERSECT"
+    SetOpExcept    SetOpKind = "EXCEPT"
+)
+
+// SetOperation represents a set operation between two queries.
+type SetOperation struct {
+    Left  *AST
+    Op    SetOpKind
+    Right *AST
+}
+
+// Add to AST struct:
+type AST struct {
+    // ... existing fields ...
+    
+    // For set operations (UNION, INTERSECT, EXCEPT)
+    SetOp *SetOperation  // NEW: If non-nil, this is a set operation query
+}
+----
+
+=== 1.5 Common Table Expressions (CTEs)
+
+Add CTE (WITH clause) support:
+
+[source,go]
+----
+// ast.go - CTE support
+
+// CTE represents a Common Table Expression.
+type CTE struct {
+    Name    string   // The CTE alias
+    Columns []string // Optional column list
+    Query   *AST     // The CTE query
+}
+
+// Add to AST struct:
+type AST struct {
+    // ... existing fields ...
+    
+    CTEs []CTE  // NEW: WITH clause CTEs
+}
+----
+
+=== 1.6 Updated expr.go compile-time checks
+
+[source,go]
+----
+var (
+    _ Expr = ColumnExpr{}
+    _ Expr = ParamExpr{}
+    _ Expr = LiteralExpr{}
+    _ Expr = BinaryExpr{}
+    _ Expr = UnaryExpr{}
+    _ Expr = FuncExpr{}
+    _ Expr = ListExpr{}
+    _ Expr = JSONAggExpr{}
+    _ Expr = AggregateExpr{}  // NEW
+    _ Expr = SubqueryExpr{}   // NEW
+    _ Expr = ExistsExpr{}     // NEW
+)
+----
+
+== Step 2: Builder API Extensions
+
+=== 2.1 Aggregate Functions
+
+Add aggregate function builders:
+
+[source,go]
+----
+// builder_aggregate.go
+
+package query
+
+// Count creates a COUNT(*) expression.
+func Count() AggregateExpr {
+    return AggregateExpr{Func: AggCount, Arg: nil}
+}
+
+// CountCol creates a COUNT(column) expression.
+func CountCol[T any](col TypedColumn[T]) AggregateExpr {
+    return AggregateExpr{Func: AggCount, Arg: ColumnExpr{Column: col}}
+}
+
+// CountDistinct creates a COUNT(DISTINCT column) expression.
+func CountDistinct[T any](col TypedColumn[T]) AggregateExpr {
+    return AggregateExpr{Func: AggCount, Arg: ColumnExpr{Column: col}, Distinct: true}
+}
+
+// Sum creates a SUM(column) expression. Only valid for numeric columns.
+func Sum[T Numeric](col TypedColumn[T]) AggregateExpr {
+    return AggregateExpr{Func: AggSum, Arg: ColumnExpr{Column: col}}
+}
+
+// Avg creates an AVG(column) expression. Only valid for numeric columns.
+func Avg[T Numeric](col TypedColumn[T]) AggregateExpr {
+    return AggregateExpr{Func: AggAvg, Arg: ColumnExpr{Column: col}}
+}
+
+// Min creates a MIN(column) expression.
+func Min[T any](col TypedColumn[T]) AggregateExpr {
+    return AggregateExpr{Func: AggMin, Arg: ColumnExpr{Column: col}}
+}
+
+// Max creates a MAX(column) expression.
+func Max[T any](col TypedColumn[T]) AggregateExpr {
+    return AggregateExpr{Func: AggMax, Arg: ColumnExpr{Column: col}}
+}
+
+// Numeric is a constraint for types that support SUM/AVG.
+type Numeric interface {
+    ~int | ~int8 | ~int16 | ~int32 | ~int64 |
+    ~uint | ~uint8 | ~uint16 | ~uint32 | ~uint64 |
+    ~float32 | ~float64
+}
+----
+
+=== 2.2 DISTINCT Support
+
+[source,go]
+----
+// builder.go - Add Distinct method to SelectBuilder
+
+func (s *SelectBuilder) Distinct() *SelectBuilder {
+    s.ast.Distinct = true
+    return s
+}
+
+// Usage:
+// query.From(Authors).Select(Authors.Name).Distinct().Build()
+----
+
+=== 2.3 Subquery Builders
+
+[source,go]
+----
+// builder_subquery.go
+
+package query
+
+// Subquery creates a subquery expression from a SelectBuilder.
+func Subquery(builder *SelectBuilder) SubqueryExpr {
+    return SubqueryExpr{Query: builder.Build()}
+}
+
+// InSubquery creates a "column IN (subquery)" expression.
+func (c StringColumn) InSubquery(builder *SelectBuilder) BinaryExpr {
+    return BinaryExpr{
+        Left:  ColumnExpr{Column: c},
+        Op:    OpIn,
+        Right: SubqueryExpr{Query: builder.Build()},
+    }
+}
+
+// Similarly for other column types...
+
+// Exists creates an EXISTS (subquery) expression.
+func Exists(builder *SelectBuilder) ExistsExpr {
+    return ExistsExpr{Subquery: builder.Build(), Negated: false}
+}
+
+// NotExists creates a NOT EXISTS (subquery) expression.
+func NotExists(builder *SelectBuilder) ExistsExpr {
+    return ExistsExpr{Subquery: builder.Build(), Negated: true}
+}
+----
+
+=== 2.4 Set Operations Builder
+
+[source,go]
+----
+// builder_setop.go
+
+package query
+
+// Union combines two queries with UNION.
+func (s *SelectBuilder) Union(other *SelectBuilder) *SetOpBuilder {
+    return &SetOpBuilder{
+        left:  s.Build(),
+        op:    SetOpUnion,
+        right: other.Build(),
+    }
+}
+
+// UnionAll combines two queries with UNION ALL.
+func (s *SelectBuilder) UnionAll(other *SelectBuilder) *SetOpBuilder {
+    return &SetOpBuilder{
+        left:  s.Build(),
+        op:    SetOpUnionAll,
+        right: other.Build(),
+    }
+}
+
+// Intersect combines two queries with INTERSECT.
+func (s *SelectBuilder) Intersect(other *SelectBuilder) *SetOpBuilder {
+    return &SetOpBuilder{
+        left:  s.Build(),
+        op:    SetOpIntersect,
+        right: other.Build(),
+    }
+}
+
+// Except combines two queries with EXCEPT.
+func (s *SelectBuilder) Except(other *SelectBuilder) *SetOpBuilder {
+    return &SetOpBuilder{
+        left:  s.Build(),
+        op:    SetOpExcept,
+        right: other.Build(),
+    }
+}
+
+// SetOpBuilder builds set operation queries.
+type SetOpBuilder struct {
+    left    *AST
+    op      SetOpKind
+    right   *AST
+    orderBy []OrderByExpr
+    limit   Expr
+    offset  Expr
+}
+
+// OrderBy adds ORDER BY to the combined result.
+func (b *SetOpBuilder) OrderBy(orders ...OrderByExpr) *SetOpBuilder {
+    b.orderBy = append(b.orderBy, orders...)
+    return b
+}
+
+// Limit adds LIMIT to the combined result.
+func (b *SetOpBuilder) Limit(expr Expr) *SetOpBuilder {
+    b.limit = expr
+    return b
+}
+
+// Build returns the final AST.
+func (b *SetOpBuilder) Build() *AST {
+    return &AST{
+        Kind: SelectQuery,
+        SetOp: &SetOperation{
+            Left:  b.left,
+            Op:    b.op,
+            Right: b.right,
+        },
+        OrderBy: b.orderBy,
+        Limit:   b.limit,
+        Offset:  b.offset,
+    }
+}
+----
+
+=== 2.5 CTE Builder
+
+[source,go]
+----
+// builder_cte.go
+
+package query
+
+// CTEBuilder helps construct queries with CTEs.
+type CTEBuilder struct {
+    ctes []CTE
+}
+
+// With starts a CTE definition.
+func With(name string, query *SelectBuilder) *CTEBuilder {
+    return &CTEBuilder{
+        ctes: []CTE{{Name: name, Query: query.Build()}},
+    }
+}
+
+// And adds another CTE.
+func (b *CTEBuilder) And(name string, query *SelectBuilder) *CTEBuilder {
+    b.ctes = append(b.ctes, CTE{Name: name, Query: query.Build()})
+    return b
+}
+
+// Select starts the main query using the CTEs.
+func (b *CTEBuilder) Select(table Table) *CTESelectBuilder {
+    return &CTESelectBuilder{
+        ctes:    b.ctes,
+        builder: From(table),
+    }
+}
+
+// CTESelectBuilder wraps SelectBuilder with CTEs.
+type CTESelectBuilder struct {
+    ctes    []CTE
+    builder *SelectBuilder
+}
+
+// Methods delegate to underlying SelectBuilder...
+func (b *CTESelectBuilder) Select(cols ...any) *CTESelectBuilder {
+    b.builder.Select(cols...)
+    return b
+}
+
+// Build includes CTEs in the final AST.
+func (b *CTESelectBuilder) Build() *AST {
+    ast := b.builder.Build()
+    ast.CTEs = b.ctes
+    return ast
+}
+----
+
+== Step 3: Unit Tests for AST/Builder
+
+Create comprehensive unit tests for the new AST types and builder methods:
+
+[source,go]
+----
+// builder_aggregate_test.go
+
+func TestCount(t *testing.T) {
+    // COUNT(*)
+    expr := Count()
+    assert.Equal(t, AggCount, expr.Func)
+    assert.Nil(t, expr.Arg)
+    assert.False(t, expr.Distinct)
+}
+
+func TestCountDistinct(t *testing.T) {
+    col := StringColumn{Table: "users", Name: "email"}
+    expr := CountDistinct(col)
+    assert.Equal(t, AggCount, expr.Func)
+    assert.True(t, expr.Distinct)
+}
+
+func TestSum(t *testing.T) {
+    col := Int64Column{Table: "orders", Name: "amount"}
+    expr := Sum(col)
+    assert.Equal(t, AggSum, expr.Func)
+}
+
+// builder_setop_test.go
+
+func TestUnion(t *testing.T) {
+    q1 := From(mockTable{name: "active_users"}).
+        Select(StringColumn{Table: "active_users", Name: "email"})
+    q2 := From(mockTable{name: "archived_users"}).
+        Select(StringColumn{Table: "archived_users", Name: "email"})
+    
+    ast := q1.Union(q2).Build()
+    assert.NotNil(t, ast.SetOp)
+    assert.Equal(t, SetOpUnion, ast.SetOp.Op)
+}
+
+// builder_cte_test.go
+
+func TestCTE(t *testing.T) {
+    // WITH recent_orders AS (SELECT ...)
+    // SELECT * FROM recent_orders
+    recentOrders := From(mockTable{name: "orders"}).
+        Select(StringColumn{Table: "orders", Name: "id"}).
+        Where(StringColumn{Table: "orders", Name: "status"}.Eq(Lit("pending")))
+    
+    ast := With("recent_orders", recentOrders).
+        Select(mockTable{name: "recent_orders"}).
+        Build()
+    
+    assert.Len(t, ast.CTEs, 1)
+    assert.Equal(t, "recent_orders", ast.CTEs[0].Name)
+}
+----
+
+== Step 4: Postgres Compiler
+
+=== 4.1 Aggregate Compilation
+
+[source,go]
+----
+// postgres.go - Add aggregate handling to writeExpr
+
+case AggregateExpr:
+    // Write function name: COUNT, SUM, etc.
+    b.WriteString(string(e.Func))
+    b.WriteString("(")
+    if e.Distinct {
+        b.WriteString("DISTINCT ")
+    }
+    if e.Arg == nil {
+        // COUNT(*)
+        b.WriteString("*")
+    } else {
+        if err := c.writeExpr(b, e.Arg); err != nil {
+            return err
+        }
+    }
+    b.WriteString(")")
+----
+
+=== 4.2 DISTINCT Compilation
+
+[source,go]
+----
+// postgres.go - Handle DISTINCT in compileSelect
+
+func (c *PostgresCompiler) compileSelect(ast *AST) (string, error) {
+    var b strings.Builder
+    b.WriteString("SELECT ")
+    
+    if ast.Distinct {
+        b.WriteString("DISTINCT ")
+    }
+    
+    // ... rest of select compilation
+}
+----
+
+=== 4.3 Subquery Compilation
+
+[source,go]
+----
+// postgres.go - Add subquery handling
+
+case SubqueryExpr:
+    b.WriteString("(")
+    // Recursively compile the subquery
+    subSQL, err := c.Compile(e.Query)
+    if err != nil {
+        return err
+    }
+    b.WriteString(subSQL)
+    b.WriteString(")")
+
+case ExistsExpr:
+    if e.Negated {
+        b.WriteString("NOT ")
+    }
+    b.WriteString("EXISTS (")
+    subSQL, err := c.Compile(e.Subquery)
+    if err != nil {
+        return err
+    }
+    b.WriteString(subSQL)
+    b.WriteString(")")
+----
+
+=== 4.4 Set Operations Compilation
+
+[source,go]
+----
+// postgres.go - Handle set operations
+
+func (c *PostgresCompiler) Compile(ast *AST) (string, []string, error) {
+    // Handle set operations first
+    if ast.SetOp != nil {
+        return c.compileSetOp(ast)
+    }
+    
+    // Normal query compilation...
+}
+
+func (c *PostgresCompiler) compileSetOp(ast *AST) (string, []string, error) {
+    var b strings.Builder
+    
+    // Compile left query
+    leftSQL, leftParams, err := c.Compile(ast.SetOp.Left)
+    if err != nil {
+        return "", nil, err
+    }
+    b.WriteString("(")
+    b.WriteString(leftSQL)
+    b.WriteString(")")
+    
+    // Write operator
+    b.WriteString(" ")
+    b.WriteString(string(ast.SetOp.Op))
+    b.WriteString(" ")
+    
+    // Compile right query
+    rightSQL, rightParams, err := c.Compile(ast.SetOp.Right)
+    if err != nil {
+        return "", nil, err
+    }
+    b.WriteString("(")
+    b.WriteString(rightSQL)
+    b.WriteString(")")
+    
+    // Optional ORDER BY / LIMIT on combined result
+    if len(ast.OrderBy) > 0 {
+        b.WriteString(" ORDER BY ")
+        // ... compile order by
+    }
+    
+    params := append(leftParams, rightParams...)
+    return b.String(), params, nil
+}
+----
+
+=== 4.5 CTE Compilation
+
+[source,go]
+----
+// postgres.go - Handle CTEs
+
+func (c *PostgresCompiler) Compile(ast *AST) (string, []string, error) {
+    var b strings.Builder
+    var allParams []string
+    
+    // Compile CTEs first
+    if len(ast.CTEs) > 0 {
+        b.WriteString("WITH ")
+        for i, cte := range ast.CTEs {
+            if i > 0 {
+                b.WriteString(", ")
+            }
+            c.writeIdentifier(&b, cte.Name)
+            b.WriteString(" AS (")
+            cteSQL, cteParams, err := c.Compile(cte.Query)
+            if err != nil {
+                return "", nil, err
+            }
+            b.WriteString(cteSQL)
+            b.WriteString(")")
+            allParams = append(allParams, cteParams...)
+        }
+        b.WriteString(" ")
+    }
+    
+    // Handle set operations
+    if ast.SetOp != nil {
+        // ...
+    }
+    
+    // Normal query...
+}
+----
+
+=== 4.6 Postgres Unit Tests
+
+[source,go]
+----
+// postgres_test.go
+
+func TestPostgres_CountStar(t *testing.T) {
+    ast := &AST{
+        Kind:      SelectQuery,
+        FromTable: TableRef{Name: "users"},
+        SelectCols: []SelectExpr{
+            {Expr: AggregateExpr{Func: AggCount, Arg: nil}},
+        },
+    }
+    sql, _, _ := CompilePostgres(ast)
+    assert.Equal(t, `SELECT COUNT(*) FROM "users"`, sql)
+}
+
+func TestPostgres_CountDistinct(t *testing.T) {
+    emailCol := StringColumn{Table: "users", Name: "email"}
+    ast := &AST{
+        Kind:      SelectQuery,
+        FromTable: TableRef{Name: "users"},
+        SelectCols: []SelectExpr{
+            {Expr: AggregateExpr{Func: AggCount, Arg: ColumnExpr{Column: emailCol}, Distinct: true}},
+        },
+    }
+    sql, _, _ := CompilePostgres(ast)
+    assert.Contains(t, sql, "COUNT(DISTINCT")
+}
+
+func TestPostgres_SelectDistinct(t *testing.T) {
+    ast := &AST{
+        Kind:      SelectQuery,
+        Distinct:  true,
+        FromTable: TableRef{Name: "users"},
+        SelectCols: []SelectExpr{
+            {Expr: ColumnExpr{Column: StringColumn{Table: "users", Name: "country"}}},
+        },
+    }
+    sql, _, _ := CompilePostgres(ast)
+    assert.Contains(t, sql, "SELECT DISTINCT")
+}
+
+func TestPostgres_Subquery(t *testing.T) {
+    // SELECT * FROM orders WHERE customer_id IN (SELECT id FROM vip_customers)
+    subquery := &AST{
+        Kind:      SelectQuery,
+        FromTable: TableRef{Name: "vip_customers"},
+        SelectCols: []SelectExpr{
+            {Expr: ColumnExpr{Column: Int64Column{Table: "vip_customers", Name: "id"}}},
+        },
+    }
+    
+    ast := &AST{
+        Kind:      SelectQuery,
+        FromTable: TableRef{Name: "orders"},
+        SelectCols: []SelectExpr{{Expr: LiteralExpr{Value: "*"}}},
+        Where: BinaryExpr{
+            Left:  ColumnExpr{Column: Int64Column{Table: "orders", Name: "customer_id"}},
+            Op:    OpIn,
+            Right: SubqueryExpr{Query: subquery},
+        },
+    }
+    
+    sql, _, _ := CompilePostgres(ast)
+    assert.Contains(t, sql, "IN (SELECT")
+}
+
+func TestPostgres_Union(t *testing.T) {
+    left := &AST{
+        Kind:      SelectQuery,
+        FromTable: TableRef{Name: "active_users"},
+        SelectCols: []SelectExpr{
+            {Expr: ColumnExpr{Column: StringColumn{Table: "active_users", Name: "email"}}},
+        },
+    }
+    right := &AST{
+        Kind:      SelectQuery,
+        FromTable: TableRef{Name: "archived_users"},
+        SelectCols: []SelectExpr{
+            {Expr: ColumnExpr{Column: StringColumn{Table: "archived_users", Name: "email"}}},
+        },
+    }
+    
+    ast := &AST{
+        Kind: SelectQuery,
+        SetOp: &SetOperation{Left: left, Op: SetOpUnion, Right: right},
+    }
+    
+    sql, _, _ := CompilePostgres(ast)
+    assert.Contains(t, sql, "UNION")
+}
+
+func TestPostgres_CTE(t *testing.T) {
+    cteQuery := &AST{
+        Kind:      SelectQuery,
+        FromTable: TableRef{Name: "orders"},
+        SelectCols: []SelectExpr{
+            {Expr: ColumnExpr{Column: StringColumn{Table: "orders", Name: "id"}}},
+        },
+        Where: BinaryExpr{
+            Left:  ColumnExpr{Column: StringColumn{Table: "orders", Name: "status"}},
+            Op:    OpEq,
+            Right: LiteralExpr{Value: "pending"},
+        },
+    }
+    
+    ast := &AST{
+        Kind:      SelectQuery,
+        CTEs:      []CTE{{Name: "pending_orders", Query: cteQuery}},
+        FromTable: TableRef{Name: "pending_orders"},
+        SelectCols: []SelectExpr{{Expr: LiteralExpr{Value: "*"}}},
+    }
+    
+    sql, _, _ := CompilePostgres(ast)
+    assert.Contains(t, sql, "WITH")
+    assert.Contains(t, sql, "pending_orders")
+}
+----
+
+== Step 5: MySQL Compiler
+
+=== 5.1 Key MySQL Differences
+
+|===
+| Feature | Postgres | MySQL | Notes
+
+| Aggregates
+| Standard
+| Standard
+| Same syntax
+
+| DISTINCT
+| Standard
+| Standard
+| Same syntax
+
+| Subqueries
+| Standard
+| Standard
+| Same syntax (limitations on UPDATE/DELETE)
+
+| EXCEPT
+| `EXCEPT`
+| `EXCEPT` (8.0.31+)
+| MySQL 8.0.31+ supports EXCEPT
+
+| INTERSECT
+| `INTERSECT`
+| `INTERSECT` (8.0.31+)
+| MySQL 8.0.31+ supports INTERSECT
+
+| CTEs
+| Standard
+| Standard (8.0+)
+| MySQL 8.0+ supports CTEs
+|===
+
+=== 5.2 MySQL Implementation
+
+[source,go]
+----
+// mysql.go - Aggregate handling (same as Postgres)
+
+case AggregateExpr:
+    b.WriteString(string(e.Func))
+    b.WriteString("(")
+    if e.Distinct {
+        b.WriteString("DISTINCT ")
+    }
+    if e.Arg == nil {
+        b.WriteString("*")
+    } else {
+        if err := c.writeExpr(b, e.Arg); err != nil {
+            return err
+        }
+    }
+    b.WriteString(")")
+
+// Subqueries, set operations, and CTEs work the same way
+// Just use backtick quoting for identifiers
+----
+
+=== 5.3 MySQL Unit Tests
+
+[source,go]
+----
+// mysql_test.go
+
+func TestMySQL_CountStar(t *testing.T) {
+    ast := &AST{
+        Kind:      SelectQuery,
+        FromTable: TableRef{Name: "users"},
+        SelectCols: []SelectExpr{
+            {Expr: AggregateExpr{Func: AggCount, Arg: nil}},
+        },
+    }
+    sql, _, _ := CompileMySQL(ast)
+    assert.Equal(t, "SELECT COUNT(*) FROM `users`", sql)
+}
+
+func TestMySQL_CTE(t *testing.T) {
+    // Same structure as Postgres test, different quoting
+    // ...
+    sql, _, _ := CompileMySQL(ast)
+    assert.Contains(t, sql, "WITH")
+    assert.Contains(t, sql, "`pending_orders`")
+}
+----
+
+== Step 6: SQLite Compiler
+
+=== 6.1 Key SQLite Differences
+
+|===
+| Feature | SQLite | Notes
+
+| Aggregates
+| Standard
+| Same syntax as Postgres/MySQL
+
+| DISTINCT
+| Standard
+| Same syntax
+
+| Subqueries
+| Standard
+| Fully supported
+
+| EXCEPT
+| `EXCEPT`
+| Supported
+
+| INTERSECT
+| `INTERSECT`
+| Supported
+
+| CTEs
+| Standard
+| Supported since SQLite 3.8.3
+|===
+
+=== 6.2 SQLite Implementation
+
+[source,go]
+----
+// sqlite.go - Same patterns as Postgres/MySQL
+// Uses double-quote identifiers like Postgres
+----
+
+=== 6.3 SQLite Unit Tests
+
+[source,go]
+----
+// sqlite_test.go
+
+func TestSQLite_SumWithGroupBy(t *testing.T) {
+    amountCol := DecimalColumn{Table: "orders", Name: "amount"}
+    customerCol := Int64Column{Table: "orders", Name: "customer_id"}
+    
+    ast := &AST{
+        Kind:      SelectQuery,
+        FromTable: TableRef{Name: "orders"},
+        SelectCols: []SelectExpr{
+            {Expr: ColumnExpr{Column: customerCol}},
+            {Expr: AggregateExpr{Func: AggSum, Arg: ColumnExpr{Column: amountCol}}, Alias: "total"},
+        },
+        GroupBy: []Column{customerCol},
+    }
+    
+    sql, _, _ := CompileSQLite(ast)
+    assert.Contains(t, sql, "SUM(")
+    assert.Contains(t, sql, "GROUP BY")
+}
+----
+
+== Step 7: Integration Tests
+
+Run compiled queries against real databases:
+
+[source,go]
+----
+// postgres_integration_test.go
+
+func TestPostgresIntegration_CountAggregate(t *testing.T) {
+    conn := connectPostgres(t)
+    defer conn.Close(context.Background())
+    
+    // Setup: insert test data
+    setupTestData(t, conn)
+    
+    // Build and compile query
+    ast := From(mockTable{name: "test_users"}).
+        Select(Count()).
+        Build()
+    
+    sql, _, _ := CompilePostgres(ast)
+    
+    var count int
+    err := conn.QueryRow(context.Background(), sql).Scan(&count)
+    assert.NoError(t, err)
+    assert.Greater(t, count, 0)
+}
+
+func TestPostgresIntegration_SubqueryInWhere(t *testing.T) {
+    conn := connectPostgres(t)
+    defer conn.Close(context.Background())
+    
+    // Setup VIP customers and orders
+    setupVIPData(t, conn)
+    
+    // Query: orders from VIP customers
+    vipSubquery := From(mockTable{name: "vip_customers"}).
+        Select(Int64Column{Table: "vip_customers", Name: "id"})
+    
+    ast := From(mockTable{name: "orders"}).
+        Select(StringColumn{Table: "orders", Name: "id"}).
+        Where(Int64Column{Table: "orders", Name: "customer_id"}.InSubquery(vipSubquery)).
+        Build()
+    
+    sql, _, _ := CompilePostgres(ast)
+    
+    rows, err := conn.Query(context.Background(), sql)
+    assert.NoError(t, err)
+    defer rows.Close()
+    
+    // Verify results
+    var ids []string
+    for rows.Next() {
+        var id string
+        rows.Scan(&id)
+        ids = append(ids, id)
+    }
+    assert.NotEmpty(t, ids)
+}
+
+func TestPostgresIntegration_UnionQuery(t *testing.T) {
+    conn := connectPostgres(t)
+    defer conn.Close(context.Background())
+    
+    // Setup active and archived users
+    setupUserData(t, conn)
+    
+    activeQuery := From(mockTable{name: "active_users"}).
+        Select(StringColumn{Table: "active_users", Name: "email"})
+    archivedQuery := From(mockTable{name: "archived_users"}).
+        Select(StringColumn{Table: "archived_users", Name: "email"})
+    
+    ast := activeQuery.Union(archivedQuery).Build()
+    sql, _, _ := CompilePostgres(ast)
+    
+    rows, err := conn.Query(context.Background(), sql)
+    assert.NoError(t, err)
+    defer rows.Close()
+    
+    // Verify union removes duplicates
+}
+----
+
+== Step 8: Property Tests
+
+=== 8.1 Cross-Database Aggregate Consistency
+
+[source,go]
+----
+// crossdb_aggregate_test.go
+
+func TestCrossDB_CountAggregate(t *testing.T) {
+    dbs, cleanup := SetupTestDBs(t)
+    defer cleanup()
+    
+    proptest.Check(t, "COUNT produces same results", proptest.Config{NumTrials: 30}, func(g *proptest.Generator) bool {
+        dbs.ClearAllData(t)
+        
+        // Insert random number of authors
+        numAuthors := g.IntRange(0, 20)
+        for i := 0; i < numAuthors; i++ {
+            dbs.InsertAuthor(t, uniqueID(g.Identifier(10)), g.StringAlphaNum(15)+"name", uniqueID("email")+"@test.com", nil, true)
+        }
+        
+        // Build COUNT(*) query
+        ast := From(MockTable("test_authors")).
+            Select(Count()).
+            Build()
+        
+        counts := make(map[Dialect]int)
+        ctx := context.Background()
+        
+        for _, dialect := range AllDialects() {
+            sqlStr, _, _ := CompileFor(ast, dialect)
+            var count int
+            // Execute and scan count...
+            counts[dialect] = count
+        }
+        
+        // All dialects should return same count
+        return counts[DialectPostgres] == counts[DialectMySQL] &&
+               counts[DialectMySQL] == counts[DialectSQLite] &&
+               counts[DialectPostgres] == numAuthors
+    })
+}
+
+func TestCrossDB_SumAggregate(t *testing.T) {
+    dbs, cleanup := SetupTestDBs(t)
+    defer cleanup()
+    
+    proptest.Check(t, "SUM produces equivalent results", proptest.Config{NumTrials: 30}, func(g *proptest.Generator) bool {
+        dbs.ClearAllData(t)
+        
+        // Insert books with random prices
+        var expectedSum float64
+        numBooks := g.IntRange(1, 10)
+        for i := 0; i < numBooks; i++ {
+            price := g.Float64Range(1.0, 100.0)
+            expectedSum += price
+            dbs.InsertBook(t, uniqueID("book"), uniqueID("author"), "Title", &fmt.Sprintf("%.2f", price))
+        }
+        
+        // Build SUM(price) query
+        priceCol := DecimalColumn{Table: "test_books", Name: "price"}
+        ast := From(MockTable("test_books")).
+            Select(Sum(priceCol)).
+            Build()
+        
+        sums := make(map[Dialect]float64)
+        // Execute for each dialect...
+        
+        // All sums should be approximately equal (floating point tolerance)
+        pg, my, sq := sums[DialectPostgres], sums[DialectMySQL], sums[DialectSQLite]
+        tolerance := 0.01
+        return math.Abs(pg-my) < tolerance && math.Abs(my-sq) < tolerance
+    })
+}
+----
+
+=== 8.2 DISTINCT Consistency
+
+[source,go]
+----
+func TestCrossDB_SelectDistinct(t *testing.T) {
+    dbs, cleanup := SetupTestDBs(t)
+    defer cleanup()
+    
+    proptest.Check(t, "DISTINCT produces same unique values", proptest.Config{NumTrials: 30}, func(g *proptest.Generator) bool {
+        dbs.ClearAllData(t)
+        
+        // Insert authors with duplicate names
+        names := []string{"Alice", "Bob", "Alice", "Charlie", "Bob", "Alice"}
+        for i, name := range names {
+            dbs.InsertAuthor(t, uniqueID(fmt.Sprintf("author%d", i)), name, uniqueID("email")+"@test.com", nil, true)
+        }
+        
+        // Build SELECT DISTINCT name
+        nameCol := StringColumn{Table: "test_authors", Name: "name"}
+        ast := From(MockTable("test_authors")).
+            Select(nameCol).
+            Distinct().
+            OrderBy(nameCol.Asc()).
+            Build()
+        
+        results := make(map[Dialect][]string)
+        // Execute for each dialect...
+        
+        // Should get 3 unique names: Alice, Bob, Charlie
+        return reflect.DeepEqual(results[DialectPostgres], results[DialectMySQL]) &&
+               reflect.DeepEqual(results[DialectMySQL], results[DialectSQLite]) &&
+               len(results[DialectPostgres]) == 3
+    })
+}
+----
+
+=== 8.3 Set Operation Consistency
+
+[source,go]
+----
+func TestCrossDB_UnionQuery(t *testing.T) {
+    dbs, cleanup := SetupTestDBs(t)
+    defer cleanup()
+    
+    proptest.Check(t, "UNION produces consistent results", proptest.Config{NumTrials: 20}, func(g *proptest.Generator) bool {
+        dbs.ClearAllData(t)
+        
+        // Insert data that will test UNION deduplication
+        // ...
+        
+        results := make(map[Dialect][]string)
+        // Execute UNION query for each dialect...
+        
+        // Results should match across databases
+        return reflect.DeepEqual(results[DialectPostgres], results[DialectMySQL]) &&
+               reflect.DeepEqual(results[DialectMySQL], results[DialectSQLite])
+    })
+}
+----
+
+== Implementation Checklist
+
+=== Step 1: AST Extensions
+- [ ] Add `AggregateExpr` to expr.go
+- [ ] Add `Distinct` field to AST
+- [ ] Add `SubqueryExpr` and `ExistsExpr` to expr.go
+- [ ] Add `SetOpKind` and `SetOperation` to ast.go
+- [ ] Add `CTE` struct and `CTEs` field to ast.go
+- [ ] Update compile-time interface checks
+
+=== Step 2: Builder API
+- [ ] Create `builder_aggregate.go` with Count, Sum, Avg, Min, Max
+- [ ] Add `Distinct()` method to SelectBuilder
+- [ ] Create `builder_subquery.go` with Subquery, Exists, InSubquery
+- [ ] Create `builder_setop.go` with Union, Intersect, Except
+- [ ] Create `builder_cte.go` with With, And, Select
+
+=== Step 3: Unit Tests for Builders
+- [ ] Test aggregate functions
+- [ ] Test DISTINCT
+- [ ] Test subquery builders
+- [ ] Test set operation builders
+- [ ] Test CTE builders
+
+=== Step 4: Postgres Compiler
+- [ ] Compile aggregate expressions
+- [ ] Compile SELECT DISTINCT
+- [ ] Compile subqueries
+- [ ] Compile set operations (UNION, INTERSECT, EXCEPT)
+- [ ] Compile CTEs (WITH clause)
+- [ ] Unit tests for all new compilation
+
+=== Step 5: MySQL Compiler
+- [ ] Compile aggregates (same as Postgres)
+- [ ] Compile SELECT DISTINCT
+- [ ] Compile subqueries
+- [ ] Compile set operations
+- [ ] Compile CTEs
+- [ ] Unit tests with backtick quoting
+
+=== Step 6: SQLite Compiler
+- [ ] Compile aggregates
+- [ ] Compile SELECT DISTINCT
+- [ ] Compile subqueries
+- [ ] Compile set operations
+- [ ] Compile CTEs
+- [ ] Unit tests
+
+=== Step 7: Integration Tests
+- [ ] Postgres: aggregates, subqueries, unions, CTEs
+- [ ] MySQL: aggregates, subqueries, unions, CTEs
+- [ ] SQLite: aggregates, subqueries, unions, CTEs
+
+=== Step 8: Property Tests
+- [ ] Cross-DB COUNT consistency
+- [ ] Cross-DB SUM/AVG/MIN/MAX consistency
+- [ ] Cross-DB DISTINCT consistency
+- [ ] Cross-DB UNION consistency
+- [ ] Cross-DB subquery consistency
+- [ ] Cross-DB CTE consistency
+
+== Success Criteria
+
+1. All unit tests pass for all three compilers
+2. All integration tests pass against real databases
+3. Property tests verify cross-database consistency
+4. Complex queries like:
+   - `SELECT COUNT(DISTINCT email) FROM users WHERE active = true`
+   - `SELECT * FROM orders WHERE customer_id IN (SELECT id FROM vip_customers)`
+   - `SELECT email FROM active UNION SELECT email FROM archived`
+   - `WITH recent AS (...) SELECT * FROM recent WHERE ...`
+   ...compile and execute correctly on all three databases

@@ -1,0 +1,868 @@
+= Phase 3: Translating AST to Postgres SQL
+
+Compile the query AST to Postgres-specific SQL.
+
+== Overview
+
+This phase takes an AST from Phase 2 and compiles it to Postgres SQL string,
+handling Postgres-specific syntax:
+
+- Double-quote identifier quoting (`"table"`, `"column"`)
+- Numbered parameter placeholders (`$1`, `$2`, `$3`)
+- `RETURNING` clause for INSERT
+- `NOW()` for timestamps
+- `JSON_AGG` and `JSON_BUILD_OBJECT` for JSON aggregation
+- `FILTER (WHERE ...)` for null filtering in aggregates
+
+== Output
+
+=== Compiler Interface
+
+[source,go]
+----
+// query/compile/postgres.go
+package compile
+
+import (
+    "strings"
+    
+    "myapp/src/query"
+)
+
+// PostgresCompiler compiles AST to Postgres SQL
+type PostgresCompiler struct {
+    paramCount int
+    params     []string  // Tracks param names in order
+}
+
+// Compile compiles an AST to Postgres SQL
+func (c *PostgresCompiler) Compile(ast *query.AST) (sql string, paramOrder []string, err error) {
+    c.paramCount = 0
+    c.params = nil
+    
+    switch ast.Kind {
+    case query.SelectQuery:
+        sql, err = c.compileSelect(ast)
+    case query.InsertQuery:
+        sql, err = c.compileInsert(ast)
+    case query.UpdateQuery:
+        sql, err = c.compileUpdate(ast)
+    case query.DeleteQuery:
+        sql, err = c.compileDelete(ast)
+    default:
+        err = fmt.Errorf("unknown query kind: %s", ast.Kind)
+    }
+    
+    return sql, c.params, err
+}
+
+// CompilePostgres is a convenience function
+func CompilePostgres(ast *query.AST) (string, []string, error) {
+    c := &PostgresCompiler{}
+    return c.Compile(ast)
+}
+----
+
+=== SELECT Compilation
+
+[source,go]
+----
+func (c *PostgresCompiler) compileSelect(ast *query.AST) (string, error) {
+    var b strings.Builder
+    
+    // SELECT clause
+    b.WriteString("SELECT ")
+    if len(ast.SelectCols) == 0 {
+        b.WriteString("*")
+    } else {
+        for i, col := range ast.SelectCols {
+            if i > 0 {
+                b.WriteString(", ")
+            }
+            if err := c.writeExpr(&b, col.Expr); err != nil {
+                return "", err
+            }
+            if col.Alias != "" {
+                b.WriteString(" AS ")
+                c.writeIdentifier(&b, col.Alias)
+            }
+        }
+    }
+    
+    // FROM clause
+    b.WriteString(" FROM ")
+    c.writeIdentifier(&b, ast.FromTable.Name)
+    if ast.FromTable.Alias != "" {
+        b.WriteString(" AS ")
+        c.writeIdentifier(&b, ast.FromTable.Alias)
+    }
+    
+    // JOIN clauses
+    for _, join := range ast.Joins {
+        b.WriteString(" ")
+        b.WriteString(string(join.Type))
+        b.WriteString(" JOIN ")
+        c.writeIdentifier(&b, join.Table.Name)
+        if join.Table.Alias != "" {
+            b.WriteString(" AS ")
+            c.writeIdentifier(&b, join.Table.Alias)
+        }
+        b.WriteString(" ON ")
+        if err := c.writeExpr(&b, join.Condition); err != nil {
+            return "", err
+        }
+    }
+    
+    // WHERE clause
+    if ast.Where != nil {
+        b.WriteString(" WHERE ")
+        if err := c.writeExpr(&b, ast.Where); err != nil {
+            return "", err
+        }
+    }
+    
+    // GROUP BY clause
+    if len(ast.GroupBy) > 0 {
+        b.WriteString(" GROUP BY ")
+        for i, col := range ast.GroupBy {
+            if i > 0 {
+                b.WriteString(", ")
+            }
+            c.writeColumn(&b, col)
+        }
+    }
+    
+    // HAVING clause
+    if ast.Having != nil {
+        b.WriteString(" HAVING ")
+        if err := c.writeExpr(&b, ast.Having); err != nil {
+            return "", err
+        }
+    }
+    
+    // ORDER BY clause
+    if len(ast.OrderBy) > 0 {
+        b.WriteString(" ORDER BY ")
+        for i, ob := range ast.OrderBy {
+            if i > 0 {
+                b.WriteString(", ")
+            }
+            if err := c.writeExpr(&b, ob.Expr); err != nil {
+                return "", err
+            }
+            if ob.Desc {
+                b.WriteString(" DESC")
+            }
+        }
+    }
+    
+    // LIMIT clause
+    if ast.Limit != nil {
+        b.WriteString(" LIMIT ")
+        if err := c.writeExpr(&b, ast.Limit); err != nil {
+            return "", err
+        }
+    }
+    
+    // OFFSET clause
+    if ast.Offset != nil {
+        b.WriteString(" OFFSET ")
+        if err := c.writeExpr(&b, ast.Offset); err != nil {
+            return "", err
+        }
+    }
+    
+    return b.String(), nil
+}
+----
+
+=== INSERT Compilation
+
+[source,go]
+----
+func (c *PostgresCompiler) compileInsert(ast *query.AST) (string, error) {
+    var b strings.Builder
+    
+    b.WriteString("INSERT INTO ")
+    c.writeIdentifier(&b, ast.FromTable.Name)
+    
+    // Column list
+    if len(ast.InsertCols) > 0 {
+        b.WriteString(" (")
+        for i, col := range ast.InsertCols {
+            if i > 0 {
+                b.WriteString(", ")
+            }
+            c.writeIdentifier(&b, col.ColumnName())
+        }
+        b.WriteString(")")
+    }
+    
+    // VALUES clause
+    b.WriteString(" VALUES (")
+    for i, val := range ast.InsertVals {
+        if i > 0 {
+            b.WriteString(", ")
+        }
+        if err := c.writeExpr(&b, val); err != nil {
+            return "", err
+        }
+    }
+    b.WriteString(")")
+    
+    // RETURNING clause (Postgres-specific)
+    if len(ast.Returning) > 0 {
+        b.WriteString(" RETURNING ")
+        for i, col := range ast.Returning {
+            if i > 0 {
+                b.WriteString(", ")
+            }
+            c.writeIdentifier(&b, col.ColumnName())
+        }
+    }
+    
+    return b.String(), nil
+}
+----
+
+=== UPDATE Compilation
+
+[source,go]
+----
+func (c *PostgresCompiler) compileUpdate(ast *query.AST) (string, error) {
+    var b strings.Builder
+    
+    b.WriteString("UPDATE ")
+    c.writeIdentifier(&b, ast.FromTable.Name)
+    
+    // SET clause
+    b.WriteString(" SET ")
+    for i, set := range ast.SetClauses {
+        if i > 0 {
+            b.WriteString(", ")
+        }
+        c.writeIdentifier(&b, set.Column.ColumnName())
+        b.WriteString(" = ")
+        if err := c.writeExpr(&b, set.Value); err != nil {
+            return "", err
+        }
+    }
+    
+    // WHERE clause
+    if ast.Where != nil {
+        b.WriteString(" WHERE ")
+        if err := c.writeExpr(&b, ast.Where); err != nil {
+            return "", err
+        }
+    }
+    
+    return b.String(), nil
+}
+----
+
+=== DELETE Compilation
+
+[source,go]
+----
+func (c *PostgresCompiler) compileDelete(ast *query.AST) (string, error) {
+    var b strings.Builder
+    
+    b.WriteString("DELETE FROM ")
+    c.writeIdentifier(&b, ast.FromTable.Name)
+    
+    // WHERE clause
+    if ast.Where != nil {
+        b.WriteString(" WHERE ")
+        if err := c.writeExpr(&b, ast.Where); err != nil {
+            return "", err
+        }
+    }
+    
+    return b.String(), nil
+}
+----
+
+=== Expression Compilation
+
+[source,go]
+----
+func (c *PostgresCompiler) writeExpr(b *strings.Builder, expr query.Expr) error {
+    switch e := expr.(type) {
+    case query.ColumnExpr:
+        c.writeColumn(b, e.Column)
+        
+    case query.ParamExpr:
+        c.paramCount++
+        c.params = append(c.params, e.Name)
+        fmt.Fprintf(b, "$%d", c.paramCount)
+        
+    case query.LiteralExpr:
+        c.writeLiteral(b, e.Value)
+        
+    case query.BinaryExpr:
+        if e.Op == query.OpIn {
+            if err := c.writeExpr(b, e.Left); err != nil {
+                return err
+            }
+            b.WriteString(" IN (")
+            list := e.Right.(query.ListExpr)
+            for i, v := range list.Values {
+                if i > 0 {
+                    b.WriteString(", ")
+                }
+                if err := c.writeExpr(b, v); err != nil {
+                    return err
+                }
+            }
+            b.WriteString(")")
+        } else {
+            b.WriteString("(")
+            if err := c.writeExpr(b, e.Left); err != nil {
+                return err
+            }
+            fmt.Fprintf(b, " %s ", e.Op)
+            if err := c.writeExpr(b, e.Right); err != nil {
+                return err
+            }
+            b.WriteString(")")
+        }
+        
+    case query.UnaryExpr:
+        if e.Op == query.OpIsNull || e.Op == query.OpNotNull {
+            if err := c.writeExpr(b, e.Expr); err != nil {
+                return err
+            }
+            fmt.Fprintf(b, " %s", e.Op)
+        } else {
+            fmt.Fprintf(b, "%s ", e.Op)
+            if err := c.writeExpr(b, e.Expr); err != nil {
+                return err
+            }
+        }
+        
+    case query.FuncExpr:
+        c.writeFunc(b, e)
+        
+    case query.JSONAggExpr:
+        c.writeJSONAgg(b, e)
+        
+    default:
+        return fmt.Errorf("unknown expression type: %T", expr)
+    }
+    
+    return nil
+}
+
+func (c *PostgresCompiler) writeIdentifier(b *strings.Builder, name string) {
+    // Postgres uses double quotes
+    fmt.Fprintf(b, `"%s"`, name)
+}
+
+func (c *PostgresCompiler) writeColumn(b *strings.Builder, col query.Column) {
+    c.writeIdentifier(b, col.TableName())
+    b.WriteString(".")
+    c.writeIdentifier(b, col.ColumnName())
+}
+
+func (c *PostgresCompiler) writeLiteral(b *strings.Builder, val any) {
+    switch v := val.(type) {
+    case string:
+        // Escape single quotes
+        escaped := strings.ReplaceAll(v, "'", "''")
+        fmt.Fprintf(b, "'%s'", escaped)
+    case bool:
+        if v {
+            b.WriteString("TRUE")
+        } else {
+            b.WriteString("FALSE")
+        }
+    case nil:
+        b.WriteString("NULL")
+    default:
+        fmt.Fprintf(b, "%v", v)
+    }
+}
+
+func (c *PostgresCompiler) writeFunc(b *strings.Builder, f query.FuncExpr) {
+    switch f.Name {
+    case "NOW":
+        b.WriteString("NOW()")
+    case "ILIKE":
+        // Postgres has native ILIKE
+        c.writeExpr(b, f.Args[0])
+        b.WriteString(" ILIKE ")
+        c.writeExpr(b, f.Args[1])
+    default:
+        b.WriteString(f.Name)
+        b.WriteString("(")
+        for i, arg := range f.Args {
+            if i > 0 {
+                b.WriteString(", ")
+            }
+            c.writeExpr(b, arg)
+        }
+        b.WriteString(")")
+    }
+}
+
+func (c *PostgresCompiler) writeJSONAgg(b *strings.Builder, j query.JSONAggExpr) {
+    // COALESCE(JSON_AGG(JSON_BUILD_OBJECT(...)) FILTER (WHERE ... IS NOT NULL), '[]')
+    b.WriteString("COALESCE(JSON_AGG(JSON_BUILD_OBJECT(")
+    for i, col := range j.Columns {
+        if i > 0 {
+            b.WriteString(", ")
+        }
+        // Key is column name
+        fmt.Fprintf(b, "'%s', ", col.ColumnName())
+        c.writeColumn(b, col)
+    }
+    b.WriteString(")) FILTER (WHERE ")
+    // Use first column for null check
+    c.writeColumn(b, j.Columns[0])
+    b.WriteString(" IS NOT NULL), '[]')")
+}
+----
+
+== Implementation
+
+=== Files to Create
+
+[source]
+----
+packages/go/src/query/compile/
+├── postgres.go           # Postgres compiler
+├── postgres_test.go      # Unit tests
+└── postgres_integration_test.go  # Integration tests
+----
+
+== Tests
+
+=== Unit Tests
+
+[source,go]
+----
+// compile/postgres_test.go
+
+func TestPostgres_SimpleSelect(t *testing.T) {
+    ast := &query.AST{
+        Kind:      query.SelectQuery,
+        FromTable: query.TableRef{Name: "authors"},
+        SelectCols: []query.SelectExpr{
+            {Expr: query.ColumnExpr{Column: query.Int64Column{Table: "authors", Name: "id"}}},
+            {Expr: query.ColumnExpr{Column: query.StringColumn{Table: "authors", Name: "name"}}},
+        },
+    }
+    
+    sql, params, err := CompilePostgres(ast)
+    require.NoError(t, err)
+    
+    expected := `SELECT "authors"."id", "authors"."name" FROM "authors"`
+    assert.Equal(t, expected, sql)
+    assert.Empty(t, params)
+}
+
+func TestPostgres_SelectWithWhere(t *testing.T) {
+    idCol := query.Int64Column{Table: "authors", Name: "id"}
+    
+    ast := &query.AST{
+        Kind:      query.SelectQuery,
+        FromTable: query.TableRef{Name: "authors"},
+        SelectCols: []query.SelectExpr{
+            {Expr: query.ColumnExpr{Column: idCol}},
+        },
+        Where: query.BinaryExpr{
+            Left:  query.ColumnExpr{Column: idCol},
+            Op:    query.OpEq,
+            Right: query.ParamExpr{Name: "id", GoType: "int64"},
+        },
+    }
+    
+    sql, params, err := CompilePostgres(ast)
+    require.NoError(t, err)
+    
+    expected := `SELECT "authors"."id" FROM "authors" WHERE ("authors"."id" = $1)`
+    assert.Equal(t, expected, sql)
+    assert.Equal(t, []string{"id"}, params)
+}
+
+func TestPostgres_SelectWithJoin(t *testing.T) {
+    authorID := query.Int64Column{Table: "authors", Name: "id"}
+    bookAuthorID := query.Int64Column{Table: "books", Name: "author_id"}
+    authorName := query.StringColumn{Table: "authors", Name: "name"}
+    
+    ast := &query.AST{
+        Kind:      query.SelectQuery,
+        FromTable: query.TableRef{Name: "authors"},
+        SelectCols: []query.SelectExpr{
+            {Expr: query.ColumnExpr{Column: authorName}},
+        },
+        Joins: []query.JoinClause{
+            {
+                Type:  query.LeftJoin,
+                Table: query.TableRef{Name: "books"},
+                Condition: query.BinaryExpr{
+                    Left:  query.ColumnExpr{Column: authorID},
+                    Op:    query.OpEq,
+                    Right: query.ColumnExpr{Column: bookAuthorID},
+                },
+            },
+        },
+    }
+    
+    sql, _, err := CompilePostgres(ast)
+    require.NoError(t, err)
+    
+    assert.Contains(t, sql, `LEFT JOIN "books" ON ("authors"."id" = "books"."author_id")`)
+}
+
+func TestPostgres_SelectWithOrderByLimitOffset(t *testing.T) {
+    createdAt := query.TimeColumn{Table: "authors", Name: "created_at"}
+    
+    ast := &query.AST{
+        Kind:      query.SelectQuery,
+        FromTable: query.TableRef{Name: "authors"},
+        SelectCols: []query.SelectExpr{
+            {Expr: query.ColumnExpr{Column: createdAt}},
+        },
+        OrderBy: []query.OrderByExpr{
+            {Expr: query.ColumnExpr{Column: createdAt}, Desc: true},
+        },
+        Limit:  query.ParamExpr{Name: "limit", GoType: "int"},
+        Offset: query.ParamExpr{Name: "offset", GoType: "int"},
+    }
+    
+    sql, params, err := CompilePostgres(ast)
+    require.NoError(t, err)
+    
+    assert.Contains(t, sql, `ORDER BY "authors"."created_at" DESC`)
+    assert.Contains(t, sql, `LIMIT $1`)
+    assert.Contains(t, sql, `OFFSET $2`)
+    assert.Equal(t, []string{"limit", "offset"}, params)
+}
+
+func TestPostgres_Insert(t *testing.T) {
+    publicID := query.StringColumn{Table: "authors", Name: "public_id"}
+    name := query.StringColumn{Table: "authors", Name: "name"}
+    
+    ast := &query.AST{
+        Kind:       query.InsertQuery,
+        FromTable:  query.TableRef{Name: "authors"},
+        InsertCols: []query.Column{publicID, name},
+        InsertVals: []query.Expr{
+            query.ParamExpr{Name: "public_id", GoType: "string"},
+            query.ParamExpr{Name: "name", GoType: "string"},
+        },
+        Returning: []query.Column{publicID},
+    }
+    
+    sql, params, err := CompilePostgres(ast)
+    require.NoError(t, err)
+    
+    expected := `INSERT INTO "authors" ("public_id", "name") VALUES ($1, $2) RETURNING "public_id"`
+    assert.Equal(t, expected, sql)
+    assert.Equal(t, []string{"public_id", "name"}, params)
+}
+
+func TestPostgres_InsertWithNow(t *testing.T) {
+    name := query.StringColumn{Table: "authors", Name: "name"}
+    createdAt := query.TimeColumn{Table: "authors", Name: "created_at"}
+    
+    ast := &query.AST{
+        Kind:       query.InsertQuery,
+        FromTable:  query.TableRef{Name: "authors"},
+        InsertCols: []query.Column{name, createdAt},
+        InsertVals: []query.Expr{
+            query.ParamExpr{Name: "name", GoType: "string"},
+            query.FuncExpr{Name: "NOW"},
+        },
+    }
+    
+    sql, _, err := CompilePostgres(ast)
+    require.NoError(t, err)
+    
+    assert.Contains(t, sql, "NOW()")
+}
+
+func TestPostgres_Update(t *testing.T) {
+    name := query.StringColumn{Table: "authors", Name: "name"}
+    publicID := query.StringColumn{Table: "authors", Name: "public_id"}
+    
+    ast := &query.AST{
+        Kind:      query.UpdateQuery,
+        FromTable: query.TableRef{Name: "authors"},
+        SetClauses: []query.SetClause{
+            {Column: name, Value: query.ParamExpr{Name: "name", GoType: "string"}},
+        },
+        Where: query.BinaryExpr{
+            Left:  query.ColumnExpr{Column: publicID},
+            Op:    query.OpEq,
+            Right: query.ParamExpr{Name: "public_id", GoType: "string"},
+        },
+    }
+    
+    sql, params, err := CompilePostgres(ast)
+    require.NoError(t, err)
+    
+    expected := `UPDATE "authors" SET "name" = $1 WHERE ("authors"."public_id" = $2)`
+    assert.Equal(t, expected, sql)
+    assert.Equal(t, []string{"name", "public_id"}, params)
+}
+
+func TestPostgres_Delete(t *testing.T) {
+    publicID := query.StringColumn{Table: "authors", Name: "public_id"}
+    
+    ast := &query.AST{
+        Kind:      query.DeleteQuery,
+        FromTable: query.TableRef{Name: "authors"},
+        Where: query.BinaryExpr{
+            Left:  query.ColumnExpr{Column: publicID},
+            Op:    query.OpEq,
+            Right: query.ParamExpr{Name: "public_id", GoType: "string"},
+        },
+    }
+    
+    sql, params, err := CompilePostgres(ast)
+    require.NoError(t, err)
+    
+    expected := `DELETE FROM "authors" WHERE ("authors"."public_id" = $1)`
+    assert.Equal(t, expected, sql)
+    assert.Equal(t, []string{"public_id"}, params)
+}
+
+func TestPostgres_BooleanLiterals(t *testing.T) {
+    active := query.BoolColumn{Table: "users", Name: "active"}
+    
+    ast := &query.AST{
+        Kind:      query.SelectQuery,
+        FromTable: query.TableRef{Name: "users"},
+        Where: query.BinaryExpr{
+            Left:  query.ColumnExpr{Column: active},
+            Op:    query.OpEq,
+            Right: query.LiteralExpr{Value: true},
+        },
+    }
+    
+    sql, _, err := CompilePostgres(ast)
+    require.NoError(t, err)
+    
+    assert.Contains(t, sql, "TRUE")
+}
+
+func TestPostgres_InClause(t *testing.T) {
+    status := query.StringColumn{Table: "orders", Name: "status"}
+    
+    ast := &query.AST{
+        Kind:      query.SelectQuery,
+        FromTable: query.TableRef{Name: "orders"},
+        Where: query.BinaryExpr{
+            Left: query.ColumnExpr{Column: status},
+            Op:   query.OpIn,
+            Right: query.ListExpr{
+                Values: []query.Expr{
+                    query.LiteralExpr{Value: "pending"},
+                    query.LiteralExpr{Value: "processing"},
+                },
+            },
+        },
+    }
+    
+    sql, _, err := CompilePostgres(ast)
+    require.NoError(t, err)
+    
+    assert.Contains(t, sql, `IN ('pending', 'processing')`)
+}
+
+func TestPostgres_ILike(t *testing.T) {
+    name := query.StringColumn{Table: "users", Name: "name"}
+    
+    ast := &query.AST{
+        Kind:      query.SelectQuery,
+        FromTable: query.TableRef{Name: "users"},
+        Where: query.FuncExpr{
+            Name: "ILIKE",
+            Args: []query.Expr{
+                query.ColumnExpr{Column: name},
+                query.LiteralExpr{Value: "%john%"},
+            },
+        },
+    }
+    
+    sql, _, err := CompilePostgres(ast)
+    require.NoError(t, err)
+    
+    // Postgres has native ILIKE
+    assert.Contains(t, sql, `ILIKE '%john%'`)
+}
+----
+
+=== Integration Tests
+
+[source,go]
+----
+// compile/postgres_integration_test.go
+
+func TestPostgresIntegration_SelectExecutes(t *testing.T) {
+    if testing.Short() {
+        t.Skip("skipping integration test")
+    }
+    
+    db := setupPostgresTestDB(t)
+    defer db.Close()
+    
+    // Create test table
+    _, err := db.Exec(`
+        CREATE TABLE IF NOT EXISTS test_authors (
+            id BIGSERIAL PRIMARY KEY,
+            public_id VARCHAR(255) NOT NULL,
+            name VARCHAR(255) NOT NULL,
+            created_at TIMESTAMP NOT NULL DEFAULT NOW()
+        )
+    `)
+    require.NoError(t, err)
+    
+    // Insert test data
+    _, err = db.Exec(`INSERT INTO test_authors (public_id, name) VALUES ('abc123', 'Alice')`)
+    require.NoError(t, err)
+    
+    // Build and compile query
+    publicID := query.StringColumn{Table: "test_authors", Name: "public_id"}
+    name := query.StringColumn{Table: "test_authors", Name: "name"}
+    
+    ast := query.From(mockTable{name: "test_authors"}).
+        Select(publicID, name).
+        Where(publicID.Eq(query.Param[string]("public_id"))).
+        Build()
+    
+    sql, params, err := CompilePostgres(ast)
+    require.NoError(t, err)
+    
+    // Execute the query
+    row := db.QueryRow(sql, "abc123")
+    
+    var gotPublicID, gotName string
+    err = row.Scan(&gotPublicID, &gotName)
+    require.NoError(t, err)
+    
+    assert.Equal(t, "abc123", gotPublicID)
+    assert.Equal(t, "Alice", gotName)
+}
+
+func TestPostgresIntegration_InsertWithReturning(t *testing.T) {
+    if testing.Short() {
+        t.Skip("skipping integration test")
+    }
+    
+    db := setupPostgresTestDB(t)
+    defer db.Close()
+    
+    // Create test table
+    _, err := db.Exec(`
+        CREATE TABLE IF NOT EXISTS test_posts (
+            id BIGSERIAL PRIMARY KEY,
+            public_id VARCHAR(255) NOT NULL,
+            title VARCHAR(255) NOT NULL
+        )
+    `)
+    require.NoError(t, err)
+    
+    // Build INSERT with RETURNING
+    publicID := query.StringColumn{Table: "test_posts", Name: "public_id"}
+    title := query.StringColumn{Table: "test_posts", Name: "title"}
+    
+    ast := query.InsertInto(mockTable{name: "test_posts"}).
+        Columns(publicID, title).
+        Values(query.Param[string]("public_id"), query.Param[string]("title")).
+        Returning(publicID).
+        Build()
+    
+    sql, _, err := CompilePostgres(ast)
+    require.NoError(t, err)
+    
+    // Execute with RETURNING
+    var returnedID string
+    err = db.QueryRow(sql, "xyz789", "Test Post").Scan(&returnedID)
+    require.NoError(t, err)
+    
+    assert.Equal(t, "xyz789", returnedID)
+}
+
+func TestPostgresIntegration_JSONAggregation(t *testing.T) {
+    if testing.Short() {
+        t.Skip("skipping integration test")
+    }
+    
+    db := setupPostgresTestDB(t)
+    defer db.Close()
+    
+    // Create tables
+    _, err := db.Exec(`
+        CREATE TABLE IF NOT EXISTS test_authors2 (
+            id BIGSERIAL PRIMARY KEY,
+            name VARCHAR(255) NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS test_books (
+            id BIGSERIAL PRIMARY KEY,
+            author_id BIGINT REFERENCES test_authors2(id),
+            title VARCHAR(255) NOT NULL
+        );
+        INSERT INTO test_authors2 (id, name) VALUES (1, 'Alice');
+        INSERT INTO test_books (author_id, title) VALUES (1, 'Book 1'), (1, 'Book 2');
+    `)
+    require.NoError(t, err)
+    
+    // Build query with JSON aggregation
+    authorName := query.StringColumn{Table: "test_authors2", Name: "name"}
+    bookID := query.Int64Column{Table: "test_books", Name: "id"}
+    bookTitle := query.StringColumn{Table: "test_books", Name: "title"}
+    authorID := query.Int64Column{Table: "test_authors2", Name: "id"}
+    bookAuthorID := query.Int64Column{Table: "test_books", Name: "author_id"}
+    
+    ast := query.From(mockTable{name: "test_authors2"}).
+        Select(authorName).
+        SelectJSONAgg("books", bookID, bookTitle).
+        LeftJoin(mockTable{name: "test_books"}).On(authorID.Eq(bookAuthorID)).
+        GroupBy(authorName).
+        Build()
+    
+    sql, _, err := CompilePostgres(ast)
+    require.NoError(t, err)
+    
+    // Execute and verify JSON is valid
+    var name string
+    var booksJSON []byte
+    err = db.QueryRow(sql).Scan(&name, &booksJSON)
+    require.NoError(t, err)
+    
+    assert.Equal(t, "Alice", name)
+    
+    var books []map[string]any
+    err = json.Unmarshal(booksJSON, &books)
+    require.NoError(t, err)
+    assert.Len(t, books, 2)
+}
+----
+
+== Acceptance Criteria
+
+1. [ ] SELECT queries compile correctly with proper quoting
+2. [ ] Parameter placeholders use `$1, $2, $3` style
+3. [ ] INSERT with RETURNING compiles correctly
+4. [ ] UPDATE with WHERE compiles correctly
+5. [ ] DELETE with WHERE compiles correctly
+6. [ ] JOIN clauses compile correctly
+7. [ ] ORDER BY, LIMIT, OFFSET compile correctly
+8. [ ] Boolean literals emit TRUE/FALSE
+9. [ ] NOW() function emits correctly
+10. [ ] ILIKE uses native Postgres ILIKE
+11. [ ] JSON aggregation emits JSON_AGG/JSON_BUILD_OBJECT
+12. [ ] Integration tests pass against real Postgres
+13. [ ] Compiled SQL is injection-safe (parameterized)
+
+== Dependencies
+
+- Phase 1: Column types
+- Phase 2: AST types and builder
+
+== Next Phase
+
+Phase 4: Translating AST to MySQL SQL

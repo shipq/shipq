@@ -1,0 +1,284 @@
+= Phase 2: PostgreSQL Vertical Slice
+:toc:
+:toclevels: 2
+
+== Implementation File
+
+**All PostgreSQL SQL generation code should go in `postgres_plan.go`.**
+
+== Overview
+
+This phase implements full PostgreSQL support as a vertical slice:
+
+1. **End-to-end tests first** - Write integration tests that execute SQL against PostgreSQL
+2. **Implementation** - Write code to generate valid PostgreSQL SQL
+3. **SQL generation tests** - Add unit tests for tricky SQL patterns discovered during implementation
+
+== Prerequisites
+
+- Phase 1 complete (schema updates work)
+- PostgreSQL running
+
+== Step 2a: End-to-End Integration Tests
+
+Write tests in `postgres_integration_test.go` that:
+
+1. Create a migration plan
+2. Execute the generated SQL against PostgreSQL
+3. Introspect the database to verify the schema matches expectations
+
+=== Integration Test Structure
+
+[source,go]
+----
+func TestPostgresIntegration_CreateTable_BasicColumns(t *testing.T) {
+    conn := connectPostgres(t)
+    defer conn.Close(context.Background())
+
+    // 1. Create migration plan
+    plan := &MigrationPlan{Schema: Schema{Tables: map[string]ddl.Table{}}}
+    plan.AddEmptyTable("test_basic", func(tb *ddl.TableBuilder) error {
+        tb.Integer("age")
+        tb.String("name")
+        tb.Bool("active")
+        return nil
+    })
+
+    // 2. Execute the PostgreSQL SQL
+    sql := plan.Migrations[0].Instructions.Postgres
+    _, err := conn.Exec(context.Background(), sql)
+    if err != nil {
+        t.Fatalf("failed to execute SQL: %v\nSQL: %s", err, sql)
+    }
+    defer conn.Exec(context.Background(), `DROP TABLE IF EXISTS "test_basic"`)
+
+    // 3. Introspect and verify
+    schema := introspectPostgresTable(t, conn, "test_basic")
+    assertColumnExists(t, schema, "age", "integer", false)
+    assertColumnExists(t, schema, "name", "character varying", false)
+    assertColumnExists(t, schema, "active", "boolean", false)
+}
+----
+
+=== CREATE TABLE Tests
+
+[cols="1,3"]
+|===
+| Test Name | What It Verifies
+
+| `TestPostgresIntegration_CreateTable_BasicColumns`
+| integer, string, boolean columns
+
+| `TestPostgresIntegration_CreateTable_AllColumnTypes`
+| bigint, decimal, float, text, datetime, timestamp, binary, json
+
+| `TestPostgresIntegration_CreateTable_Nullable`
+| Nullable columns allow NULL values
+
+| `TestPostgresIntegration_CreateTable_Defaults`
+| Default values work correctly
+
+| `TestPostgresIntegration_CreateTable_PrimaryKey`
+| Primary key constraint created
+
+| `TestPostgresIntegration_CreateTable_Unique`
+| Unique constraint and index created
+
+| `TestPostgresIntegration_CreateTable_Indexes`
+| Single and composite indexes created
+|===
+
+=== ALTER TABLE Tests
+
+[cols="1,3"]
+|===
+| Test Name | What It Verifies
+
+| `TestPostgresIntegration_AlterTable_AddColumn`
+| New column appears in table
+
+| `TestPostgresIntegration_AlterTable_DropColumn`
+| Column removed from table
+
+| `TestPostgresIntegration_AlterTable_RenameColumn`
+| Column renamed correctly
+
+| `TestPostgresIntegration_AlterTable_ChangeType`
+| Column type modified
+
+| `TestPostgresIntegration_AlterTable_SetNullable`
+| NULL constraint removed
+
+| `TestPostgresIntegration_AlterTable_SetNotNull`
+| NOT NULL constraint added
+
+| `TestPostgresIntegration_AlterTable_SetDefault`
+| Default value set
+
+| `TestPostgresIntegration_AlterTable_DropDefault`
+| Default value removed
+
+| `TestPostgresIntegration_AlterTable_AddIndex`
+| Index created on existing table
+
+| `TestPostgresIntegration_AlterTable_DropIndex`
+| Index removed
+|===
+
+=== DROP TABLE Tests
+
+[cols="1,3"]
+|===
+| Test Name | What It Verifies
+
+| `TestPostgresIntegration_DropTable`
+| Table no longer exists after drop
+|===
+
+=== Schema Introspection Helpers
+
+[source,go]
+----
+// Query information_schema.columns for column metadata
+func introspectPostgresTable(t *testing.T, conn *pgx.Conn, tableName string) TableSchema {
+    query := `
+        SELECT column_name, data_type, is_nullable, column_default
+        FROM information_schema.columns
+        WHERE table_name = $1
+        ORDER BY ordinal_position
+    `
+    // ... execute and parse results
+}
+
+// Query pg_indexes for index metadata
+func introspectPostgresIndexes(t *testing.T, conn *pgx.Conn, tableName string) []IndexInfo {
+    query := `
+        SELECT indexname, indexdef
+        FROM pg_indexes
+        WHERE tablename = $1
+    `
+    // ... execute and parse results
+}
+----
+
+== Step 2b: Implementation
+
+=== SQL Generation for PostgreSQL
+
+Create a function that converts `ddl.Table` to PostgreSQL CREATE TABLE:
+
+[source,go]
+----
+func generatePostgresCreateTable(table *ddl.Table) string {
+    // Map ddl types to PostgreSQL types:
+    // - integer    → INTEGER
+    // - bigint     → BIGINT
+    // - string     → VARCHAR(length) or VARCHAR(255)
+    // - text       → TEXT
+    // - boolean    → BOOLEAN
+    // - decimal    → DECIMAL(precision, scale)
+    // - float      → DOUBLE PRECISION
+    // - datetime   → TIMESTAMP WITH TIME ZONE
+    // - timestamp  → TIMESTAMP WITH TIME ZONE
+    // - binary     → BYTEA
+    // - json       → JSONB
+}
+----
+
+=== PostgreSQL Type Mappings
+
+[cols="1,1,2"]
+|===
+| DDL Type | PostgreSQL Type | Notes
+
+| `integer` | `INTEGER` |
+| `bigint` | `BIGINT` |
+| `string` | `VARCHAR(n)` | n from Length, default 255
+| `text` | `TEXT` |
+| `boolean` | `BOOLEAN` |
+| `decimal` | `DECIMAL(p,s)` | p=precision, s=scale
+| `float` | `DOUBLE PRECISION` |
+| `datetime` | `TIMESTAMP WITH TIME ZONE` |
+| `timestamp` | `TIMESTAMP WITH TIME ZONE` |
+| `binary` | `BYTEA` |
+| `json` | `JSONB` | Using JSONB for better indexing
+|===
+
+=== ALTER TABLE Syntax
+
+[source,sql]
+----
+-- Add column
+ALTER TABLE "users" ADD COLUMN "email" VARCHAR(255) NOT NULL;
+
+-- Drop column
+ALTER TABLE "users" DROP COLUMN "legacy_field";
+
+-- Rename column
+ALTER TABLE "users" RENAME COLUMN "name" TO "full_name";
+
+-- Change type
+ALTER TABLE "users" ALTER COLUMN "count" TYPE BIGINT;
+
+-- Set nullable
+ALTER TABLE "users" ALTER COLUMN "bio" DROP NOT NULL;
+
+-- Set not null
+ALTER TABLE "users" ALTER COLUMN "email" SET NOT NULL;
+
+-- Set default
+ALTER TABLE "users" ALTER COLUMN "status" SET DEFAULT 'pending';
+
+-- Drop default
+ALTER TABLE "users" ALTER COLUMN "status" DROP DEFAULT;
+
+-- Add index
+CREATE INDEX "idx_users_email" ON "users" ("email");
+
+-- Add unique index
+CREATE UNIQUE INDEX "idx_users_email" ON "users" ("email");
+
+-- Drop index
+DROP INDEX "idx_users_email";
+----
+
+== Step 2c: SQL Generation Tests
+
+After implementation, add tests for tricky patterns in `postgres_sql_test.go`:
+
+[cols="1,3"]
+|===
+| Test Name | What It Verifies
+
+| `TestPostgres_QuotesIdentifiers`
+| Table/column names are double-quoted
+
+| `TestPostgres_StringDefaultEscaping`
+| String defaults are properly quoted
+
+| `TestPostgres_DecimalPrecision`
+| DECIMAL(p,s) format correct
+
+| `TestPostgres_CompositeIndex`
+| Multi-column index syntax
+
+| `TestPostgres_UniqueConstraint`
+| UNIQUE index created correctly
+|===
+
+== Success Criteria
+
+All PostgreSQL tests pass:
+
+[source,bash]
+----
+# Integration tests
+go test -v ./migrate/... -tags=integration -run TestPostgresIntegration
+
+# SQL generation tests
+go test -v ./migrate/... -run TestPostgres_
+----
+
+== Next Phase
+
+Once PostgreSQL is complete, move to `MYSQL_PLAN.adoc`.

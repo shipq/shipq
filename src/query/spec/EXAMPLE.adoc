@@ -1,0 +1,1048 @@
+= Query System Example
+
+A complete walkthrough of using the type-safe query system.
+
+== Scenario: Blog Application
+
+We're building a blog with authors, posts, and comments. This example shows the full workflow from schema definition to type-safe queries.
+
+== Step 1: Define the Schema
+
+Using the existing migration system:
+
+[source,go]
+----
+// migrations/schema.go
+package migrations
+
+import (
+    "myapp/src/ddl"
+    "myapp/src/migrate"
+)
+
+func BuildSchema() (*migrate.MigrationPlan, error) {
+    plan := &migrate.MigrationPlan{
+        Schema: migrate.Schema{Name: "blog"},
+    }
+    
+    // Authors table
+    plan, err := plan.AddEmptyTable("authors", func(tb *ddl.TableBuilder) error {
+        tb.Bigint("id").PrimaryKey()
+        tb.String("name")
+        tb.String("email").Unique()
+        tb.Text("bio").Nullable()
+        tb.Datetime("created_at")
+        tb.Datetime("updated_at")
+        return nil
+    })
+    if err != nil {
+        return nil, err
+    }
+    
+    // Posts table
+    plan, err = plan.AddEmptyTable("posts", func(tb *ddl.TableBuilder) error {
+        tb.Bigint("id").PrimaryKey()
+        tb.Bigint("author_id").Indexed()
+        tb.String("title")
+        tb.String("slug").Unique()
+        tb.Text("content")
+        tb.Bool("published").Default(false)
+        tb.Datetime("published_at").Nullable()
+        tb.Datetime("created_at")
+        tb.Datetime("updated_at")
+        return nil
+    })
+    if err != nil {
+        return nil, err
+    }
+    
+    // Comments table
+    plan, err = plan.AddEmptyTable("comments", func(tb *ddl.TableBuilder) error {
+        tb.Bigint("id").PrimaryKey()
+        tb.Bigint("post_id").Indexed()
+        tb.Bigint("author_id").Indexed()
+        tb.Text("body")
+        tb.Datetime("created_at")
+        return nil
+    })
+    if err != nil {
+        return nil, err
+    }
+    
+    // Tags table
+    plan, err = plan.AddEmptyTable("tags", func(tb *ddl.TableBuilder) error {
+        tb.Bigint("id").PrimaryKey()
+        tb.String("name").Unique()
+        tb.String("slug").Unique()
+        return nil
+    })
+    if err != nil {
+        return nil, err
+    }
+    
+    // Post-Tag junction table (many-to-many)
+    plan, err = plan.AddEmptyTable("post_tags", func(tb *ddl.TableBuilder) error {
+        tb.Bigint("post_id")
+        tb.Bigint("tag_id")
+        tb.AddUniqueIndex(
+            tb.Bigint("post_id").Col(),
+            tb.Bigint("tag_id").Col(),
+        )
+        return nil
+    })
+    if err != nil {
+        return nil, err
+    }
+    
+    return plan, nil
+}
+----
+
+== Step 2: Generate Schema Types (Phase 1 Codegen)
+
+Run the code generator:
+
+[source,bash]
+----
+# Export schema to JSON
+go run ./cmd/export-schema > migrations.json
+
+# Generate table structs
+orm-gen schema --input migrations.json --output gen/schema/
+----
+
+This produces:
+
+[source,go]
+----
+// gen/schema/tables.go
+package schema
+
+import "myapp/src/query"
+
+// ========== Authors ==========
+
+type AuthorsTable struct{}
+
+var Authors = AuthorsTable{}
+
+func (AuthorsTable) TableName() string { return "authors" }
+
+func (AuthorsTable) ID() query.Int64Column        { return query.Int64Column{Table: "authors", Name: "id"} }
+func (AuthorsTable) Name() query.StringColumn     { return query.StringColumn{Table: "authors", Name: "name"} }
+func (AuthorsTable) Email() query.StringColumn    { return query.StringColumn{Table: "authors", Name: "email"} }
+func (AuthorsTable) Bio() query.NullStringColumn  { return query.NullStringColumn{Table: "authors", Name: "bio"} }
+func (AuthorsTable) CreatedAt() query.TimeColumn  { return query.TimeColumn{Table: "authors", Name: "created_at"} }
+func (AuthorsTable) UpdatedAt() query.TimeColumn  { return query.TimeColumn{Table: "authors", Name: "updated_at"} }
+
+// ========== Posts ==========
+
+type PostsTable struct{}
+
+var Posts = PostsTable{}
+
+func (PostsTable) TableName() string { return "posts" }
+
+func (PostsTable) ID() query.Int64Column            { return query.Int64Column{Table: "posts", Name: "id"} }
+func (PostsTable) AuthorID() query.Int64Column      { return query.Int64Column{Table: "posts", Name: "author_id"} }
+func (PostsTable) Title() query.StringColumn        { return query.StringColumn{Table: "posts", Name: "title"} }
+func (PostsTable) Slug() query.StringColumn         { return query.StringColumn{Table: "posts", Name: "slug"} }
+func (PostsTable) Content() query.StringColumn      { return query.StringColumn{Table: "posts", Name: "content"} }
+func (PostsTable) Published() query.BoolColumn      { return query.BoolColumn{Table: "posts", Name: "published"} }
+func (PostsTable) PublishedAt() query.NullTimeColumn { return query.NullTimeColumn{Table: "posts", Name: "published_at"} }
+func (PostsTable) CreatedAt() query.TimeColumn      { return query.TimeColumn{Table: "posts", Name: "created_at"} }
+func (PostsTable) UpdatedAt() query.TimeColumn      { return query.TimeColumn{Table: "posts", Name: "updated_at"} }
+
+// ========== Comments ==========
+
+type CommentsTable struct{}
+
+var Comments = CommentsTable{}
+
+func (CommentsTable) TableName() string { return "comments" }
+
+func (CommentsTable) ID() query.Int64Column       { return query.Int64Column{Table: "comments", Name: "id"} }
+func (CommentsTable) PostID() query.Int64Column   { return query.Int64Column{Table: "comments", Name: "post_id"} }
+func (CommentsTable) AuthorID() query.Int64Column { return query.Int64Column{Table: "comments", Name: "author_id"} }
+func (CommentsTable) Body() query.StringColumn    { return query.StringColumn{Table: "comments", Name: "body"} }
+func (CommentsTable) CreatedAt() query.TimeColumn { return query.TimeColumn{Table: "comments", Name: "created_at"} }
+
+// ========== Tags ==========
+
+type TagsTable struct{}
+
+var Tags = TagsTable{}
+
+func (TagsTable) TableName() string { return "tags" }
+
+func (TagsTable) ID() query.Int64Column     { return query.Int64Column{Table: "tags", Name: "id"} }
+func (TagsTable) Name() query.StringColumn  { return query.StringColumn{Table: "tags", Name: "name"} }
+func (TagsTable) Slug() query.StringColumn  { return query.StringColumn{Table: "tags", Name: "slug"} }
+
+// ========== PostTags ==========
+
+type PostTagsTable struct{}
+
+var PostTags = PostTagsTable{}
+
+func (PostTagsTable) TableName() string { return "post_tags" }
+
+func (PostTagsTable) PostID() query.Int64Column { return query.Int64Column{Table: "post_tags", Name: "post_id"} }
+func (PostTagsTable) TagID() query.Int64Column  { return query.Int64Column{Table: "post_tags", Name: "tag_id"} }
+----
+
+== Step 3: Auto-Generated CRUD (You Get This For Free!)
+
+For every table, basic CRUD operations are automatically generated. You don't write these!
+
+Since our tables use `MakeTable()` (which includes `id`, `public_id`, `created_at`, `deleted_at`, `updated_at`),
+the generated CRUD follows these conventions:
+
+- **Auto-generates `public_id`** using NanoID on Insert
+- **Auto-fills timestamps** (`created_at` and `updated_at` on Insert, `updated_at` on Update)
+- **Uses `public_id`** in all external-facing types (internal `id` never exposed)
+- **Soft delete by default** (`Delete` sets `deleted_at`, `HardDelete` for actual removal)
+- **Filters out deleted rows** in `Get` and `List`
+
+[source,go]
+----
+// gen/crud/authors.go (AUTO-GENERATED - do not edit!)
+package crud
+
+// Detected columns: public_id, created_at, updated_at, deleted_at
+
+// GetAuthor - fetch by public_id (excludes soft-deleted)
+func (r *QueryRunner) GetAuthor(ctx context.Context, params GetAuthorParams) (*GetAuthorResult, error)
+
+// ListAuthors - list with pagination (excludes soft-deleted)
+func (r *QueryRunner) ListAuthors(ctx context.Context, params ListAuthorsParams) ([]ListAuthorsResult, error)
+
+// InsertAuthor - auto-generates public_id (NanoID), sets timestamps, returns public_id
+func (r *QueryRunner) InsertAuthor(ctx context.Context, params InsertAuthorParams) (string, error)
+
+// UpdateAuthor - auto-sets updated_at to NOW()
+func (r *QueryRunner) UpdateAuthor(ctx context.Context, params UpdateAuthorParams) error
+
+// DeleteAuthor - SOFT delete (sets deleted_at = NOW())
+func (r *QueryRunner) DeleteAuthor(ctx context.Context, params DeleteAuthorParams) error
+
+// HardDeleteAuthor - actual DELETE (use with caution!)
+func (r *QueryRunner) HardDeleteAuthor(ctx context.Context, params HardDeleteAuthorParams) error
+
+// Same pattern for Posts, Comments, Tags...
+----
+
+The generated param structs are minimal - auto-filled columns are NOT included:
+
+[source,go]
+----
+type GetAuthorParams struct {
+    PublicID string    // External identifier
+}
+
+type GetAuthorResult struct {
+    PublicID  string   // External identifier (internal id NOT exposed)
+    Name      string
+    Email     string
+    Bio       *string  // Nullable columns are pointers
+    CreatedAt time.Time
+    UpdatedAt time.Time
+    // Note: no ID field, no DeletedAt field
+}
+
+type InsertAuthorParams struct {
+    // Only user-provided fields!
+    Name  string
+    Email string
+    Bio   *string
+    // Auto-filled by codegen:
+    //   public_id  → NanoID generated
+    //   created_at → NOW()
+    //   updated_at → NOW()
+}
+
+type UpdateAuthorParams struct {
+    PublicID string  // WHERE clause
+    Name     string
+    Email    string
+    Bio      *string
+    // Auto-filled by codegen:
+    //   updated_at → NOW()
+}
+
+type DeleteAuthorParams struct {
+    PublicID string    // Soft delete sets deleted_at = NOW()
+}
+----
+
+== Step 4: Define Custom Queries (Only When Needed)
+
+You only write custom queries for operations that go beyond basic CRUD:
+- Joins across tables
+- JSON aggregation
+- Complex WHERE clauses
+- Custom projections
+
+[source,go]
+----
+// queries/authors.go
+package queries
+
+import (
+    "myapp/gen/schema"
+    "myapp/src/query"
+)
+
+// GetAuthorByEmail - custom query because we're filtering by email, not ID
+var GetAuthorByEmail = query.Define("GetAuthorByEmail",
+    query.From(schema.Authors).
+        Select(
+            schema.Authors.ID(),
+            schema.Authors.Name(),
+            schema.Authors.Email(),
+        ).
+        Where(schema.Authors.Email().Eq(query.Param[string]("email"))),
+)
+
+// UpdateAuthor updates an author's profile.
+var UpdateAuthor = query.Define("UpdateAuthor",
+    query.Update(schema.Authors).
+        Set(schema.Authors.Name(), query.Param[string]("name")).
+        Set(schema.Authors.Bio(), query.Param[*string]("bio")).
+        Set(schema.Authors.UpdatedAt(), query.Now()).
+        Where(schema.Authors.ID().Eq(query.Param[int64]("id"))),
+)
+----
+
+[source,go]
+----
+// queries/posts.go
+package queries
+
+import (
+    "myapp/gen/schema"
+    "myapp/src/query"
+)
+
+// GetPostBySlug fetches a post with its author info.
+var GetPostBySlug = query.Define("GetPostBySlug",
+    query.From(schema.Posts).
+        Join(schema.Authors).On(schema.Posts.AuthorID().Eq(schema.Authors.ID())).
+        Select(
+            schema.Posts.ID(),
+            schema.Posts.Title(),
+            schema.Posts.Slug(),
+            schema.Posts.Content(),
+            schema.Posts.Published(),
+            schema.Posts.PublishedAt(),
+            schema.Authors.ID().As("author_id"),
+            schema.Authors.Name().As("author_name"),
+        ).
+        Where(schema.Posts.Slug().Eq(query.Param[string]("slug"))),
+)
+
+// GetPostWithComments fetches a post with all its comments as nested JSON.
+var GetPostWithComments = query.Define("GetPostWithComments",
+    query.From(schema.Posts).
+        Join(schema.Authors).On(schema.Posts.AuthorID().Eq(schema.Authors.ID())).
+        LeftJoin(schema.Comments).On(schema.Posts.ID().Eq(schema.Comments.PostID())).
+        LeftJoin(schema.Authors.As("comment_authors")).On(
+            schema.Comments.AuthorID().Eq(query.TableAlias("comment_authors").Col("id")),
+        ).
+        Select(
+            schema.Posts.ID(),
+            schema.Posts.Title(),
+            schema.Posts.Content(),
+            schema.Authors.Name().As("author_name"),
+        ).
+        SelectJSONAgg("comments",
+            schema.Comments.ID(),
+            schema.Comments.Body(),
+            schema.Comments.CreatedAt(),
+            query.TableAlias("comment_authors").Col("name").As("author_name"),
+        ).
+        Where(schema.Posts.ID().Eq(query.Param[int64]("post_id"))).
+        GroupBy(
+            schema.Posts.ID(),
+            schema.Posts.Title(),
+            schema.Posts.Content(),
+            schema.Authors.Name(),
+        ),
+)
+
+// ListPublishedPosts fetches published posts with pagination.
+var ListPublishedPosts = query.Define("ListPublishedPosts",
+    query.From(schema.Posts).
+        Join(schema.Authors).On(schema.Posts.AuthorID().Eq(schema.Authors.ID())).
+        Select(
+            schema.Posts.ID(),
+            schema.Posts.Title(),
+            schema.Posts.Slug(),
+            schema.Posts.PublishedAt(),
+            schema.Authors.Name().As("author_name"),
+        ).
+        Where(schema.Posts.Published().Eq(query.Literal(true))).
+        OrderBy(schema.Posts.PublishedAt().Desc()).
+        Limit(query.Param[int]("limit")).
+        Offset(query.Param[int]("offset")),
+)
+
+// GetPostWithTags fetches a post with its tags as nested JSON.
+var GetPostWithTags = query.Define("GetPostWithTags",
+    query.From(schema.Posts).
+        LeftJoin(schema.PostTags).On(schema.Posts.ID().Eq(schema.PostTags.PostID())).
+        LeftJoin(schema.Tags).On(schema.PostTags.TagID().Eq(schema.Tags.ID())).
+        Select(
+            schema.Posts.ID(),
+            schema.Posts.Title(),
+            schema.Posts.Slug(),
+        ).
+        SelectJSONAgg("tags",
+            schema.Tags.ID(),
+            schema.Tags.Name(),
+            schema.Tags.Slug(),
+        ).
+        Where(schema.Posts.ID().Eq(query.Param[int64]("post_id"))).
+        GroupBy(
+            schema.Posts.ID(),
+            schema.Posts.Title(),
+            schema.Posts.Slug(),
+        ),
+)
+
+// NOTE: CreatePost is AUTO-GENERATED from the schema!
+// You don't need to write this - it's shown here for illustration.
+//
+// Auto-generated Insert signature:
+//   func (r *QueryRunner) InsertPost(ctx, params InsertPostParams) (int64, error)
+
+// PublishPost marks a post as published.
+var PublishPost = query.Define("PublishPost",
+    query.Update(schema.Posts).
+        Set(schema.Posts.Published(), query.Literal(true)).
+        Set(schema.Posts.PublishedAt(), query.Now()).
+        Set(schema.Posts.UpdatedAt(), query.Now()).
+        Where(schema.Posts.ID().Eq(query.Param[int64]("id"))),
+)
+
+// DeletePost removes a post.
+var DeletePost = query.Define("DeletePost",
+    query.Delete(schema.Posts).
+        Where(schema.Posts.ID().Eq(query.Param[int64]("id"))),
+)
+----
+
+[source,go]
+----
+// queries/search.go
+package queries
+
+import (
+    "myapp/gen/schema"
+    "myapp/src/query"
+)
+
+// SearchPosts finds posts matching a search term.
+var SearchPosts = query.Define("SearchPosts",
+    query.From(schema.Posts).
+        Join(schema.Authors).On(schema.Posts.AuthorID().Eq(schema.Authors.ID())).
+        Select(
+            schema.Posts.ID(),
+            schema.Posts.Title(),
+            schema.Posts.Slug(),
+            schema.Authors.Name().As("author_name"),
+        ).
+        Where(
+            query.And(
+                schema.Posts.Published().Eq(query.Literal(true)),
+                query.Or(
+                    schema.Posts.Title().ILike(query.Param[string]("search")),
+                    schema.Posts.Content().ILike(query.Param[string]("search")),
+                ),
+            ),
+        ).
+        OrderBy(schema.Posts.PublishedAt().Desc()).
+        Limit(query.Param[int]("limit")),
+)
+
+// GetPostsByAuthor fetches all posts by a specific author.
+var GetPostsByAuthor = query.Define("GetPostsByAuthor",
+    query.From(schema.Posts).
+        Select(
+            schema.Posts.ID(),
+            schema.Posts.Title(),
+            schema.Posts.Slug(),
+            schema.Posts.Published(),
+            schema.Posts.PublishedAt(),
+        ).
+        Where(schema.Posts.AuthorID().Eq(query.Param[int64]("author_id"))).
+        OrderBy(schema.Posts.CreatedAt().Desc()),
+)
+----
+
+== Step 4: Generate Query Executors (Phase 2 Codegen)
+
+Run the query code generator:
+
+[source,bash]
+----
+orm-gen queries --schema gen/schema/ --queries queries/ --output gen/queries/
+----
+
+This produces type-safe executor functions:
+
+[source,go]
+----
+// gen/queries/authors.go (generated)
+package queries
+
+import (
+    "context"
+    "database/sql"
+    "time"
+)
+
+// ========== GetAuthorByID ==========
+
+type GetAuthorByIDParams struct {
+    ID int64
+}
+
+type GetAuthorByIDResult struct {
+    ID    int64
+    Name  string
+    Email string
+    Bio   *string  // Nullable
+}
+
+const getAuthorByIDPostgres = `SELECT "id", "name", "email", "bio" FROM "authors" WHERE "id" = $1`
+const getAuthorByIDMySQL = "SELECT `id`, `name`, `email`, `bio` FROM `authors` WHERE `id` = ?"
+const getAuthorByIDSQLite = `SELECT "id", "name", "email", "bio" FROM "authors" WHERE "id" = ?`
+
+func GetAuthorByID(ctx context.Context, db Querier, dialect Dialect, params GetAuthorByIDParams) (*GetAuthorByIDResult, error) {
+    sqlStr := getAuthorByIDSQL(dialect)
+    row := db.QueryRowContext(ctx, sqlStr, params.ID)
+    
+    var result GetAuthorByIDResult
+    if err := row.Scan(&result.ID, &result.Name, &result.Email, &result.Bio); err != nil {
+        if err == sql.ErrNoRows {
+            return nil, nil
+        }
+        return nil, err
+    }
+    return &result, nil
+}
+
+// ========== CreateAuthor ==========
+
+type CreateAuthorParams struct {
+    Name  string
+    Email string
+    Bio   *string
+}
+
+type CreateAuthorResult struct {
+    ID int64
+}
+
+const createAuthorPostgres = `INSERT INTO "authors" ("name", "email", "bio", "created_at", "updated_at") VALUES ($1, $2, $3, NOW(), NOW()) RETURNING "id"`
+const createAuthorMySQL = "INSERT INTO `authors` (`name`, `email`, `bio`, `created_at`, `updated_at`) VALUES (?, ?, ?, NOW(), NOW())"
+const createAuthorSQLite = `INSERT INTO "authors" ("name", "email", "bio", "created_at", "updated_at") VALUES (?, ?, ?, datetime('now'), datetime('now')) RETURNING "id"`
+
+func CreateAuthor(ctx context.Context, db Querier, dialect Dialect, params CreateAuthorParams) (*CreateAuthorResult, error) {
+    // ... implementation handles MySQL's lack of RETURNING ...
+}
+
+// ========== ListAuthors ==========
+
+type ListAuthorsParams struct {
+    Limit  int
+    Offset int
+}
+
+type ListAuthorsResult struct {
+    ID        int64
+    Name      string
+    Email     string
+    CreatedAt time.Time
+}
+
+func ListAuthors(ctx context.Context, db Querier, dialect Dialect, params ListAuthorsParams) ([]ListAuthorsResult, error) {
+    // ... implementation ...
+}
+----
+
+[source,go]
+----
+// gen/queries/posts.go (generated)
+package queries
+
+import (
+    "context"
+    "database/sql"
+    "encoding/json"
+    "time"
+)
+
+// ========== GetPostWithComments (with nested JSON) ==========
+
+type GetPostWithCommentsParams struct {
+    PostID int64
+}
+
+type GetPostWithCommentsResult struct {
+    ID         int64
+    Title      string
+    Content    string
+    AuthorName string
+    Comments   []GetPostWithCommentsResultComments
+}
+
+type GetPostWithCommentsResultComments struct {
+    ID         int64
+    Body       string
+    CreatedAt  time.Time
+    AuthorName string
+}
+
+const getPostWithCommentsPostgres = `
+SELECT 
+    "posts"."id",
+    "posts"."title",
+    "posts"."content",
+    "authors"."name" AS "author_name",
+    COALESCE(
+        JSON_AGG(
+            JSON_BUILD_OBJECT(
+                'id', "comments"."id",
+                'body', "comments"."body",
+                'created_at', "comments"."created_at",
+                'author_name', "comment_authors"."name"
+            )
+        ) FILTER (WHERE "comments"."id" IS NOT NULL),
+        '[]'
+    ) AS "comments"
+FROM "posts"
+JOIN "authors" ON "posts"."author_id" = "authors"."id"
+LEFT JOIN "comments" ON "posts"."id" = "comments"."post_id"
+LEFT JOIN "authors" AS "comment_authors" ON "comments"."author_id" = "comment_authors"."id"
+WHERE "posts"."id" = $1
+GROUP BY "posts"."id", "posts"."title", "posts"."content", "authors"."name"`
+
+// MySQL and SQLite versions similar but with different JSON syntax...
+
+// Method on QueryRunner - SQL already selected at construction
+func (r *QueryRunner) GetPostWithComments(ctx context.Context, params GetPostWithCommentsParams) (*GetPostWithCommentsResult, error) {
+    row := r.db.QueryRowContext(ctx, r.getPostWithCommentsSQL, params.PostID)
+    
+    var result GetPostWithCommentsResult
+    var commentsJSON []byte
+    
+    if err := row.Scan(&result.ID, &result.Title, &result.Content, &result.AuthorName, &commentsJSON); err != nil {
+        if err == sql.ErrNoRows {
+            return nil, nil
+        }
+        return nil, err
+    }
+    
+    if err := json.Unmarshal(commentsJSON, &result.Comments); err != nil {
+        return nil, &query.ErrJSONUnmarshal{Field: "comments", Err: err}
+    }
+    
+    return &result, nil
+}
+
+// ========== GetPostWithTags ==========
+
+type GetPostWithTagsParams struct {
+    PostID int64
+}
+
+type GetPostWithTagsResult struct {
+    ID    int64
+    Title string
+    Slug  string
+    Tags  []GetPostWithTagsResultTags
+}
+
+type GetPostWithTagsResultTags struct {
+    ID   int64
+    Name string
+    Slug string
+}
+
+// ... generated SQL and executor function ...
+----
+
+== Step 5: Use in Application Code
+
+Now use the generated, type-safe queries in your application:
+
+[source,go]
+----
+// handlers/posts.go
+package handlers
+
+import (
+    "context"
+    "net/http"
+    
+    "myapp/gen/queries"
+    "myapp/src/query"
+)
+
+type PostHandler struct {
+    runner *queries.QueryRunner  // Created once at startup
+}
+
+// NewPostHandler creates a handler with a QueryRunner.
+// The runner selects SQL strings once based on dialect.
+func NewPostHandler(db *sql.DB, dialect query.Dialect) *PostHandler {
+    return &PostHandler{
+        runner: queries.NewQueryRunner(db, dialect),
+    }
+}
+
+func (h *PostHandler) GetPost(w http.ResponseWriter, r *http.Request) {
+    slug := r.URL.Query().Get("slug")
+    
+    // Type-safe query execution - no dialect switch needed!
+    post, err := h.runner.GetPostBySlug(r.Context(), queries.GetPostBySlugParams{
+        Slug: slug,
+    })
+    if err != nil {
+        http.Error(w, "database error", 500)
+        return
+    }
+    if post == nil {
+        http.Error(w, "not found", 404)
+        return
+    }
+    
+    // post.Title is string, post.AuthorName is string
+    // Full type safety!
+    json.NewEncoder(w).Encode(post)
+}
+
+func (h *PostHandler) GetPostWithComments(w http.ResponseWriter, r *http.Request) {
+    postID, _ := strconv.ParseInt(r.URL.Query().Get("id"), 10, 64)
+    
+    // Nested JSON is automatically unmarshaled into typed struct!
+    post, err := h.runner.GetPostWithComments(r.Context(), queries.GetPostWithCommentsParams{
+        PostID: postID,
+    })
+    if err != nil {
+        http.Error(w, "database error", 500)
+        return
+    }
+    
+    // post.Comments is []GetPostWithCommentsResultComments
+    // Each comment has typed fields: ID (int64), Body (string), etc.
+    for _, comment := range post.Comments {
+        fmt.Printf("Comment by %s: %s\n", comment.AuthorName, comment.Body)
+    }
+    
+    json.NewEncoder(w).Encode(post)
+}
+
+func (h *PostHandler) CreatePost(w http.ResponseWriter, r *http.Request) {
+    var input struct {
+        AuthorPublicID string `json:"author_id"`  // External ID
+        Title          string `json:"title"`
+        Slug           string `json:"slug"`
+        Content        string `json:"content"`
+    }
+    json.NewDecoder(r.Body).Decode(&input)
+    
+    // Auto-generated InsertPost returns the new public_id!
+    publicID, err := h.runner.InsertPost(r.Context(), queries.InsertPostParams{
+        AuthorPublicID: input.AuthorPublicID,
+        Title:          input.Title,
+        Slug:           input.Slug,
+        Content:        input.Content,
+    })
+    if err != nil {
+        http.Error(w, "database error", 500)
+        return
+    }
+    
+    // Return the public_id to the client
+    json.NewEncoder(w).Encode(map[string]string{"id": publicID})
+}
+
+func (h *PostHandler) SearchPosts(w http.ResponseWriter, r *http.Request) {
+    searchTerm := "%" + r.URL.Query().Get("q") + "%"
+    
+    posts, err := h.runner.SearchPosts(r.Context(), queries.SearchPostsParams{
+        Search: searchTerm,
+        Limit:  20,
+    })
+    if err != nil {
+        http.Error(w, "database error", 500)
+        return
+    }
+    
+    // posts is []SearchPostsResult with typed fields
+    json.NewEncoder(w).Encode(posts)
+}
+----
+
+== Transaction Example
+
+[source,go]
+----
+// handlers/authors.go
+package handlers
+
+import (
+    "context"
+    "database/sql"
+    "net/http"
+    
+    "myapp/gen/queries"
+    "myapp/src/query"
+)
+
+type AuthorHandler struct {
+    runner *queries.QueryRunner
+    db     *sql.DB  // Keep reference for transactions
+}
+
+func NewAuthorHandler(db *sql.DB, dialect query.Dialect) *AuthorHandler {
+    return &AuthorHandler{
+        runner: queries.NewQueryRunner(db, dialect),
+        db:     db,
+    }
+}
+
+// CreateAuthorWithBooks creates an author and their initial books in a single transaction.
+func (h *AuthorHandler) CreateAuthorWithBooks(w http.ResponseWriter, r *http.Request) {
+    var input struct {
+        Name   string   `json:"name"`
+        Email  string   `json:"email"`
+        Bio    *string  `json:"bio"`
+        Books  []struct {
+            Title   string `json:"title"`
+            Slug    string `json:"slug"`
+            Content string `json:"content"`
+        } `json:"books"`
+    }
+    json.NewDecoder(r.Body).Decode(&input)
+    
+    var authorPublicID string
+    
+    // Use transaction helper - automatically commits on success, rolls back on error
+    err := query.WithTransaction(r.Context(), h.db, func(ctx context.Context, tx *sql.Tx) error {
+        // Create a transaction-bound runner
+        txRunner := h.runner.WithTx(tx)
+        
+        // Create the author - InsertAuthor returns the new public_id!
+        var err error
+        authorPublicID, err = txRunner.InsertAuthor(ctx, queries.InsertAuthorParams{
+            Name:  input.Name,
+            Email: input.Email,
+            Bio:   input.Bio,
+        })
+        if err != nil {
+            return fmt.Errorf("create author: %w", err)
+        }
+        
+        // Create all their books
+        for _, book := range input.Books {
+            _, err := txRunner.InsertPost(ctx, queries.InsertPostParams{
+                AuthorPublicID: authorPublicID,
+                Title:          book.Title,
+                Slug:           book.Slug,
+                Content:        book.Content,
+            })
+            if err != nil {
+                return fmt.Errorf("create book %q: %w", book.Title, err)
+            }
+        }
+        
+        return nil  // Commit
+    })
+    
+    if err != nil {
+        http.Error(w, err.Error(), 500)
+        return
+    }
+    
+    // Return public_id to client (never expose internal id)
+    json.NewEncoder(w).Encode(map[string]string{"author_id": authorPublicID})
+}
+
+// TransferBooks moves all books from one author to another.
+func (h *AuthorHandler) TransferBooks(w http.ResponseWriter, r *http.Request) {
+    fromPublicID := r.URL.Query().Get("from")  // public_id as string
+    toPublicID := r.URL.Query().Get("to")
+    
+    // Manual transaction for more control
+    tx, err := h.db.BeginTx(r.Context(), nil)
+    if err != nil {
+        http.Error(w, "failed to start transaction", 500)
+        return
+    }
+    defer tx.Rollback()  // No-op if already committed
+    
+    // Create transaction-bound runner
+    txRunner := h.runner.WithTx(tx)
+    
+    // Verify both authors exist (uses public_id)
+    fromAuthor, err := txRunner.GetAuthor(r.Context(), queries.GetAuthorParams{PublicID: fromPublicID})
+    if err != nil {
+        http.Error(w, "database error", 500)
+        return
+    }
+    if fromAuthor == nil {
+        http.Error(w, "source author not found", 404)
+        return
+    }
+    
+    toAuthor, err := txRunner.GetAuthor(r.Context(), queries.GetAuthorParams{PublicID: toPublicID})
+    if err != nil {
+        http.Error(w, "database error", 500)
+        return
+    }
+    if toAuthor == nil {
+        http.Error(w, "target author not found", 404)
+        return
+    }
+    
+    // Transfer all books (custom query - uses public_ids)
+    err = txRunner.TransferBooks(r.Context(), queries.TransferBooksParams{
+        FromAuthorPublicID: fromPublicID,
+        ToAuthorPublicID:   toPublicID,
+    })
+    if err != nil {
+        http.Error(w, "failed to transfer books", 500)
+        return
+    }
+    
+    // Commit the transaction
+    if err := tx.Commit(); err != nil {
+        http.Error(w, "failed to commit", 500)
+        return
+    }
+    
+    w.WriteHeader(http.StatusOK)
+}
+----
+
+== Compile-Time Safety Examples
+
+=== Type Mismatch Errors
+
+[source,go]
+----
+// This WON'T compile - ID is Int64Column, "hello" is string
+query.From(schema.Posts).
+    Where(schema.Posts.ID().Eq(query.Param[string]("id")))  // Compile error!
+
+// This WILL compile - types match
+query.From(schema.Posts).
+    Where(schema.Posts.ID().Eq(query.Param[int64]("id")))  // OK!
+----
+
+=== Invalid Column References
+
+[source,go]
+----
+// This WON'T compile - Authors doesn't have a Title() method
+query.From(schema.Authors).
+    Select(schema.Authors.Title())  // Compile error: no such method!
+
+// This WILL compile - Authors has Name()
+query.From(schema.Authors).
+    Select(schema.Authors.Name())  // OK!
+----
+
+=== Join Type Safety
+
+[source,go]
+----
+// This WON'T compile - can't compare Int64Column to StringColumn
+query.From(schema.Posts).
+    Join(schema.Authors).On(
+        schema.Posts.AuthorID().Eq(schema.Authors.Email()),  // Compile error!
+    )
+
+// This WILL compile - both are Int64Column
+query.From(schema.Posts).
+    Join(schema.Authors).On(
+        schema.Posts.AuthorID().Eq(schema.Authors.ID()),  // OK!
+    )
+----
+
+== Error Handling Example
+
+[source,go]
+----
+package handlers
+
+import (
+    "errors"
+    "log"
+    
+    "myapp/gen/queries"
+    "myapp/src/query"
+)
+
+func (h *PostHandler) GetPostWithCommentsSafe(w http.ResponseWriter, r *http.Request) {
+    postID, _ := strconv.ParseInt(r.URL.Query().Get("id"), 10, 64)
+    
+    post, err := h.runner.GetPostWithComments(r.Context(), queries.GetPostWithCommentsParams{
+        PostID: postID,
+    })
+    
+    if err != nil {
+        // Check for specific error types
+        
+        // JSON unmarshal error - data corruption or schema mismatch
+        if query.IsJSONUnmarshalError(err) {
+            var jsonErr *query.ErrJSONUnmarshal
+            errors.As(err, &jsonErr)
+            log.Printf("JSON unmarshal error in field %q: %v", jsonErr.Field, jsonErr.Err)
+            http.Error(w, "data format error", 500)
+            return
+        }
+        
+        // Generic database error
+        log.Printf("database error: %v", err)
+        http.Error(w, "database error", 500)
+        return
+    }
+    
+    // post is nil when no rows found (not an error)
+    if post == nil {
+        http.Error(w, "post not found", 404)
+        return
+    }
+    
+    json.NewEncoder(w).Encode(post)
+}
+----
+
+== Summary
+
+The workflow is:
+
+1. **Define schema** using the existing migration DSL
+2. **Generate schema types** - produces table/column structs + auto-generated CRUD
+3. **Define custom queries** (optional) - only for joins, JSON aggregation, complex filters
+4. **Use in app** - call generated functions with full type safety
+
+Benefits:
+
+- **Auto-generated CRUD**: Get `Get`, `List`, `Insert`, `Update`, `Delete`, `HardDelete` for every table - free!
+- **Public ID convention**: External types use `public_id`, internal `id` never exposed to API consumers
+- **Soft delete by default**: `Delete` sets `deleted_at`, `HardDelete` for actual removal
+- **Optional scope filtering**: Configure `tenant_id`/`organization_id` to add to all CRUD
+- **Transparent RETURNING**: `Insert` returns the new `public_id` on all databases
+- **Compile-time safety**: Invalid queries won't compile
+- **IDE support**: Autocomplete for table and column names
+- **Multi-database**: Same query works on Postgres, MySQL, SQLite
+- **Nested JSON**: Complex aggregations with typed results
+- **No runtime reflection**: All types known at compile time
+- **Transaction support**: Same query functions work with `*sql.DB` or `*sql.Tx`
+- **Structured errors**: Wrapped errors with `errors.As` support for JSON unmarshaling failures

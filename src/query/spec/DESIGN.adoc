@@ -1,0 +1,2015 @@
+= Query Design
+
+A type-safe SQL query builder for Go with compile-time validation and multi-database support.
+
+== Overview
+
+This system extends the existing DDL/migration framework to provide:
+
+1. **Type-safe query building** - Column references carry type information, preventing invalid operations
+2. **Auto-generated CRUD** - Basic Create/Read/Update/Delete queries generated for every table
+3. **Nested JSON support** - Aggregate related data into JSON with inferred Go types
+4. **Multi-database compilation** - One query DSL compiles to Postgres, MySQL, and SQLite
+5. **Transparent RETURNING** - INSERT returns the new ID on all databases (using LastInsertId on MySQL)
+
+== Architecture
+
+The system operates in two code generation phases:
+
+[source]
+----
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                           PHASE 1: Schema Codegen                           │
+├─────────────────────────────────────────────────────────────────────────────┤
+│                                                                             │
+│   Migration Definitions (Go)                                                │
+│           │                                                                 │
+│           ▼                                                                 │
+│   ┌───────────────────┐                                                     │
+│   │  MigrationPlan    │                                                     │
+│   │  (Schema + SQL)   │                                                     │
+│   └───────────────────┘                                                     │
+│           │                                                                 │
+│           ├──────────────┬──────────────┬──────────────┐                    │
+│           ▼              ▼              ▼              ▼                    │
+│   ┌────────────┐  ┌────────────┐  ┌────────────┐  ┌────────────┐            │
+│   │ Migration  │  │ Table      │  │ Column     │  │ Auto CRUD  │            │
+│   │ SQL        │  │ Structs    │  │ Types      │  │ Queries    │            │
+│   │ (per DB)   │  │ (Authors,  │  │ (IntCol,   │  │ (GetByID,  │            │
+│   │            │  │  Books)    │  │  StringCol)│  │  Insert..) │            │
+│   └────────────┘  └────────────┘  └────────────┘  └────────────┘            │
+│                                                                             │
+└─────────────────────────────────────────────────────────────────────────────┘
+
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                           PHASE 2: Query Codegen                            │
+├─────────────────────────────────────────────────────────────────────────────┤
+│                                                                             │
+│   Query Definitions (using generated Table/Column types)                    │
+│           │                                                                 │
+│           ▼                                                                 │
+│   ┌───────────────────┐                                                     │
+│   │  Query AST        │                                                     │
+│   │  (type-checked)   │                                                     │
+│   └───────────────────┘                                                     │
+│           │                                                                 │
+│           ├──────────────────────┬──────────────────────┐                   │
+│           ▼                      ▼                      ▼                   │
+│   ┌───────────────┐      ┌───────────────┐      ┌───────────────┐           │
+│   │ SQL Strings   │      │ Param Structs │      │ Result Structs│           │
+│   │ (per DB)      │      │ (typed inputs)│      │ (typed output)│           │
+│   └───────────────┘      └───────────────┘      └───────────────┘           │
+│                                                                             │
+└─────────────────────────────────────────────────────────────────────────────┘
+----
+
+== Phase 1: Schema Code Generation
+
+=== Input
+
+Existing migration definitions using `Migrationplan.AddEmptyTable`:
+
+[source,go]
+----
+plan.AddEmptyTable("authors", func(tb *ddl.TableBuilder) error {
+    tb.Bigint("id").PrimaryKey()
+    tb.String("name")
+    tb.String("email").Unique()
+    tb.Datetime("created_at")
+    return nil
+})
+
+plan.AddEmptyTable("books", func(tb *ddl.TableBuilder) error {
+    tb.Bigint("id").PrimaryKey()
+    tb.Bigint("author_id").Indexed()
+    tb.String("title")
+    tb.Text("description").Nullable()
+    tb.Decimal("price", 10, 2)
+    tb.JSON("metadata").Nullable()
+    return nil
+})
+----
+
+=== Output: Generated Table Types
+
+For each table, we generate a struct that provides type-safe column accessors:
+
+[source,go]
+----
+// gen/schema/tables.go
+package schema
+
+import "myapp/src/query"
+
+// AuthorsTable provides type-safe column references for the authors table.
+type AuthorsTable struct{}
+
+// Authors is the global instance for building queries against the authors table.
+var Authors = AuthorsTable{}
+
+// TableName returns the SQL table name.
+func (AuthorsTable) TableName() string { return "authors" }
+
+// Column accessors - each returns a typed column reference
+func (AuthorsTable) ID() query.Int64Column       { return query.Int64Column{Table: "authors", Name: "id"} }
+func (AuthorsTable) Name() query.StringColumn    { return query.StringColumn{Table: "authors", Name: "name"} }
+func (AuthorsTable) Email() query.StringColumn   { return query.StringColumn{Table: "authors", Name: "email"} }
+func (AuthorsTable) CreatedAt() query.TimeColumn { return query.TimeColumn{Table: "authors", Name: "created_at"} }
+
+// BooksTable provides type-safe column references for the books table.
+type BooksTable struct{}
+
+var Books = BooksTable{}
+
+func (BooksTable) TableName() string { return "books" }
+
+func (BooksTable) ID() query.Int64Column            { return query.Int64Column{Table: "books", Name: "id"} }
+func (BooksTable) AuthorID() query.Int64Column      { return query.Int64Column{Table: "books", Name: "author_id"} }
+func (BooksTable) Title() query.StringColumn        { return query.StringColumn{Table: "books", Name: "title"} }
+func (BooksTable) Description() query.NullStringColumn { return query.NullStringColumn{Table: "books", Name: "description"} }
+func (BooksTable) Price() query.DecimalColumn       { return query.DecimalColumn{Table: "books", Name: "price"} }
+func (BooksTable) Metadata() query.NullJSONColumn   { return query.NullJSONColumn{Table: "books", Name: "metadata"} }
+----
+
+=== Column Type Hierarchy
+
+Columns are typed to enable type-safe operations:
+
+[source,go]
+----
+// query/columns.go
+package query
+
+// Column is the base interface for all column types.
+type Column interface {
+    TableName() string
+    ColumnName() string
+    IsNullable() bool
+    SQLType() string  // For codegen: "int64", "string", "*string", etc.
+}
+
+// Comparable columns support =, <>, <, >, <=, >=
+type ComparableColumn interface {
+    Column
+    Eq(other any) Condition    // = (accepts column or param)
+    Ne(other any) Condition    // <>
+    Lt(other any) Condition    // <
+    Gt(other any) Condition    // >
+    Le(other any) Condition    // <=
+    Ge(other any) Condition    // >=
+    In(values ...any) Condition
+    IsNull() Condition
+    IsNotNull() Condition
+}
+
+// Int64Column for bigint/integer columns
+type Int64Column struct {
+    Table string
+    Name  string
+}
+
+func (c Int64Column) TableName() string   { return c.Table }
+func (c Int64Column) ColumnName() string  { return c.Name }
+func (c Int64Column) IsNullable() bool    { return false }
+func (c Int64Column) SQLType() string     { return "int64" }
+
+// Arithmetic operations (only on numeric columns)
+func (c Int64Column) Add(other any) NumericExpr { ... }
+func (c Int64Column) Sub(other any) NumericExpr { ... }
+func (c Int64Column) Mul(other any) NumericExpr { ... }
+func (c Int64Column) Div(other any) NumericExpr { ... }
+
+// StringColumn for varchar/string columns
+type StringColumn struct {
+    Table string
+    Name  string
+}
+
+func (c StringColumn) TableName() string  { return c.Table }
+func (c StringColumn) ColumnName() string { return c.Name }
+func (c StringColumn) IsNullable() bool   { return false }
+func (c StringColumn) SQLType() string    { return "string" }
+
+// String-specific operations
+func (c StringColumn) Like(pattern string) Condition     { ... }
+func (c StringColumn) ILike(pattern string) Condition    { ... }  // Case-insensitive
+func (c StringColumn) Concat(other any) StringExpr      { ... }
+
+// NullStringColumn for nullable varchar columns
+type NullStringColumn struct {
+    Table string
+    Name  string
+}
+
+func (c NullStringColumn) IsNullable() bool { return true }
+func (c NullStringColumn) SQLType() string  { return "*string" }
+
+// Similar pattern for: BoolColumn, TimeColumn, DecimalColumn, JSONColumn
+// And their nullable variants: NullBoolColumn, NullTimeColumn, etc.
+----
+
+=== Auto-Generated CRUD Queries
+
+For every table in the schema, we automatically generate standard CRUD operations.
+Users don't need to write boilerplate queries - they get these for free.
+
+==== Generated Operations Per Table
+
+For a table `authors` with standard columns (`id`, `public_id`, `created_at`, `deleted_at`, `updated_at`)
+plus custom columns (`name`, `email`, `bio`), we generate:
+
+[source,go]
+----
+// gen/crud/authors.go (auto-generated)
+package crud
+
+// ========== Authors CRUD ==========
+// Detected: public_id (use as external ID), deleted_at (soft delete)
+
+// --- GetAuthor (by public_id) ---
+type GetAuthorParams struct {
+    PublicID string
+}
+
+type GetAuthorResult struct {
+    PublicID  string     // External identifier (internal id NOT exposed)
+    Name      string
+    Email     string
+    Bio       *string    // Nullable
+    CreatedAt time.Time
+    UpdatedAt time.Time
+}
+
+func (r *QueryRunner) GetAuthor(ctx context.Context, params GetAuthorParams) (*GetAuthorResult, error)
+
+// --- ListAuthors (with pagination, excludes soft-deleted) ---
+type ListAuthorsParams struct {
+    Limit  int
+    Offset int
+}
+
+type ListAuthorsResult struct {
+    PublicID  string
+    Name      string
+    Email     string
+    Bio       *string
+    CreatedAt time.Time
+}
+
+func (r *QueryRunner) ListAuthors(ctx context.Context, params ListAuthorsParams) ([]ListAuthorsResult, error)
+
+// --- InsertAuthor (returns new public_id) ---
+type InsertAuthorParams struct {
+    Name  string
+    Email string
+    Bio   *string    // Nullable fields are pointers
+}
+
+// Returns the generated public_id (internal id handled automatically)
+func (r *QueryRunner) InsertAuthor(ctx context.Context, params InsertAuthorParams) (string, error)
+
+// --- UpdateAuthor (by public_id) ---
+type UpdateAuthorParams struct {
+    PublicID string     // WHERE clause uses public_id
+    Name     string
+    Email    string
+    Bio      *string
+}
+
+func (r *QueryRunner) UpdateAuthor(ctx context.Context, params UpdateAuthorParams) error
+
+// --- DeleteAuthor (SOFT delete - sets deleted_at) ---
+type DeleteAuthorParams struct {
+    PublicID string
+}
+
+func (r *QueryRunner) DeleteAuthor(ctx context.Context, params DeleteAuthorParams) error
+
+// --- HardDeleteAuthor (actual DELETE - use with caution!) ---
+type HardDeleteAuthorParams struct {
+    PublicID string
+}
+
+func (r *QueryRunner) HardDeleteAuthor(ctx context.Context, params HardDeleteAuthorParams) error
+----
+
+==== CRUD Naming Conventions
+
+[cols="1,1,1"]
+|===
+| Operation | Method Name | Returns
+
+| Get by public ID | `Get{Table}` | `*Result, error` (nil if not found)
+| List with pagination | `List{Table}s` | `[]Result, error`
+| Insert | `Insert{Table}` | `string, error` (new public_id)
+| Update by public ID | `Update{Table}` | `error`
+| Soft delete | `Delete{Table}` | `error` (sets deleted_at)
+| Hard delete | `HardDelete{Table}` | `error` (actual DELETE)
+|===
+
+==== Standard Column Conventions
+
+The codegen detects standard columns and adjusts behavior accordingly.
+
+===== Auto-Filled Columns
+
+Certain columns are automatically filled by the generated code - users don't include them in params:
+
+[cols="1,1,1"]
+|===
+| Column | On Insert | On Update
+
+| `public_id`
+| Auto-generated NanoID
+| N/A (immutable)
+
+| `created_at`
+| Set to `NOW()`
+| N/A (immutable)
+
+| `updated_at`
+| Set to `NOW()`
+| Set to `NOW()`
+
+| `deleted_at`
+| N/A (null)
+| Set to `NOW()` on soft delete
+|===
+
+This means Insert and Update params are minimal - only user-provided data:
+
+[source,go]
+----
+// InsertAuthorParams - NO public_id, created_at, updated_at
+// These are auto-filled by the generated code
+type InsertAuthorParams struct {
+    Name  string
+    Email string
+    Bio   *string
+    // public_id: auto-generated NanoID
+    // created_at: auto-filled NOW()
+    // updated_at: auto-filled NOW()
+}
+
+// UpdateAuthorParams - NO updated_at
+// It's auto-filled by the generated code
+type UpdateAuthorParams struct {
+    PublicID string  // WHERE clause
+    Name     string
+    Email    string
+    Bio      *string
+    // updated_at: auto-filled NOW()
+}
+----
+
+Generated Insert code:
+
+[source,go]
+----
+func (r *QueryRunner) InsertAuthor(ctx context.Context, params InsertAuthorParams) (string, error) {
+    // Auto-generate public_id using NanoID
+    publicID := nanoid.New()
+    
+    if r.dialect == MySQL {
+        _, err := r.db.ExecContext(ctx, r.insertAuthorSQL, 
+            publicID, params.Name, params.Email, params.Bio)
+        if err != nil {
+            return "", err
+        }
+        return publicID, nil
+    }
+    
+    // Postgres/SQLite: RETURNING confirms the value
+    var returnedPublicID string
+    err := r.db.QueryRowContext(ctx, r.insertAuthorSQL,
+        publicID, params.Name, params.Email, params.Bio).Scan(&returnedPublicID)
+    return returnedPublicID, err
+}
+----
+
+Generated Update code:
+
+[source,go]
+----
+func (r *QueryRunner) UpdateAuthor(ctx context.Context, params UpdateAuthorParams) error {
+    // updated_at is set in the SQL, not passed as param
+    _, err := r.db.ExecContext(ctx, r.updateAuthorSQL,
+        params.Name, params.Email, params.Bio, params.PublicID)
+    return err
+}
+----
+
+Generated SQL includes the auto-filled values:
+
+[source,sql]
+----
+-- Insert (Postgres) - public_id is param, timestamps are NOW()
+INSERT INTO "authors" ("public_id", "name", "email", "bio", "created_at", "updated_at") 
+VALUES ($1, $2, $3, $4, NOW(), NOW()) 
+RETURNING "public_id"
+
+-- Update (Postgres) - updated_at auto-set to NOW()
+UPDATE "authors" 
+SET "name" = $1, "email" = $2, "bio" = $3, "updated_at" = NOW()
+WHERE "public_id" = $4 AND "deleted_at" IS NULL
+----
+
+===== Public ID (when `public_id` column exists)
+
+When a table has both `id` (internal bigint) and `public_id` (external string), the generated code:
+
+1. **Auto-generates `public_id`** - NanoID created on Insert, returned to caller
+2. **Uses `public_id` in all external-facing types** - Result structs expose `PublicID`, not `ID`
+3. **Accepts `public_id` in params** - `Get`, `Update`, `Delete` take public ID
+4. **Uses `id` internally** - Joins and foreign keys still use the internal ID
+
+[source,go]
+----
+// Result types expose PublicID, not internal ID
+type GetAuthorResult struct {
+    PublicID  string     // External identifier
+    Name      string
+    Email     string
+    CreatedAt time.Time
+    // Note: internal "id" is NOT exposed
+}
+
+// Params use PublicID
+type GetAuthorParams struct {
+    PublicID string
+}
+
+// Insert auto-generates and returns the public_id
+func (r *QueryRunner) InsertAuthor(ctx context.Context, params InsertAuthorParams) (string, error)
+----
+
+Generated SQL uses internal ID for efficiency but translates at the boundary:
+
+[source,sql]
+----
+-- Get by public_id (Postgres)
+SELECT "public_id", "name", "email", "created_at" 
+FROM "authors" 
+WHERE "public_id" = $1 AND "deleted_at" IS NULL
+
+-- Insert returns public_id
+INSERT INTO "authors" ("public_id", "name", "email", "created_at") 
+VALUES ($1, $2, $3, NOW()) 
+RETURNING "public_id"
+----
+
+===== Soft Delete (when `deleted_at` column exists)
+
+When a table has a `deleted_at` column:
+
+1. **`Delete{Table}` does soft delete** - Sets `deleted_at = NOW()` instead of DELETE
+2. **`HardDelete{Table}` does actual DELETE** - For when you really need to remove data
+3. **List/Get filter out deleted rows** - `WHERE deleted_at IS NULL` added automatically
+
+[source,go]
+----
+// Soft delete - sets deleted_at
+func (r *QueryRunner) DeleteAuthor(ctx context.Context, params DeleteAuthorParams) error
+
+// Hard delete - actual DELETE FROM (use with caution!)
+func (r *QueryRunner) HardDeleteAuthor(ctx context.Context, params HardDeleteAuthorParams) error
+----
+
+Generated SQL:
+
+[source,sql]
+----
+-- Soft delete (Postgres)
+UPDATE "authors" SET "deleted_at" = NOW() WHERE "public_id" = $1
+
+-- Hard delete (Postgres) 
+DELETE FROM "authors" WHERE "public_id" = $1
+
+-- List automatically filters deleted (Postgres)
+SELECT "public_id", "name", "email", "created_at" 
+FROM "authors" 
+WHERE "deleted_at" IS NULL
+ORDER BY "created_at" DESC
+LIMIT $1 OFFSET $2
+----
+
+===== Scope Filtering (optional)
+
+For multi-tenant applications, you can configure a "scope column" that gets added to all CRUD operations.
+This is **optional** - not all tables need scoping, and sometimes you want unscoped queries.
+
+Configuration (in codegen options):
+
+[source,go]
+----
+// codegen/options.go
+type CRUDOptions struct {
+    // ScopeColumn, if set, adds this column to WHERE clauses.
+    // The column must exist in the table.
+    // Example: "organization_id", "tenant_id", "user_id"
+    ScopeColumn string
+}
+----
+
+When scope is configured, the generated CRUD adds the scope to params and queries:
+
+[source,go]
+----
+// With ScopeColumn: "organization_id"
+
+type GetAuthorParams struct {
+    PublicID       string
+    OrganizationID int64   // Added by scope config
+}
+
+type ListAuthorsParams struct {
+    OrganizationID int64   // Added by scope config
+    Limit          int
+    Offset         int
+}
+
+type InsertAuthorParams struct {
+    OrganizationID int64   // Added by scope config
+    Name           string
+    Email          string
+}
+----
+
+Generated SQL includes the scope:
+
+[source,sql]
+----
+-- Get with scope (Postgres)
+SELECT "public_id", "name", "email", "created_at" 
+FROM "authors" 
+WHERE "public_id" = $1 
+  AND "organization_id" = $2 
+  AND "deleted_at" IS NULL
+
+-- List with scope (Postgres)
+SELECT "public_id", "name", "email", "created_at" 
+FROM "authors" 
+WHERE "organization_id" = $1 
+  AND "deleted_at" IS NULL
+ORDER BY "created_at" DESC
+LIMIT $2 OFFSET $3
+
+-- Insert with scope (Postgres)
+INSERT INTO "authors" ("organization_id", "public_id", "name", "email", "created_at") 
+VALUES ($1, $2, $3, $4, NOW()) 
+RETURNING "public_id"
+----
+
+===== Unscoped Queries
+
+Sometimes you need to bypass scoping (admin operations, migrations, etc.).
+The codegen generates both scoped and unscoped variants when scope is configured:
+
+[source,go]
+----
+// Scoped (default) - requires OrganizationID
+func (r *QueryRunner) GetAuthor(ctx, params GetAuthorParams) (*GetAuthorResult, error)
+func (r *QueryRunner) ListAuthors(ctx, params ListAuthorsParams) ([]ListAuthorsResult, error)
+
+// Unscoped - no OrganizationID required (for admin use)
+func (r *QueryRunner) GetAuthorUnscoped(ctx, params GetAuthorUnscopedParams) (*GetAuthorResult, error)
+func (r *QueryRunner) ListAuthorsUnscoped(ctx, params ListAuthorsUnscopedParams) ([]ListAuthorsResult, error)
+----
+
+===== Detection Summary
+
+[cols="1,1,1"]
+|===
+| Column Detected | Behavior Change | Affects
+
+| `public_id` (string)
+| Auto-generate NanoID on Insert, use as external ID, return from Insert
+| Insert (auto-fill + return), Get/Update/Delete (use as key), Results (expose instead of id)
+
+| `created_at` (datetime)
+| Auto-fill with NOW() on Insert
+| Insert (auto-fill, not in params)
+
+| `updated_at` (datetime)
+| Auto-fill with NOW() on Insert and Update
+| Insert (auto-fill), Update (auto-fill, not in params)
+
+| `deleted_at` (datetime)
+| Soft delete by default, add `HardDelete`, filter deleted in List/Get
+| Delete (set to NOW()), HardDelete (actual DELETE), Get/List (WHERE deleted_at IS NULL)
+
+| Configured scope column
+| Add scope to params, include in WHERE clauses
+| All CRUD operations
+|===
+
+==== Insert with Transparent RETURNING
+
+When a table has `public_id`, Insert auto-generates a NanoID and returns it.
+The internal `id` is auto-incremented but never exposed.
+
+Auto-filled on Insert:
+- `public_id` → NanoID generated in Go
+- `created_at` → `NOW()` in SQL
+- `updated_at` → `NOW()` in SQL
+
+[source,go]
+----
+// Generated Insert method - auto-generates public_id, returns it
+func (r *QueryRunner) InsertAuthor(ctx context.Context, params InsertAuthorParams) (string, error) {
+    // Auto-generate public_id using NanoID
+    publicID := nanoid.New()
+    
+    if r.dialect == MySQL {
+        // MySQL: no RETURNING clause
+        _, err := r.db.ExecContext(ctx, r.insertAuthorSQL, 
+            publicID, params.Name, params.Email, params.Bio)
+        if err != nil {
+            return "", err
+        }
+        return publicID, nil
+    }
+    
+    // Postgres/SQLite: use RETURNING clause (confirms the value)
+    var returnedPublicID string
+    err := r.db.QueryRowContext(ctx, r.insertAuthorSQL,
+        publicID, params.Name, params.Email, params.Bio).Scan(&returnedPublicID)
+    return returnedPublicID, err
+}
+----
+
+The SQL strings include auto-filled timestamps:
+
+[source,sql]
+----
+-- Postgres (public_id from Go, timestamps from DB)
+INSERT INTO "authors" ("public_id", "name", "email", "bio", "created_at", "updated_at") 
+VALUES ($1, $2, $3, $4, NOW(), NOW()) RETURNING "public_id"
+
+-- MySQL (public_id from Go, no RETURNING)
+INSERT INTO `authors` (`public_id`, `name`, `email`, `bio`, `created_at`, `updated_at`) 
+VALUES (?, ?, ?, ?, NOW(), NOW())
+
+-- SQLite
+INSERT INTO "authors" ("public_id", "name", "email", "bio", "created_at", "updated_at") 
+VALUES (?, ?, ?, ?, datetime('now'), datetime('now')) RETURNING "public_id"
+----
+
+NOTE: Tables without `public_id` still return `int64` from Insert (the internal ID).
+
+==== Why Auto-Generate CRUD?
+
+1. **Less boilerplate** - Users don't write 5+ queries per table
+2. **Consistent patterns** - All tables follow the same conventions
+3. **Always correct** - Generated from schema, can't get column names wrong
+4. **Still extensible** - Users can define custom queries for complex operations
+
+==== Custom Queries vs Auto-Generated
+
+Use auto-generated CRUD for:
+- Simple get-by-ID lookups
+- Basic list with pagination
+- Simple inserts, updates, deletes
+
+Write custom queries for:
+- Joins across tables
+- JSON aggregation
+- Complex WHERE clauses
+- Bulk operations
+
+== Phase 2: Query Definition and Codegen
+
+=== Query Definition DSL
+
+Users define queries using the generated schema types:
+
+[source,go]
+----
+// queries/definitions.go
+package queries
+
+import (
+    "myapp/gen/schema"
+    "myapp/src/query"
+)
+
+// GetAuthorByID retrieves a single author by ID.
+var GetAuthorByID = query.Define("GetAuthorByID",
+    query.From(schema.Authors).
+        Select(
+            schema.Authors.ID(),
+            schema.Authors.Name(),
+            schema.Authors.Email(),
+        ).
+        Where(schema.Authors.ID().Eq(query.Param[int64]("id"))),
+)
+
+// GetAuthorWithBooks retrieves an author with their books as nested JSON.
+var GetAuthorWithBooks = query.Define("GetAuthorWithBooks",
+    query.From(schema.Authors).
+        LeftJoin(schema.Books).On(schema.Authors.ID().Eq(schema.Books.AuthorID())).
+        Select(
+            schema.Authors.ID(),
+            schema.Authors.Name(),
+        ).
+        SelectJSONAgg("books",
+            schema.Books.ID(),
+            schema.Books.Title(),
+            schema.Books.Price(),
+        ).
+        Where(schema.Authors.ID().Eq(query.Param[int64]("author_id"))).
+        GroupBy(schema.Authors.ID(), schema.Authors.Name()),
+)
+
+// ListBooksByPriceRange retrieves books within a price range.
+var ListBooksByPriceRange = query.Define("ListBooksByPriceRange",
+    query.From(schema.Books).
+        Select(
+            schema.Books.ID(),
+            schema.Books.Title(),
+            schema.Books.Price(),
+        ).
+        Where(
+            query.And(
+                schema.Books.Price().Ge(query.Param[string]("min_price")),
+                schema.Books.Price().Le(query.Param[string]("max_price")),
+            ),
+        ).
+        OrderBy(schema.Books.Price().Asc()).
+        Limit(query.Param[int]("limit")),
+)
+
+// NOTE: InsertAuthor is AUTO-GENERATED from the schema!
+// You don't need to write Insert queries - they're generated for every table.
+// The generated version returns the new ID and handles RETURNING transparently.
+//
+// Auto-generated signature:
+//   func (r *QueryRunner) InsertAuthor(ctx, params InsertAuthorParams) (int64, error)
+
+// UpdateAuthorEmail updates an author's email.
+var UpdateAuthorEmail = query.Define("UpdateAuthorEmail",
+    query.Update(schema.Authors).
+        Set(schema.Authors.Email(), query.Param[string]("email")).
+        Where(schema.Authors.ID().Eq(query.Param[int64]("id"))),
+)
+
+// DeleteAuthor soft-deletes an author (if you have deleted_at).
+var DeleteAuthor = query.Define("DeleteAuthor",
+    query.Delete(schema.Authors).
+        Where(schema.Authors.ID().Eq(query.Param[int64]("id"))),
+)
+----
+
+=== Query AST Structure
+
+The DSL builds an AST that captures all query information:
+
+[source,go]
+----
+// query/ast.go
+package query
+
+type QueryKind string
+
+const (
+    SelectQuery QueryKind = "select"
+    InsertQuery QueryKind = "insert"
+    UpdateQuery QueryKind = "update"
+    DeleteQuery QueryKind = "delete"
+)
+
+// QueryAST represents the complete query structure.
+type QueryAST struct {
+    Name       string
+    Kind       QueryKind
+    From       TableRef
+    Joins      []JoinClause
+    Columns    []ColumnExpr      // SELECT columns
+    JSONAggs   []JSONAggExpr     // Nested JSON aggregations
+    Where      Condition
+    GroupBy    []Column
+    Having     Condition
+    OrderBy    []OrderExpr
+    Limit      Expr
+    Offset     Expr
+    
+    // For INSERT
+    InsertCols []Column
+    Values     []Expr
+    
+    // For UPDATE
+    SetClauses []SetClause
+    
+    // For INSERT/UPDATE/DELETE
+    Returning  []Column
+}
+
+type JoinClause struct {
+    Type  JoinType  // INNER, LEFT, RIGHT, FULL
+    Table TableRef
+    On    Condition
+}
+
+type JSONAggExpr struct {
+    FieldName string    // The key in the result struct
+    Columns   []Column  // Columns to aggregate into JSON
+}
+
+type OrderExpr struct {
+    Column Column
+    Desc   bool
+}
+
+type SetClause struct {
+    Column Column
+    Value  Expr
+}
+----
+
+=== QueryRunner Pattern
+
+Instead of passing dialect to every query call (which requires a switch statement each time),
+we use a `QueryRunner` that selects the correct SQL strings once at construction time:
+
+[source,go]
+----
+// query/runner.go
+package query
+
+import (
+    "context"
+    "database/sql"
+)
+
+// Dialect identifies the target database.
+type Dialect int
+
+const (
+    Postgres Dialect = iota
+    MySQL
+    SQLite
+)
+
+// Querier is the interface for executing queries.
+// Both *sql.DB and *sql.Tx implement this interface.
+type Querier interface {
+    ExecContext(ctx context.Context, query string, args ...any) (sql.Result, error)
+    QueryContext(ctx context.Context, query string, args ...any) (*sql.Rows, error)
+    QueryRowContext(ctx context.Context, query string, args ...any) *sql.Row
+}
+
+// Compile-time checks
+var _ Querier = (*sql.DB)(nil)
+var _ Querier = (*sql.Tx)(nil)
+
+// QueryRunner holds pre-selected SQL strings for a specific dialect.
+// This avoids switch statements on every query execution.
+type QueryRunner struct {
+    dialect Dialect
+    db      Querier
+    
+    // Pre-selected SQL strings (one field per query)
+    // These are set at construction time based on dialect
+    getAuthorByIDSQL      string
+    getAuthorWithBooksSQL string
+    insertAuthorSQL       string
+    // ... one field per defined query
+}
+
+// NewQueryRunner creates a runner for the given dialect.
+// All SQL strings are selected once here, not on every query.
+func NewQueryRunner(db Querier, dialect Dialect) *QueryRunner {
+    return &QueryRunner{
+        dialect:               dialect,
+        db:                    db,
+        getAuthorByIDSQL:      getAuthorByIDSQLMap[dialect],
+        getAuthorWithBooksSQL: getAuthorWithBooksSQLMap[dialect],
+        insertAuthorSQL:       insertAuthorSQLMap[dialect],
+    }
+}
+
+// WithTx returns a new QueryRunner using the given transaction.
+// SQL strings are already selected, so no additional overhead.
+func (r *QueryRunner) WithTx(tx *sql.Tx) *QueryRunner {
+    return &QueryRunner{
+        dialect:               r.dialect,
+        db:                    tx,
+        getAuthorByIDSQL:      r.getAuthorByIDSQL,
+        getAuthorWithBooksSQL: r.getAuthorWithBooksSQL,
+        insertAuthorSQL:       r.insertAuthorSQL,
+    }
+}
+
+// Dialect returns the runner's dialect.
+func (r *QueryRunner) Dialect() Dialect {
+    return r.dialect
+}
+----
+
+SQL strings are stored in dialect-indexed maps for O(1) lookup at construction:
+
+[source,go]
+----
+// gen/queries/sql_maps.go (generated)
+package queries
+
+import "myapp/src/query"
+
+var getAuthorByIDSQLMap = map[query.Dialect]string{
+    query.Postgres: `SELECT "id", "name", "email" FROM "authors" WHERE "id" = $1`,
+    query.MySQL:    "SELECT `id`, `name`, `email` FROM `authors` WHERE `id` = ?",
+    query.SQLite:   `SELECT "id", "name", "email" FROM "authors" WHERE "id" = ?`,
+}
+
+var getAuthorWithBooksSQLMap = map[query.Dialect]string{
+    query.Postgres: `SELECT ... (Postgres JSON syntax)`,
+    query.MySQL:    `SELECT ... (MySQL JSON syntax)`,
+    query.SQLite:   `SELECT ... (SQLite JSON syntax)`,
+}
+----
+
+=== Usage Pattern
+
+[source,go]
+----
+// Create runner once at startup
+runner := queries.NewQueryRunner(db, query.Postgres)
+
+// One-off query - no switch statement, SQL already selected
+author, err := runner.GetAuthorByID(ctx, queries.GetAuthorByIDParams{ID: 1})
+
+// Transaction - create a transaction-bound runner
+tx, err := db.BeginTx(ctx, nil)
+if err != nil {
+    return err
+}
+defer tx.Rollback()
+
+txRunner := runner.WithTx(tx)
+
+author, err := txRunner.GetAuthorByID(ctx, queries.GetAuthorByIDParams{ID: 1})
+if err != nil {
+    return err
+}
+
+err = txRunner.UpdateAuthorEmail(ctx, queries.UpdateAuthorEmailParams{
+    ID:    author.ID,
+    Email: "new@example.com",
+})
+if err != nil {
+    return err
+}
+
+return tx.Commit()
+----
+
+=== Error Types
+
+Queries return wrapped errors for better error handling:
+
+[source,go]
+----
+// query/errors.go
+package query
+
+import (
+    "errors"
+    "fmt"
+)
+
+// ErrJSONUnmarshal is returned when JSON aggregation results cannot be unmarshaled.
+type ErrJSONUnmarshal struct {
+    Field string // The field name that failed to unmarshal
+    Err   error  // The underlying json.Unmarshal error
+}
+
+func (e *ErrJSONUnmarshal) Error() string {
+    return fmt.Sprintf("query: failed to unmarshal JSON field %q: %v", e.Field, e.Err)
+}
+
+func (e *ErrJSONUnmarshal) Unwrap() error {
+    return e.Err
+}
+
+// IsJSONUnmarshalError checks if an error is a JSON unmarshal error.
+func IsJSONUnmarshalError(err error) bool {
+    var jsonErr *ErrJSONUnmarshal
+    return errors.As(err, &jsonErr)
+}
+----
+
+Usage in generated code:
+
+[source,go]
+----
+if err := json.Unmarshal(booksJSON, &result.Books); err != nil {
+    return nil, &ErrJSONUnmarshal{Field: "books", Err: err}
+}
+----
+
+=== Generated Query Code
+
+The code generator produces:
+1. SQL strings in dialect-indexed maps
+2. Param and Result structs for type safety
+3. Methods on QueryRunner for execution
+
+[source,go]
+----
+// gen/queries/authors.go (generated)
+package queries
+
+import (
+    "context"
+    "database/sql"
+    "encoding/json"
+    
+    "myapp/src/query"
+)
+
+// --- GetAuthorByID ---
+
+// SQL strings indexed by dialect - selected once at QueryRunner construction
+var getAuthorByIDSQLMap = map[query.Dialect]string{
+    query.Postgres: `SELECT "id", "name", "email" FROM "authors" WHERE "id" = $1`,
+    query.MySQL:    "SELECT `id`, `name`, `email` FROM `authors` WHERE `id` = ?",
+    query.SQLite:   `SELECT "id", "name", "email" FROM "authors" WHERE "id" = ?`,
+}
+
+type GetAuthorByIDParams struct {
+    ID int64
+}
+
+type GetAuthorByIDResult struct {
+    ID    int64
+    Name  string
+    Email string
+}
+
+// Method on QueryRunner - no switch statement, SQL already selected
+func (r *QueryRunner) GetAuthorByID(ctx context.Context, params GetAuthorByIDParams) (*GetAuthorByIDResult, error) {
+    row := r.db.QueryRowContext(ctx, r.getAuthorByIDSQL, params.ID)
+    
+    var result GetAuthorByIDResult
+    if err := row.Scan(&result.ID, &result.Name, &result.Email); err != nil {
+        if err == sql.ErrNoRows {
+            return nil, nil
+        }
+        return nil, err
+    }
+    return &result, nil
+}
+
+// --- GetAuthorWithBooks (with nested JSON) ---
+
+var getAuthorWithBooksSQLMap = map[query.Dialect]string{
+    query.Postgres: `
+SELECT 
+    "authors"."id", 
+    "authors"."name",
+    COALESCE(
+        JSON_AGG(
+            JSON_BUILD_OBJECT(
+                'id', "books"."id",
+                'title', "books"."title", 
+                'price', "books"."price"
+            )
+        ) FILTER (WHERE "books"."id" IS NOT NULL),
+        '[]'
+    ) AS "books"
+FROM "authors"
+LEFT JOIN "books" ON "authors"."id" = "books"."author_id"
+WHERE "authors"."id" = $1
+GROUP BY "authors"."id", "authors"."name"`,
+
+    query.MySQL: `
+SELECT 
+    authors.id, 
+    authors.name,
+    COALESCE(
+        JSON_ARRAYAGG(
+            JSON_OBJECT(
+                'id', books.id,
+                'title', books.title,
+                'price', books.price
+            )
+        ),
+        JSON_ARRAY()
+    ) AS books
+FROM authors
+LEFT JOIN books ON authors.id = books.author_id
+WHERE authors.id = ?
+GROUP BY authors.id, authors.name`,
+
+    query.SQLite: `
+SELECT 
+    "authors"."id", 
+    "authors"."name",
+    COALESCE(
+        JSON_GROUP_ARRAY(
+            JSON_OBJECT(
+                'id', "books"."id",
+                'title', "books"."title",
+                'price', "books"."price"
+            )
+        ),
+        '[]'
+    ) AS "books"
+FROM "authors"
+LEFT JOIN "books" ON "authors"."id" = "books"."author_id"
+WHERE "authors"."id" = ?
+GROUP BY "authors"."id", "authors"."name"`,
+}
+
+type GetAuthorWithBooksParams struct {
+    AuthorID int64
+}
+
+type GetAuthorWithBooksResult struct {
+    ID    int64
+    Name  string
+    Books []GetAuthorWithBooksResultBooks
+}
+
+type GetAuthorWithBooksResultBooks struct {
+    ID    int64
+    Title string
+    Price string  // Decimal stored as string for precision
+}
+
+func (r *QueryRunner) GetAuthorWithBooks(ctx context.Context, params GetAuthorWithBooksParams) (*GetAuthorWithBooksResult, error) {
+    row := r.db.QueryRowContext(ctx, r.getAuthorWithBooksSQL, params.AuthorID)
+    
+    var result GetAuthorWithBooksResult
+    var booksJSON []byte
+    
+    if err := row.Scan(&result.ID, &result.Name, &booksJSON); err != nil {
+        if err == sql.ErrNoRows {
+            return nil, nil
+        }
+        return nil, err
+    }
+    
+    // Unmarshal the JSON aggregation - wrap errors with field name
+    if err := json.Unmarshal(booksJSON, &result.Books); err != nil {
+        return nil, &query.ErrJSONUnmarshal{Field: "books", Err: err}
+    }
+    
+    return &result, nil
+}
+
+// --- InsertAuthor (no RETURNING - cross-database compatible) ---
+
+type InsertAuthorParams struct {
+    Name  string
+    Email string
+}
+
+// InsertAuthor returns the new ID - transparent RETURNING handling!
+// - Postgres/SQLite: uses RETURNING clause
+// - MySQL: uses LastInsertId() from sql.Result
+
+const insertAuthorPostgres = `INSERT INTO "authors" ("name", "email", "created_at") VALUES ($1, $2, NOW()) RETURNING "id"`
+const insertAuthorMySQL = "INSERT INTO `authors` (`name`, `email`, `created_at`) VALUES (?, ?, NOW())"
+const insertAuthorSQLite = `INSERT INTO "authors" ("name", "email", "created_at") VALUES (?, ?, datetime('now')) RETURNING "id"`
+
+// Method on QueryRunner - handles RETURNING transparently
+func (r *QueryRunner) InsertAuthor(ctx context.Context, params InsertAuthorParams) (int64, error) {
+    if r.dialect == MySQL {
+        // MySQL: no RETURNING, use LastInsertId()
+        result, err := r.db.ExecContext(ctx, r.insertAuthorSQL, params.Name, params.Email)
+        if err != nil {
+            return 0, err
+        }
+        return result.LastInsertId()
+    }
+    
+    // Postgres/SQLite: use RETURNING clause
+    var id int64
+    err := r.db.QueryRowContext(ctx, r.insertAuthorSQL, params.Name, params.Email).Scan(&id)
+    return id, err
+}
+----
+
+== Type Mapping
+
+=== DDL Type to Go Type Mapping
+
+[cols="1,1,1,1"]
+|===
+| DDL Type | Non-nullable Go Type | Nullable Go Type | Column Type
+
+| integer | int32 | *int32 | Int32Column / NullInt32Column
+| bigint | int64 | *int64 | Int64Column / NullInt64Column
+| decimal | string | *string | DecimalColumn / NullDecimalColumn
+| float | float64 | *float64 | Float64Column / NullFloat64Column
+| boolean | bool | *bool | BoolColumn / NullBoolColumn
+| string | string | *string | StringColumn / NullStringColumn
+| text | string | *string | StringColumn / NullStringColumn
+| datetime | time.Time | *time.Time | TimeColumn / NullTimeColumn
+| timestamp | time.Time | *time.Time | TimeColumn / NullTimeColumn
+| binary | []byte | []byte | BytesColumn
+| json | json.RawMessage | json.RawMessage | JSONColumn / NullJSONColumn
+|===
+
+NOTE: Decimal is mapped to string to preserve precision. Users can use `decimal` package for arithmetic.
+
+== JSON Aggregation
+
+=== Cross-Database JSON Functions
+
+The query compiler translates JSON aggregation to database-specific syntax:
+
+[cols="1,1,1,1"]
+|===
+| Operation | Postgres | MySQL | SQLite
+
+| Build object | JSON_BUILD_OBJECT | JSON_OBJECT | JSON_OBJECT
+| Array aggregate | JSON_AGG | JSON_ARRAYAGG | JSON_GROUP_ARRAY
+| Filter nulls | FILTER (WHERE ...) | (handled in query) | (handled in query)
+| Empty array | '[]' | JSON_ARRAY() | '[]'
+|===
+
+=== Nested JSON Type Inference
+
+The codegen can infer nested struct types from the query AST:
+
+[source,go]
+----
+// Query definition
+query.From(schema.Authors).
+    Select(schema.Authors.ID(), schema.Authors.Name()).
+    SelectJSONAgg("books",
+        schema.Books.ID(),
+        schema.Books.Title(),
+    )
+
+// Codegen analyzes:
+// - Main select: Authors.ID (int64), Authors.Name (string)
+// - JSONAgg "books": Books.ID (int64), Books.Title (string)
+
+// Generated result type:
+type Result struct {
+    ID    int64                // From Authors.ID
+    Name  string               // From Authors.Name
+    Books []struct {           // From JSONAgg "books"
+        ID    int64            // From Books.ID
+        Title string           // From Books.Title
+    }
+}
+----
+
+== Prepared Statement Registry
+
+=== Design
+
+All queries are registered at init time, allowing:
+
+1. Validation that all referenced queries exist
+2. Prepared statement caching per connection
+3. Query introspection for tooling
+
+[source,go]
+----
+// query/registry.go
+package query
+
+// QueryDef holds the definition and compiled SQL for a query.
+type QueryDef struct {
+    Name        string
+    AST         *QueryAST
+    PostgresSQL string
+    MySQLSQL    string
+    SQLiteSQL   string
+}
+
+var registry = make(map[string]*QueryDef)
+
+// Define registers a query and returns its definition.
+func Define(name string, builder QueryBuilder) *QueryDef {
+    ast := builder.Build()
+    def := &QueryDef{
+        Name:        name,
+        AST:         ast,
+        PostgresSQL: compilePostgres(ast),
+        MySQLSQL:    compileMySQL(ast),
+        SQLiteSQL:   compileSQLite(ast),
+    }
+    registry[name] = def
+    return def
+}
+
+// PreparedStmtCache manages prepared statements per database connection.
+type PreparedStmtCache struct {
+    dialect Dialect
+    db      *sql.DB
+    stmts   map[string]*sql.Stmt
+    mu      sync.RWMutex
+}
+
+func (c *PreparedStmtCache) Get(def *QueryDef) (*sql.Stmt, error) {
+    c.mu.RLock()
+    if stmt, ok := c.stmts[def.Name]; ok {
+        c.mu.RUnlock()
+        return stmt, nil
+    }
+    c.mu.RUnlock()
+    
+    c.mu.Lock()
+    defer c.mu.Unlock()
+    
+    // Double-check after acquiring write lock
+    if stmt, ok := c.stmts[def.Name]; ok {
+        return stmt, nil
+    }
+    
+    sqlStr := def.SQLForDialect(c.dialect)
+    stmt, err := c.db.Prepare(sqlStr)
+    if err != nil {
+        return nil, err
+    }
+    c.stmts[def.Name] = stmt
+    return stmt, nil
+}
+----
+
+== Code Generator Implementation
+
+=== Generator Structure
+
+[source]
+----
+packages/go/src/
+├── ddl/                  # Existing DDL types
+├── migrate/              # Existing migration system
+├── query/
+│   ├── columns.go        # Column type definitions
+│   ├── conditions.go     # WHERE clause building
+│   ├── builder.go        # Query DSL builder
+│   ├── ast.go            # Query AST types
+│   └── registry.go       # Query registration
+└── codegen/
+    ├── schema_gen.go     # Phase 1: Schema -> Table structs
+    ├── query_gen.go      # Phase 2: Query AST -> Go code
+    ├── postgres.go       # Postgres SQL compiler
+    ├── mysql.go          # MySQL SQL compiler
+    └── sqlite.go         # SQLite SQL compiler
+----
+
+=== Code Generation API
+
+For now, we expose code generation as Go functions that can be called from tests or custom tooling.
+A CLI with config file support (similar to sqlc.yaml) is deferred to a future iteration.
+
+[source,go]
+----
+// codegen/schema_gen.go
+package codegen
+
+// GenerateSchemaTypes generates Go table/column types from a MigrationPlan.
+// The packageName parameter specifies the Go package for the generated code.
+func GenerateSchemaTypes(plan *migrate.MigrationPlan, packageName string) ([]byte, error) {
+    // Returns generated Go source code as bytes
+}
+
+// codegen/query_gen.go
+package codegen
+
+// QueryPackage represents a package containing query definitions.
+type QueryPackage struct {
+    Path    string      // Import path of the package
+    Queries []*QueryDef // Query definitions found in the package
+}
+
+// GenerateQueryExecutors generates type-safe executor functions from query definitions.
+// The schemaPackage is the import path of the generated schema types.
+// The queryPackage specifies the package containing query definitions.
+func GenerateQueryExecutors(schemaPackage string, queries []*QueryDef, outputPackage string) ([]byte, error) {
+    // Returns generated Go source code as bytes
+}
+----
+
+Example test usage:
+
+[source,go]
+----
+func TestGenerateSchema(t *testing.T) {
+    plan := buildTestMigrationPlan()
+    
+    code, err := codegen.GenerateSchemaTypes(plan, "myapp/gen/schema")
+    require.NoError(t, err)
+    
+    // Write to file or verify contents
+    err = os.WriteFile("gen/schema/tables.go", code, 0644)
+    require.NoError(t, err)
+}
+
+func TestGenerateQueries(t *testing.T) {
+    queries := []*query.QueryDef{
+        queries.GetAuthorByID,
+        queries.GetAuthorWithBooks,
+        queries.InsertAuthor,
+    }
+    
+    code, err := codegen.GenerateQueryExecutors(
+        "myapp/gen/schema",
+        queries,
+        "myapp/gen/queries",
+    )
+    require.NoError(t, err)
+    
+    err = os.WriteFile("gen/queries/authors.go", code, 0644)
+    require.NoError(t, err)
+}
+----
+
+Future CLI (deferred):
+
+[source,bash]
+----
+# Phase 1: Generate schema types from MigrationPlan JSON
+orm-gen schema --input migrations.json --output gen/schema/ --package myapp/gen/schema
+
+# Phase 2: Generate query executors from a queries package
+orm-gen queries --schema myapp/gen/schema --queries myapp/queries --output gen/queries/
+----
+
+== Cross-Database Compatibility
+
+=== Identifier Quoting
+
+[cols="1,1"]
+|===
+| Database | Quote Style
+
+| Postgres | "identifier"
+| MySQL | \`identifier\`
+| SQLite | "identifier"
+|===
+
+=== Parameter Placeholders
+
+[cols="1,1"]
+|===
+| Database | Placeholder Style
+
+| Postgres | $1, $2, $3, ...
+| MySQL | ?, ?, ?, ...
+| SQLite | ?, ?, ?, ...
+|===
+
+=== Cross-Database Design Principles
+
+We support SQL features that can work consistently across all three databases,
+either natively or through transparent translation in generated code.
+
+==== Transparent Translations
+
+These features work identically from the user's perspective, but use different implementations per database:
+
+[cols="1,2"]
+|===
+| Feature | How It Works
+
+| **RETURNING / Insert ID**
+| Postgres/SQLite use `RETURNING id`, MySQL uses `LastInsertId()`. +
+Generated code handles this automatically - all Insert methods return `(int64, error)`.
+
+| **ILIKE (case-insensitive)**
+| Translated to `LOWER(col) LIKE LOWER(?)` for MySQL/SQLite. +
+Postgres uses native `ILIKE`.
+
+| **Boolean literals**
+| Postgres: `TRUE/FALSE`, MySQL/SQLite: `1/0`
+
+| **NOW()**
+| Postgres/MySQL: `NOW()`, SQLite: `datetime('now')`
+
+| **JSON aggregation**
+| See JSON section for per-database function mapping.
+|===
+
+==== Truly Not Supported
+
+These features cannot be reliably translated and are intentionally excluded:
+
+1. **Window functions with PARTITION BY**: Syntax varies too much
+2. **UPSERT**: `ON CONFLICT` (Postgres/SQLite) vs `ON DUPLICATE KEY` (MySQL) have different semantics
+3. **Full-text search**: Each database has its own system
+
+==== Insert Returns ID Example
+
+Auto-generated Insert methods return the new ID on all databases:
+
+[source,go]
+----
+// Same API on all databases - RETURNING is handled transparently
+id, err := runner.InsertAuthor(ctx, InsertAuthorParams{
+    Name:  "Alice",
+    Email: "alice@example.com",
+})
+if err != nil {
+    return err
+}
+
+// id is the auto-generated primary key
+fmt.Printf("Created author with ID: %d\n", id)
+
+// If you need more data, just query it
+author, err := runner.GetAuthorByID(ctx, GetAuthorByIDParams{ID: id})
+----
+
+== Transaction Helpers
+
+While the `Querier` interface allows using transactions directly, we provide optional helpers for common patterns:
+
+[source,go]
+----
+// query/tx.go
+package query
+
+import (
+    "context"
+    "database/sql"
+)
+
+// TxFunc is a function that runs within a transaction.
+type TxFunc func(ctx context.Context, tx *sql.Tx) error
+
+// WithTransaction runs fn within a transaction.
+// If fn returns an error, the transaction is rolled back.
+// If fn returns nil, the transaction is committed.
+func WithTransaction(ctx context.Context, db *sql.DB, fn TxFunc) error {
+    tx, err := db.BeginTx(ctx, nil)
+    if err != nil {
+        return fmt.Errorf("begin transaction: %w", err)
+    }
+    
+    if err := fn(ctx, tx); err != nil {
+        if rbErr := tx.Rollback(); rbErr != nil {
+            return fmt.Errorf("rollback failed: %v (original error: %w)", rbErr, err)
+        }
+        return err
+    }
+    
+    if err := tx.Commit(); err != nil {
+        return fmt.Errorf("commit transaction: %w", err)
+    }
+    return nil
+}
+
+// WithTransactionOpts runs fn within a transaction with custom options.
+func WithTransactionOpts(ctx context.Context, db *sql.DB, opts *sql.TxOptions, fn TxFunc) error {
+    tx, err := db.BeginTx(ctx, opts)
+    if err != nil {
+        return fmt.Errorf("begin transaction: %w", err)
+    }
+    
+    if err := fn(ctx, tx); err != nil {
+        if rbErr := tx.Rollback(); rbErr != nil {
+            return fmt.Errorf("rollback failed: %v (original error: %w)", rbErr, err)
+        }
+        return err
+    }
+    
+    if err := tx.Commit(); err != nil {
+        return fmt.Errorf("commit transaction: %w", err)
+    }
+    return nil
+}
+----
+
+Usage:
+
+[source,go]
+----
+err := query.WithTransaction(ctx, db, func(ctx context.Context, tx *sql.Tx) error {
+    // Create author
+    author, err := queries.InsertAuthor(ctx, tx, dialect, queries.InsertAuthorParams{
+        Name:  "Alice",
+        Email: "alice@example.com",
+    })
+    if err != nil {
+        return err
+    }
+    
+    // Create their first book
+    _, err = queries.InsertBook(ctx, tx, dialect, queries.InsertBookParams{
+        AuthorID: author.ID,
+        Title:    "My First Book",
+    })
+    if err != nil {
+        return err  // Transaction will be rolled back
+    }
+    
+    return nil  // Transaction will be committed
+})
+----
+
+== Property Testing for Cross-Database Correctness
+
+Use the `proptest` package to verify queries produce identical results across all databases.
+
+=== Testing Strategy
+
+The key property we want to verify:
+
+> For any valid input, executing a query on Postgres, MySQL, and SQLite should produce semantically equivalent results.
+
+=== Test Infrastructure
+
+[source,go]
+----
+// query/testing/harness.go
+package testing
+
+import (
+    "context"
+    "database/sql"
+    "testing"
+    
+    "myapp/src/query"
+)
+
+// TestDBs holds connections to all three database types.
+type TestDBs struct {
+    Postgres *sql.DB
+    MySQL    *sql.DB
+    SQLite   *sql.DB
+}
+
+// Runners returns QueryRunners for all three databases.
+func (dbs *TestDBs) Runners() []*query.QueryRunner {
+    return []*query.QueryRunner{
+        query.NewQueryRunner(dbs.Postgres, query.Postgres),
+        query.NewQueryRunner(dbs.MySQL, query.MySQL),
+        query.NewQueryRunner(dbs.SQLite, query.SQLite),
+    }
+}
+
+// ForEachDB runs a test function against all databases.
+func (dbs *TestDBs) ForEachDB(t *testing.T, name string, fn func(t *testing.T, runner *query.QueryRunner)) {
+    t.Helper()
+    
+    runners := map[string]*query.QueryRunner{
+        "postgres": query.NewQueryRunner(dbs.Postgres, query.Postgres),
+        "mysql":    query.NewQueryRunner(dbs.MySQL, query.MySQL),
+        "sqlite":   query.NewQueryRunner(dbs.SQLite, query.SQLite),
+    }
+    
+    for dbName, runner := range runners {
+        t.Run(dbName+"/"+name, func(t *testing.T) {
+            fn(t, runner)
+        })
+    }
+}
+
+// SetupTestDBs creates test databases with the schema applied.
+// Returns a cleanup function.
+func SetupTestDBs(t *testing.T, plan *migrate.MigrationPlan) (*TestDBs, func()) {
+    t.Helper()
+    // Implementation creates temp databases, applies migrations
+    // Returns connections and cleanup function
+}
+----
+
+=== Property: Query Results Match Across Databases
+
+[source,go]
+----
+// query/testing/crossdb_test.go
+package testing
+
+import (
+    "context"
+    "testing"
+    
+    "myapp/gen/queries"
+    "myapp/src/proptest"
+)
+
+func TestGetAuthorByID_CrossDB(t *testing.T) {
+    dbs, cleanup := SetupTestDBs(t, testPlan)
+    defer cleanup()
+    
+    ctx := context.Background()
+    
+    proptest.Check(t, "GetAuthorByID returns same result on all DBs", proptest.Config{NumTrials: 100}, func(g *proptest.Generator) bool {
+        // Generate random test data
+        id := g.Int64Range(1, 1000000)
+        name := g.StringAlphaNum(50)
+        email := g.StringAlphaNum(20) + "@example.com"
+        
+        // Insert the same data into all databases
+        for _, runner := range dbs.Runners() {
+            err := runner.InsertAuthor(ctx, queries.InsertAuthorParams{
+                ID:    id,
+                Name:  name,
+                Email: email,
+            })
+            if err != nil {
+                t.Logf("insert failed: %v", err)
+                return false
+            }
+        }
+        
+        // Query from all databases
+        var results []*queries.GetAuthorByIDResult
+        for _, runner := range dbs.Runners() {
+            result, err := runner.GetAuthorByID(ctx, queries.GetAuthorByIDParams{ID: id})
+            if err != nil {
+                t.Logf("query failed: %v", err)
+                return false
+            }
+            results = append(results, result)
+        }
+        
+        // Verify all results are equivalent
+        if len(results) != 3 {
+            return false
+        }
+        
+        pg, my, sq := results[0], results[1], results[2]
+        
+        // All should return non-nil (found the row)
+        if pg == nil || my == nil || sq == nil {
+            t.Logf("expected all non-nil, got pg=%v my=%v sq=%v", pg, my, sq)
+            return false
+        }
+        
+        // All values should match
+        return pg.ID == my.ID && my.ID == sq.ID &&
+               pg.Name == my.Name && my.Name == sq.Name &&
+               pg.Email == my.Email && my.Email == sq.Email
+    })
+}
+----
+
+=== Property: Edge Case Strings Are Handled Correctly
+
+[source,go]
+----
+func TestEdgeCaseStrings_CrossDB(t *testing.T) {
+    dbs, cleanup := SetupTestDBs(t, testPlan)
+    defer cleanup()
+    
+    ctx := context.Background()
+    
+    proptest.Check(t, "edge case strings roundtrip correctly", proptest.Config{NumTrials: 200}, func(g *proptest.Generator) bool {
+        id := g.Int64Range(1, 1000000)
+        
+        // Use edge case string generator - tests SQL injection, unicode, etc.
+        name := g.EdgeCaseString()
+        email := g.StringAlphaNum(10) + "@test.com"  // Email has constraints
+        
+        // Insert into all DBs
+        for _, runner := range dbs.Runners() {
+            err := runner.InsertAuthor(ctx, queries.InsertAuthorParams{
+                ID:    id,
+                Name:  name,
+                Email: email,
+            })
+            if err != nil {
+                // Some edge cases may legitimately fail (e.g., NULL bytes)
+                // Log but continue - the property is about consistency
+                t.Logf("insert edge case %q failed: %v", name, err)
+                return true  // Skip this trial
+            }
+        }
+        
+        // Query back and compare
+        var names []string
+        for _, runner := range dbs.Runners() {
+            result, err := runner.GetAuthorByID(ctx, queries.GetAuthorByIDParams{ID: id})
+            if err != nil {
+                t.Logf("query failed: %v", err)
+                return false
+            }
+            if result != nil {
+                names = append(names, result.Name)
+            }
+        }
+        
+        // All DBs should return the same string
+        if len(names) != 3 {
+            return false
+        }
+        return names[0] == names[1] && names[1] == names[2] && names[0] == name
+    })
+}
+----
+
+=== Property: JSON Aggregation Results Are Equivalent
+
+[source,go]
+----
+func TestJSONAggregation_CrossDB(t *testing.T) {
+    dbs, cleanup := SetupTestDBs(t, testPlan)
+    defer cleanup()
+    
+    ctx := context.Background()
+    
+    proptest.Check(t, "JSON aggregation produces equivalent results", proptest.Config{NumTrials: 50}, func(g *proptest.Generator) bool {
+        // Create an author with random number of books
+        authorID := g.Int64Range(1, 1000000)
+        authorName := g.StringAlphaNum(20)
+        
+        numBooks := g.IntRange(0, 10)  // 0-10 books
+        
+        // Insert author into all DBs
+        for _, runner := range dbs.Runners() {
+            _ = runner.InsertAuthor(ctx, queries.InsertAuthorParams{
+                ID:    authorID,
+                Name:  authorName,
+                Email: g.StringAlphaNum(10) + "@test.com",
+            })
+        }
+        
+        // Insert books
+        type bookData struct {
+            ID    int64
+            Title string
+            Price string
+        }
+        books := make([]bookData, numBooks)
+        for i := 0; i < numBooks; i++ {
+            books[i] = bookData{
+                ID:    g.Int64Range(1, 1000000),
+                Title: g.StringAlphaNum(30),
+                Price: fmt.Sprintf("%.2f", g.Float64Range(1.0, 100.0)),
+            }
+            
+            for _, runner := range dbs.Runners() {
+                _ = runner.InsertBook(ctx, queries.InsertBookParams{
+                    ID:       books[i].ID,
+                    AuthorID: authorID,
+                    Title:    books[i].Title,
+                    Price:    books[i].Price,
+                })
+            }
+        }
+        
+        // Query with JSON aggregation from all DBs
+        var results []*queries.GetAuthorWithBooksResult
+        for _, runner := range dbs.Runners() {
+            result, err := runner.GetAuthorWithBooks(ctx, queries.GetAuthorWithBooksParams{
+                AuthorID: authorID,
+            })
+            if err != nil {
+                t.Logf("query failed: %v", err)
+                return false
+            }
+            results = append(results, result)
+        }
+        
+        // Verify results match
+        pg, my, sq := results[0], results[1], results[2]
+        
+        // Basic fields should match
+        if pg.ID != my.ID || my.ID != sq.ID {
+            return false
+        }
+        if pg.Name != my.Name || my.Name != sq.Name {
+            return false
+        }
+        
+        // Book counts should match
+        if len(pg.Books) != len(my.Books) || len(my.Books) != len(sq.Books) {
+            t.Logf("book counts differ: pg=%d my=%d sq=%d", len(pg.Books), len(my.Books), len(sq.Books))
+            return false
+        }
+        
+        // Sort books by ID and compare (order may vary)
+        sortByID := func(books []queries.GetAuthorWithBooksResultBooks) {
+            sort.Slice(books, func(i, j int) bool {
+                return books[i].ID < books[j].ID
+            })
+        }
+        sortByID(pg.Books)
+        sortByID(my.Books)
+        sortByID(sq.Books)
+        
+        for i := range pg.Books {
+            if pg.Books[i].ID != my.Books[i].ID || my.Books[i].ID != sq.Books[i].ID {
+                return false
+            }
+            if pg.Books[i].Title != my.Books[i].Title || my.Books[i].Title != sq.Books[i].Title {
+                return false
+            }
+        }
+        
+        return true
+    })
+}
+----
+
+=== Property: NULL Handling Is Consistent
+
+[source,go]
+----
+func TestNullHandling_CrossDB(t *testing.T) {
+    dbs, cleanup := SetupTestDBs(t, testPlan)
+    defer cleanup()
+    
+    ctx := context.Background()
+    
+    proptest.Check(t, "NULL values handled consistently", proptest.Config{NumTrials: 100}, func(g *proptest.Generator) bool {
+        id := g.Int64Range(1, 1000000)
+        name := g.StringAlphaNum(20)
+        
+        // Randomly make bio NULL or non-NULL
+        var bio *string
+        if g.Bool() {
+            s := g.StringAlphaNum(100)
+            bio = &s
+        }
+        
+        for _, runner := range dbs.Runners() {
+            _ = runner.InsertAuthor(ctx, queries.InsertAuthorParams{
+                ID:    id,
+                Name:  name,
+                Email: g.StringAlphaNum(10) + "@test.com",
+                Bio:   bio,
+            })
+        }
+        
+        var bios []*string
+        for _, runner := range dbs.Runners() {
+            result, _ := runner.GetAuthorByID(ctx, queries.GetAuthorByIDParams{ID: id})
+            if result != nil {
+                bios = append(bios, result.Bio)
+            }
+        }
+        
+        if len(bios) != 3 {
+            return false
+        }
+        
+        // All should be nil or all should have same value
+        allNil := bios[0] == nil && bios[1] == nil && bios[2] == nil
+        allEqual := bios[0] != nil && bios[1] != nil && bios[2] != nil &&
+                    *bios[0] == *bios[1] && *bios[1] == *bios[2]
+        
+        return allNil || allEqual
+    })
+}
+----
+
+=== Running Cross-Database Tests
+
+[source,bash]
+----
+# Run all cross-DB property tests
+go test ./query/testing/... -v
+
+# Run with specific seed for reproducibility
+PROPTEST_SEED=12345 go test ./query/testing/... -v
+
+# Run more trials for thorough testing
+go test ./query/testing/... -v -args -trials=1000
+----
+
+=== CI Integration
+
+[source,yaml]
+----
+# .gitlab-ci.yml
+test:crossdb:
+  services:
+    - postgres:15
+    - mysql:8
+  variables:
+    POSTGRES_DB: test
+    POSTGRES_USER: test
+    POSTGRES_PASSWORD: test
+    MYSQL_DATABASE: test
+    MYSQL_ROOT_PASSWORD: test
+  script:
+    - go test ./query/testing/... -v -count=1
+----
+
+== Implementation Phases
+- Handle generating the structs from the migration package
+- Handle translating the Go builder DSL to ASTs in pure Go in the query package
+- Handle translating the AST to Postgres
+- Handle translating the AST to MySQL
+- Handle translating the AST to SQLite
+- Property Tests for correctness
+
+== Future Enhancements
+
+=== Phase 2 Features (after CRUD is stable)
+
+- Aggregates: COUNT, SUM, AVG, MIN, MAX
+- DISTINCT
+- Subqueries in WHERE clauses
+- UNION / INTERSECT / EXCEPT
+- CTEs (WITH clauses)
+- Window functions
+- Upsert (INSERT ... ON CONFLICT / ON DUPLICATE KEY)
+
+=== Tooling Ideas
+
+- LSP integration for autocomplete on column names
+- Query plan analyzer integration
+- Migration diff detection (schema changed, regenerate queries)

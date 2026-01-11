@@ -1,0 +1,620 @@
+= Phase 4: Translating AST to MySQL SQL
+
+Compile the query AST to MySQL-specific SQL.
+
+== Overview
+
+This phase takes an AST from Phase 2 and compiles it to MySQL SQL string,
+handling MySQL-specific syntax:
+
+- Backtick identifier quoting (`` `table` ``, `` `column` ``)
+- Question mark parameter placeholders (`?`, `?`, `?`)
+- No RETURNING clause (use `LastInsertId()` instead)
+- `NOW()` for timestamps
+- `JSON_ARRAYAGG` and `JSON_OBJECT` for JSON aggregation
+- `1/0` for boolean literals
+
+== Output
+
+=== Compiler Interface
+
+[source,go]
+----
+// query/compile/mysql.go
+package compile
+
+import (
+    "strings"
+    
+    "myapp/src/query"
+)
+
+// MySQLCompiler compiles AST to MySQL SQL
+type MySQLCompiler struct {
+    params []string  // Tracks param names in order
+}
+
+// Compile compiles an AST to MySQL SQL
+func (c *MySQLCompiler) Compile(ast *query.AST) (sql string, paramOrder []string, err error) {
+    c.params = nil
+    
+    switch ast.Kind {
+    case query.SelectQuery:
+        sql, err = c.compileSelect(ast)
+    case query.InsertQuery:
+        sql, err = c.compileInsert(ast)
+    case query.UpdateQuery:
+        sql, err = c.compileUpdate(ast)
+    case query.DeleteQuery:
+        sql, err = c.compileDelete(ast)
+    default:
+        err = fmt.Errorf("unknown query kind: %s", ast.Kind)
+    }
+    
+    return sql, c.params, err
+}
+
+// CompileMySQL is a convenience function
+func CompileMySQL(ast *query.AST) (string, []string, error) {
+    c := &MySQLCompiler{}
+    return c.Compile(ast)
+}
+----
+
+=== Key Differences from Postgres
+
+[source,go]
+----
+// Identifier quoting uses backticks
+func (c *MySQLCompiler) writeIdentifier(b *strings.Builder, name string) {
+    fmt.Fprintf(b, "`%s`", name)
+}
+
+// Parameters use ? placeholder
+func (c *MySQLCompiler) writeParam(b *strings.Builder, p query.ParamExpr) {
+    c.params = append(c.params, p.Name)
+    b.WriteString("?")
+}
+
+// Boolean literals use 1/0
+func (c *MySQLCompiler) writeBoolLiteral(b *strings.Builder, val bool) {
+    if val {
+        b.WriteString("1")
+    } else {
+        b.WriteString("0")
+    }
+}
+
+// ILIKE translated to LOWER() LIKE LOWER()
+func (c *MySQLCompiler) writeILike(b *strings.Builder, col, pattern query.Expr) error {
+    b.WriteString("LOWER(")
+    if err := c.writeExpr(b, col); err != nil {
+        return err
+    }
+    b.WriteString(") LIKE LOWER(")
+    if err := c.writeExpr(b, pattern); err != nil {
+        return err
+    }
+    b.WriteString(")")
+    return nil
+}
+
+// JSON aggregation uses JSON_ARRAYAGG and JSON_OBJECT
+func (c *MySQLCompiler) writeJSONAgg(b *strings.Builder, j query.JSONAggExpr) {
+    // COALESCE(JSON_ARRAYAGG(JSON_OBJECT(...)), JSON_ARRAY())
+    b.WriteString("COALESCE(JSON_ARRAYAGG(JSON_OBJECT(")
+    for i, col := range j.Columns {
+        if i > 0 {
+            b.WriteString(", ")
+        }
+        // Key is column name as string literal
+        fmt.Fprintf(b, "'%s', ", col.ColumnName())
+        c.writeColumn(b, col)
+    }
+    b.WriteString(")), JSON_ARRAY())")
+}
+----
+
+=== INSERT Without RETURNING
+
+[source,go]
+----
+func (c *MySQLCompiler) compileInsert(ast *query.AST) (string, error) {
+    var b strings.Builder
+    
+    b.WriteString("INSERT INTO ")
+    c.writeIdentifier(&b, ast.FromTable.Name)
+    
+    // Column list
+    if len(ast.InsertCols) > 0 {
+        b.WriteString(" (")
+        for i, col := range ast.InsertCols {
+            if i > 0 {
+                b.WriteString(", ")
+            }
+            c.writeIdentifier(&b, col.ColumnName())
+        }
+        b.WriteString(")")
+    }
+    
+    // VALUES clause
+    b.WriteString(" VALUES (")
+    for i, val := range ast.InsertVals {
+        if i > 0 {
+            b.WriteString(", ")
+        }
+        if err := c.writeExpr(&b, val); err != nil {
+            return "", err
+        }
+    }
+    b.WriteString(")")
+    
+    // NOTE: No RETURNING clause for MySQL!
+    // The generated Go code uses result.LastInsertId() instead
+    
+    return b.String(), nil
+}
+----
+
+== Implementation
+
+=== Files to Create
+
+[source]
+----
+packages/go/src/query/compile/
+├── mysql.go              # MySQL compiler
+├── mysql_test.go         # Unit tests
+└── mysql_integration_test.go  # Integration tests
+----
+
+== Tests
+
+=== Unit Tests
+
+[source,go]
+----
+// compile/mysql_test.go
+
+func TestMySQL_SimpleSelect(t *testing.T) {
+    ast := &query.AST{
+        Kind:      query.SelectQuery,
+        FromTable: query.TableRef{Name: "authors"},
+        SelectCols: []query.SelectExpr{
+            {Expr: query.ColumnExpr{Column: query.Int64Column{Table: "authors", Name: "id"}}},
+            {Expr: query.ColumnExpr{Column: query.StringColumn{Table: "authors", Name: "name"}}},
+        },
+    }
+    
+    sql, params, err := CompileMySQL(ast)
+    require.NoError(t, err)
+    
+    // MySQL uses backticks
+    expected := "SELECT `authors`.`id`, `authors`.`name` FROM `authors`"
+    assert.Equal(t, expected, sql)
+    assert.Empty(t, params)
+}
+
+func TestMySQL_SelectWithWhere(t *testing.T) {
+    idCol := query.Int64Column{Table: "authors", Name: "id"}
+    
+    ast := &query.AST{
+        Kind:      query.SelectQuery,
+        FromTable: query.TableRef{Name: "authors"},
+        SelectCols: []query.SelectExpr{
+            {Expr: query.ColumnExpr{Column: idCol}},
+        },
+        Where: query.BinaryExpr{
+            Left:  query.ColumnExpr{Column: idCol},
+            Op:    query.OpEq,
+            Right: query.ParamExpr{Name: "id", GoType: "int64"},
+        },
+    }
+    
+    sql, params, err := CompileMySQL(ast)
+    require.NoError(t, err)
+    
+    // MySQL uses ? for params
+    expected := "SELECT `authors`.`id` FROM `authors` WHERE (`authors`.`id` = ?)"
+    assert.Equal(t, expected, sql)
+    assert.Equal(t, []string{"id"}, params)
+}
+
+func TestMySQL_MultipleParams(t *testing.T) {
+    col1 := query.Int64Column{Table: "t", Name: "a"}
+    col2 := query.Int64Column{Table: "t", Name: "b"}
+    
+    ast := &query.AST{
+        Kind:      query.SelectQuery,
+        FromTable: query.TableRef{Name: "t"},
+        Where: query.BinaryExpr{
+            Left: query.BinaryExpr{
+                Left:  query.ColumnExpr{Column: col1},
+                Op:    query.OpGt,
+                Right: query.ParamExpr{Name: "min", GoType: "int64"},
+            },
+            Op: query.OpAnd,
+            Right: query.BinaryExpr{
+                Left:  query.ColumnExpr{Column: col2},
+                Op:    query.OpLt,
+                Right: query.ParamExpr{Name: "max", GoType: "int64"},
+            },
+        },
+    }
+    
+    sql, params, err := CompileMySQL(ast)
+    require.NoError(t, err)
+    
+    // All params should be ?
+    assert.Contains(t, sql, "? AND")
+    assert.Contains(t, sql, "< ?")
+    // Param order preserved
+    assert.Equal(t, []string{"min", "max"}, params)
+}
+
+func TestMySQL_Insert_NoReturning(t *testing.T) {
+    publicID := query.StringColumn{Table: "authors", Name: "public_id"}
+    name := query.StringColumn{Table: "authors", Name: "name"}
+    
+    ast := &query.AST{
+        Kind:       query.InsertQuery,
+        FromTable:  query.TableRef{Name: "authors"},
+        InsertCols: []query.Column{publicID, name},
+        InsertVals: []query.Expr{
+            query.ParamExpr{Name: "public_id", GoType: "string"},
+            query.ParamExpr{Name: "name", GoType: "string"},
+        },
+        Returning: []query.Column{publicID}, // Should be IGNORED for MySQL
+    }
+    
+    sql, params, err := CompileMySQL(ast)
+    require.NoError(t, err)
+    
+    // MySQL: No RETURNING clause
+    expected := "INSERT INTO `authors` (`public_id`, `name`) VALUES (?, ?)"
+    assert.Equal(t, expected, sql)
+    assert.NotContains(t, sql, "RETURNING")
+    assert.Equal(t, []string{"public_id", "name"}, params)
+}
+
+func TestMySQL_BooleanLiterals(t *testing.T) {
+    active := query.BoolColumn{Table: "users", Name: "active"}
+    
+    ast := &query.AST{
+        Kind:      query.SelectQuery,
+        FromTable: query.TableRef{Name: "users"},
+        Where: query.BinaryExpr{
+            Left:  query.ColumnExpr{Column: active},
+            Op:    query.OpEq,
+            Right: query.LiteralExpr{Value: true},
+        },
+    }
+    
+    sql, _, err := CompileMySQL(ast)
+    require.NoError(t, err)
+    
+    // MySQL uses 1/0 for booleans
+    assert.Contains(t, sql, "= 1)")
+    assert.NotContains(t, sql, "TRUE")
+}
+
+func TestMySQL_BooleanFalse(t *testing.T) {
+    active := query.BoolColumn{Table: "users", Name: "active"}
+    
+    ast := &query.AST{
+        Kind:      query.SelectQuery,
+        FromTable: query.TableRef{Name: "users"},
+        Where: query.BinaryExpr{
+            Left:  query.ColumnExpr{Column: active},
+            Op:    query.OpEq,
+            Right: query.LiteralExpr{Value: false},
+        },
+    }
+    
+    sql, _, err := CompileMySQL(ast)
+    require.NoError(t, err)
+    
+    assert.Contains(t, sql, "= 0)")
+    assert.NotContains(t, sql, "FALSE")
+}
+
+func TestMySQL_ILike(t *testing.T) {
+    name := query.StringColumn{Table: "users", Name: "name"}
+    
+    ast := &query.AST{
+        Kind:      query.SelectQuery,
+        FromTable: query.TableRef{Name: "users"},
+        Where: query.FuncExpr{
+            Name: "ILIKE",
+            Args: []query.Expr{
+                query.ColumnExpr{Column: name},
+                query.LiteralExpr{Value: "%john%"},
+            },
+        },
+    }
+    
+    sql, _, err := CompileMySQL(ast)
+    require.NoError(t, err)
+    
+    // MySQL: ILIKE becomes LOWER() LIKE LOWER()
+    assert.Contains(t, sql, "LOWER(`users`.`name`) LIKE LOWER('%john%')")
+}
+
+func TestMySQL_JSONAggregation(t *testing.T) {
+    bookID := query.Int64Column{Table: "books", Name: "id"}
+    bookTitle := query.StringColumn{Table: "books", Name: "title"}
+    
+    jsonAgg := query.JSONAggExpr{
+        FieldName: "books",
+        Columns:   []query.Column{bookID, bookTitle},
+    }
+    
+    ast := &query.AST{
+        Kind:      query.SelectQuery,
+        FromTable: query.TableRef{Name: "books"},
+        SelectCols: []query.SelectExpr{
+            {Expr: jsonAgg, Alias: "books"},
+        },
+    }
+    
+    sql, _, err := CompileMySQL(ast)
+    require.NoError(t, err)
+    
+    // MySQL uses JSON_ARRAYAGG and JSON_OBJECT
+    assert.Contains(t, sql, "JSON_ARRAYAGG")
+    assert.Contains(t, sql, "JSON_OBJECT")
+    assert.Contains(t, sql, "JSON_ARRAY()")  // Empty fallback
+    assert.NotContains(t, sql, "JSON_AGG")   // Postgres syntax
+}
+
+func TestMySQL_Update(t *testing.T) {
+    name := query.StringColumn{Table: "authors", Name: "name"}
+    publicID := query.StringColumn{Table: "authors", Name: "public_id"}
+    
+    ast := &query.AST{
+        Kind:      query.UpdateQuery,
+        FromTable: query.TableRef{Name: "authors"},
+        SetClauses: []query.SetClause{
+            {Column: name, Value: query.ParamExpr{Name: "name", GoType: "string"}},
+        },
+        Where: query.BinaryExpr{
+            Left:  query.ColumnExpr{Column: publicID},
+            Op:    query.OpEq,
+            Right: query.ParamExpr{Name: "public_id", GoType: "string"},
+        },
+    }
+    
+    sql, params, err := CompileMySQL(ast)
+    require.NoError(t, err)
+    
+    expected := "UPDATE `authors` SET `name` = ? WHERE (`authors`.`public_id` = ?)"
+    assert.Equal(t, expected, sql)
+    assert.Equal(t, []string{"name", "public_id"}, params)
+}
+
+func TestMySQL_Delete(t *testing.T) {
+    publicID := query.StringColumn{Table: "authors", Name: "public_id"}
+    
+    ast := &query.AST{
+        Kind:      query.DeleteQuery,
+        FromTable: query.TableRef{Name: "authors"},
+        Where: query.BinaryExpr{
+            Left:  query.ColumnExpr{Column: publicID},
+            Op:    query.OpEq,
+            Right: query.ParamExpr{Name: "public_id", GoType: "string"},
+        },
+    }
+    
+    sql, params, err := CompileMySQL(ast)
+    require.NoError(t, err)
+    
+    expected := "DELETE FROM `authors` WHERE (`authors`.`public_id` = ?)"
+    assert.Equal(t, expected, sql)
+    assert.Equal(t, []string{"public_id"}, params)
+}
+----
+
+=== Integration Tests
+
+[source,go]
+----
+// compile/mysql_integration_test.go
+
+func TestMySQLIntegration_SelectExecutes(t *testing.T) {
+    if testing.Short() {
+        t.Skip("skipping integration test")
+    }
+    
+    db := setupMySQLTestDB(t)
+    defer db.Close()
+    
+    // Create test table
+    _, err := db.Exec(`
+        CREATE TABLE IF NOT EXISTS test_authors (
+            id BIGINT AUTO_INCREMENT PRIMARY KEY,
+            public_id VARCHAR(255) NOT NULL,
+            name VARCHAR(255) NOT NULL
+        )
+    `)
+    require.NoError(t, err)
+    
+    // Insert test data
+    _, err = db.Exec("INSERT INTO test_authors (public_id, name) VALUES ('abc123', 'Alice')")
+    require.NoError(t, err)
+    
+    // Build and compile query
+    publicID := query.StringColumn{Table: "test_authors", Name: "public_id"}
+    name := query.StringColumn{Table: "test_authors", Name: "name"}
+    
+    ast := query.From(mockTable{name: "test_authors"}).
+        Select(publicID, name).
+        Where(publicID.Eq(query.Param[string]("public_id"))).
+        Build()
+    
+    sql, _, err := CompileMySQL(ast)
+    require.NoError(t, err)
+    
+    // Execute the query
+    row := db.QueryRow(sql, "abc123")
+    
+    var gotPublicID, gotName string
+    err = row.Scan(&gotPublicID, &gotName)
+    require.NoError(t, err)
+    
+    assert.Equal(t, "abc123", gotPublicID)
+    assert.Equal(t, "Alice", gotName)
+}
+
+func TestMySQLIntegration_InsertWithLastInsertId(t *testing.T) {
+    if testing.Short() {
+        t.Skip("skipping integration test")
+    }
+    
+    db := setupMySQLTestDB(t)
+    defer db.Close()
+    
+    // Create test table with AUTO_INCREMENT
+    _, err := db.Exec(`
+        CREATE TABLE IF NOT EXISTS test_posts (
+            id BIGINT AUTO_INCREMENT PRIMARY KEY,
+            public_id VARCHAR(255) NOT NULL,
+            title VARCHAR(255) NOT NULL
+        )
+    `)
+    require.NoError(t, err)
+    
+    // Build INSERT (no RETURNING for MySQL)
+    publicID := query.StringColumn{Table: "test_posts", Name: "public_id"}
+    title := query.StringColumn{Table: "test_posts", Name: "title"}
+    
+    ast := query.InsertInto(mockTable{name: "test_posts"}).
+        Columns(publicID, title).
+        Values(query.Param[string]("public_id"), query.Param[string]("title")).
+        Build()
+    
+    sql, _, err := CompileMySQL(ast)
+    require.NoError(t, err)
+    
+    // Execute and get LastInsertId
+    result, err := db.Exec(sql, "xyz789", "Test Post")
+    require.NoError(t, err)
+    
+    id, err := result.LastInsertId()
+    require.NoError(t, err)
+    assert.Greater(t, id, int64(0))
+    
+    // Verify the row exists
+    var gotTitle string
+    err = db.QueryRow("SELECT title FROM test_posts WHERE id = ?", id).Scan(&gotTitle)
+    require.NoError(t, err)
+    assert.Equal(t, "Test Post", gotTitle)
+}
+
+func TestMySQLIntegration_JSONAggregation(t *testing.T) {
+    if testing.Short() {
+        t.Skip("skipping integration test")
+    }
+    
+    db := setupMySQLTestDB(t)
+    defer db.Close()
+    
+    // Create tables
+    _, err := db.Exec(`
+        CREATE TABLE IF NOT EXISTS test_authors2 (
+            id BIGINT AUTO_INCREMENT PRIMARY KEY,
+            name VARCHAR(255) NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS test_books (
+            id BIGINT AUTO_INCREMENT PRIMARY KEY,
+            author_id BIGINT,
+            title VARCHAR(255) NOT NULL,
+            FOREIGN KEY (author_id) REFERENCES test_authors2(id)
+        );
+        INSERT INTO test_authors2 (id, name) VALUES (1, 'Alice');
+        INSERT INTO test_books (author_id, title) VALUES (1, 'Book 1'), (1, 'Book 2');
+    `)
+    require.NoError(t, err)
+    
+    // Query with JSON aggregation
+    sql := `
+        SELECT 
+            test_authors2.name,
+            COALESCE(JSON_ARRAYAGG(JSON_OBJECT('id', test_books.id, 'title', test_books.title)), JSON_ARRAY()) as books
+        FROM test_authors2
+        LEFT JOIN test_books ON test_authors2.id = test_books.author_id
+        GROUP BY test_authors2.name
+    `
+    
+    var name string
+    var booksJSON []byte
+    err = db.QueryRow(sql).Scan(&name, &booksJSON)
+    require.NoError(t, err)
+    
+    assert.Equal(t, "Alice", name)
+    
+    var books []map[string]any
+    err = json.Unmarshal(booksJSON, &books)
+    require.NoError(t, err)
+    assert.Len(t, books, 2)
+}
+
+func TestMySQLIntegration_BooleanValues(t *testing.T) {
+    if testing.Short() {
+        t.Skip("skipping integration test")
+    }
+    
+    db := setupMySQLTestDB(t)
+    defer db.Close()
+    
+    // Create table with boolean (TINYINT in MySQL)
+    _, err := db.Exec(`
+        CREATE TABLE IF NOT EXISTS test_flags (
+            id BIGINT AUTO_INCREMENT PRIMARY KEY,
+            active TINYINT(1) NOT NULL DEFAULT 0
+        )
+    `)
+    require.NoError(t, err)
+    
+    // Insert with boolean
+    _, err = db.Exec("INSERT INTO test_flags (active) VALUES (1)")
+    require.NoError(t, err)
+    
+    // Query with boolean literal
+    active := query.BoolColumn{Table: "test_flags", Name: "active"}
+    
+    ast := query.From(mockTable{name: "test_flags"}).
+        Select(active).
+        Where(active.Eq(query.Literal(true))).
+        Build()
+    
+    sql, _, err := CompileMySQL(ast)
+    require.NoError(t, err)
+    
+    var gotActive bool
+    err = db.QueryRow(sql).Scan(&gotActive)
+    require.NoError(t, err)
+    assert.True(t, gotActive)
+}
+----
+
+== Acceptance Criteria
+
+1. [ ] SELECT queries compile with backtick quoting
+2. [ ] Parameter placeholders use `?` style
+3. [ ] INSERT compiles WITHOUT RETURNING clause
+4. [ ] Boolean literals emit `1`/`0`
+5. [ ] ILIKE translated to `LOWER() LIKE LOWER()`
+6. [ ] JSON aggregation uses `JSON_ARRAYAGG`/`JSON_OBJECT`
+7. [ ] NOW() emits correctly
+8. [ ] Param order matches placeholder order
+9. [ ] Integration tests pass against real MySQL
+10. [ ] Generated SQL executes correctly
+
+== Dependencies
+
+- Phase 1: Column types
+- Phase 2: AST types and builder
+
+== Next Phase
+
+Phase 5: Translating AST to SQLite SQL

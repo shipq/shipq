@@ -1,0 +1,912 @@
+= Phase 2: Translating Go Builder DSL to AST
+
+Build the query DSL that translates fluent Go code into an Abstract Syntax Tree.
+
+== Overview
+
+This phase creates the builder DSL that allows writing queries like:
+
+[source,go]
+----
+query.From(schema.Authors).
+    Select(schema.Authors.PublicID(), schema.Authors.Name()).
+    Where(schema.Authors.PublicID().Eq(query.Param[string]("public_id"))).
+    OrderBy(schema.Authors.CreatedAt().Desc()).
+    Limit(query.Param[int]("limit"))
+----
+
+And produces an AST that can be compiled to SQL in later phases.
+
+== Output
+
+=== AST Types
+
+[source,go]
+----
+// query/ast.go
+package query
+
+// QueryKind identifies the type of query
+type QueryKind string
+
+const (
+    SelectQuery QueryKind = "select"
+    InsertQuery QueryKind = "insert"
+    UpdateQuery QueryKind = "update"
+    DeleteQuery QueryKind = "delete"
+)
+
+// AST is the root of a query abstract syntax tree
+type AST struct {
+    Kind       QueryKind
+    FromTable  TableRef
+    Joins      []JoinClause
+    SelectCols []SelectExpr
+    Where      Expr
+    GroupBy    []Column
+    Having     Expr
+    OrderBy    []OrderByExpr
+    Limit      Expr
+    Offset     Expr
+    
+    // For INSERT
+    InsertCols []Column
+    InsertVals []Expr
+    Returning  []Column
+    
+    // For UPDATE
+    SetClauses []SetClause
+    
+    // Collected parameters (for validation and codegen)
+    Params []ParamInfo
+}
+
+// TableRef references a table, optionally with an alias
+type TableRef struct {
+    Name  string
+    Alias string
+}
+
+// JoinClause represents a JOIN
+type JoinClause struct {
+    Type      JoinType
+    Table     TableRef
+    Condition Expr
+}
+
+type JoinType string
+
+const (
+    InnerJoin JoinType = "INNER"
+    LeftJoin  JoinType = "LEFT"
+    RightJoin JoinType = "RIGHT"
+    FullJoin  JoinType = "FULL"
+)
+
+// SelectExpr is a column or expression in a SELECT clause
+type SelectExpr struct {
+    Expr  Expr
+    Alias string
+}
+
+// OrderByExpr represents ORDER BY column [ASC|DESC]
+type OrderByExpr struct {
+    Expr Expr
+    Desc bool
+}
+
+// SetClause represents column = value in UPDATE
+type SetClause struct {
+    Column Column
+    Value  Expr
+}
+
+// ParamInfo tracks parameters for codegen
+type ParamInfo struct {
+    Name   string
+    GoType string
+}
+----
+
+=== Expression Types
+
+[source,go]
+----
+// query/expr.go
+package query
+
+// Expr is the interface for all expressions
+type Expr interface {
+    exprNode() // marker method
+}
+
+// ColumnExpr wraps a Column as an expression
+type ColumnExpr struct {
+    Column Column
+}
+
+func (ColumnExpr) exprNode() {}
+
+// ParamExpr represents a query parameter
+type ParamExpr struct {
+    Name   string
+    GoType string
+}
+
+func (ParamExpr) exprNode() {}
+
+// LiteralExpr represents a literal value
+type LiteralExpr struct {
+    Value any
+}
+
+func (LiteralExpr) exprNode() {}
+
+// BinaryExpr represents a binary operation (a op b)
+type BinaryExpr struct {
+    Left  Expr
+    Op    BinaryOp
+    Right Expr
+}
+
+func (BinaryExpr) exprNode() {}
+
+type BinaryOp string
+
+const (
+    OpEq   BinaryOp = "="
+    OpNe   BinaryOp = "<>"
+    OpLt   BinaryOp = "<"
+    OpLe   BinaryOp = "<="
+    OpGt   BinaryOp = ">"
+    OpGe   BinaryOp = ">="
+    OpAnd  BinaryOp = "AND"
+    OpOr   BinaryOp = "OR"
+    OpLike BinaryOp = "LIKE"
+    OpIn   BinaryOp = "IN"
+)
+
+// UnaryExpr represents a unary operation (op expr)
+type UnaryExpr struct {
+    Op   UnaryOp
+    Expr Expr
+}
+
+func (UnaryExpr) exprNode() {}
+
+type UnaryOp string
+
+const (
+    OpNot     UnaryOp = "NOT"
+    OpIsNull  UnaryOp = "IS NULL"
+    OpNotNull UnaryOp = "IS NOT NULL"
+)
+
+// FuncExpr represents a function call
+type FuncExpr struct {
+    Name string
+    Args []Expr
+}
+
+func (FuncExpr) exprNode() {}
+
+// ListExpr represents a list of values (for IN clause)
+type ListExpr struct {
+    Values []Expr
+}
+
+func (ListExpr) exprNode() {}
+
+// JSONAggExpr represents JSON aggregation
+type JSONAggExpr struct {
+    FieldName string   // The key in the result struct
+    Columns   []Column // Columns to aggregate
+}
+
+func (JSONAggExpr) exprNode() {}
+----
+
+=== Builder DSL
+
+[source,go]
+----
+// query/builder.go
+package query
+
+// Table is implemented by generated table structs
+type Table interface {
+    TableName() string
+}
+
+// From starts building a SELECT query
+func From(table Table) *SelectBuilder {
+    return &SelectBuilder{
+        ast: &AST{
+            Kind: SelectQuery,
+            FromTable: TableRef{
+                Name: table.TableName(),
+            },
+        },
+    }
+}
+
+// SelectBuilder builds SELECT queries
+type SelectBuilder struct {
+    ast *AST
+}
+
+// Select adds columns to select
+func (b *SelectBuilder) Select(cols ...Column) *SelectBuilder {
+    for _, col := range cols {
+        b.ast.SelectCols = append(b.ast.SelectCols, SelectExpr{
+            Expr: ColumnExpr{Column: col},
+        })
+    }
+    return b
+}
+
+// SelectAs adds a column with an alias
+func (b *SelectBuilder) SelectAs(col Column, alias string) *SelectBuilder {
+    b.ast.SelectCols = append(b.ast.SelectCols, SelectExpr{
+        Expr:  ColumnExpr{Column: col},
+        Alias: alias,
+    })
+    return b
+}
+
+// Join adds an INNER JOIN
+func (b *SelectBuilder) Join(table Table) *JoinBuilder {
+    return &JoinBuilder{
+        parent: b,
+        join: JoinClause{
+            Type:  InnerJoin,
+            Table: TableRef{Name: table.TableName()},
+        },
+    }
+}
+
+// LeftJoin adds a LEFT JOIN
+func (b *SelectBuilder) LeftJoin(table Table) *JoinBuilder {
+    return &JoinBuilder{
+        parent: b,
+        join: JoinClause{
+            Type:  LeftJoin,
+            Table: TableRef{Name: table.TableName()},
+        },
+    }
+}
+
+// Where sets the WHERE clause
+func (b *SelectBuilder) Where(expr Expr) *SelectBuilder {
+    b.ast.Where = expr
+    return b
+}
+
+// GroupBy sets GROUP BY columns
+func (b *SelectBuilder) GroupBy(cols ...Column) *SelectBuilder {
+    b.ast.GroupBy = cols
+    return b
+}
+
+// OrderBy adds ORDER BY clause
+func (b *SelectBuilder) OrderBy(expr OrderByExpr) *SelectBuilder {
+    b.ast.OrderBy = append(b.ast.OrderBy, expr)
+    return b
+}
+
+// Limit sets the LIMIT clause
+func (b *SelectBuilder) Limit(expr Expr) *SelectBuilder {
+    b.ast.Limit = expr
+    return b
+}
+
+// Offset sets the OFFSET clause
+func (b *SelectBuilder) Offset(expr Expr) *SelectBuilder {
+    b.ast.Offset = expr
+    return b
+}
+
+// Build returns the completed AST
+func (b *SelectBuilder) Build() *AST {
+    return b.ast
+}
+
+// JoinBuilder handles the ON clause for joins
+type JoinBuilder struct {
+    parent *SelectBuilder
+    join   JoinClause
+}
+
+// On sets the join condition and returns to the parent builder
+func (b *JoinBuilder) On(condition Expr) *SelectBuilder {
+    b.join.Condition = condition
+    b.parent.ast.Joins = append(b.parent.ast.Joins, b.join)
+    return b.parent
+}
+----
+
+=== Column Condition Methods
+
+[source,go]
+----
+// query/columns.go (additions to column types)
+
+// Comparison methods on Int64Column
+func (c Int64Column) Eq(other any) Expr {
+    return BinaryExpr{Left: ColumnExpr{c}, Op: OpEq, Right: toExpr(other)}
+}
+
+func (c Int64Column) Ne(other any) Expr {
+    return BinaryExpr{Left: ColumnExpr{c}, Op: OpNe, Right: toExpr(other)}
+}
+
+func (c Int64Column) Lt(other any) Expr {
+    return BinaryExpr{Left: ColumnExpr{c}, Op: OpLt, Right: toExpr(other)}
+}
+
+func (c Int64Column) Le(other any) Expr {
+    return BinaryExpr{Left: ColumnExpr{c}, Op: OpLe, Right: toExpr(other)}
+}
+
+func (c Int64Column) Gt(other any) Expr {
+    return BinaryExpr{Left: ColumnExpr{c}, Op: OpGt, Right: toExpr(other)}
+}
+
+func (c Int64Column) Ge(other any) Expr {
+    return BinaryExpr{Left: ColumnExpr{c}, Op: OpGe, Right: toExpr(other)}
+}
+
+func (c Int64Column) In(values ...any) Expr {
+    exprs := make([]Expr, len(values))
+    for i, v := range values {
+        exprs[i] = toExpr(v)
+    }
+    return BinaryExpr{Left: ColumnExpr{c}, Op: OpIn, Right: ListExpr{Values: exprs}}
+}
+
+func (c Int64Column) IsNull() Expr {
+    return UnaryExpr{Op: OpIsNull, Expr: ColumnExpr{c}}
+}
+
+func (c Int64Column) IsNotNull() Expr {
+    return UnaryExpr{Op: OpNotNull, Expr: ColumnExpr{c}}
+}
+
+// OrderBy helpers
+func (c Int64Column) Asc() OrderByExpr {
+    return OrderByExpr{Expr: ColumnExpr{c}, Desc: false}
+}
+
+func (c Int64Column) Desc() OrderByExpr {
+    return OrderByExpr{Expr: ColumnExpr{c}, Desc: true}
+}
+
+// String-specific methods on StringColumn
+func (c StringColumn) Like(pattern string) Expr {
+    return BinaryExpr{Left: ColumnExpr{c}, Op: OpLike, Right: LiteralExpr{Value: pattern}}
+}
+
+func (c StringColumn) ILike(pattern string) Expr {
+    // ILike is translated differently per database in the compiler
+    return FuncExpr{
+        Name: "ILIKE",
+        Args: []Expr{ColumnExpr{c}, LiteralExpr{Value: pattern}},
+    }
+}
+
+// Helper to convert any to Expr
+func toExpr(v any) Expr {
+    switch val := v.(type) {
+    case Expr:
+        return val
+    case Column:
+        return ColumnExpr{Column: val}
+    default:
+        return LiteralExpr{Value: val}
+    }
+}
+----
+
+=== Parameter and Literal Helpers
+
+[source,go]
+----
+// query/helpers.go
+package query
+
+// Param creates a typed parameter reference
+func Param[T any](name string) ParamExpr {
+    var zero T
+    return ParamExpr{
+        Name:   name,
+        GoType: typeNameOf(zero),
+    }
+}
+
+// Literal creates a literal value expression
+func Literal[T any](value T) LiteralExpr {
+    return LiteralExpr{Value: value}
+}
+
+// Now represents the current timestamp (translated per-database)
+func Now() FuncExpr {
+    return FuncExpr{Name: "NOW", Args: nil}
+}
+
+// And combines expressions with AND
+func And(exprs ...Expr) Expr {
+    if len(exprs) == 0 {
+        return nil
+    }
+    if len(exprs) == 1 {
+        return exprs[0]
+    }
+    result := exprs[0]
+    for _, expr := range exprs[1:] {
+        result = BinaryExpr{Left: result, Op: OpAnd, Right: expr}
+    }
+    return result
+}
+
+// Or combines expressions with OR
+func Or(exprs ...Expr) Expr {
+    if len(exprs) == 0 {
+        return nil
+    }
+    if len(exprs) == 1 {
+        return exprs[0]
+    }
+    result := exprs[0]
+    for _, expr := range exprs[1:] {
+        result = BinaryExpr{Left: result, Op: OpOr, Right: expr}
+    }
+    return result
+}
+
+// typeNameOf returns the Go type name for codegen
+func typeNameOf(v any) string {
+    switch v.(type) {
+    case int:
+        return "int"
+    case int64:
+        return "int64"
+    case int32:
+        return "int32"
+    case string:
+        return "string"
+    case bool:
+        return "bool"
+    case float64:
+        return "float64"
+    default:
+        return "any"
+    }
+}
+----
+
+=== Insert, Update, Delete Builders
+
+[source,go]
+----
+// query/builder_insert.go
+package query
+
+// InsertInto starts building an INSERT query
+func InsertInto(table Table) *InsertBuilder {
+    return &InsertBuilder{
+        ast: &AST{
+            Kind:      InsertQuery,
+            FromTable: TableRef{Name: table.TableName()},
+        },
+    }
+}
+
+type InsertBuilder struct {
+    ast *AST
+}
+
+func (b *InsertBuilder) Columns(cols ...Column) *InsertBuilder {
+    b.ast.InsertCols = cols
+    return b
+}
+
+func (b *InsertBuilder) Values(vals ...Expr) *InsertBuilder {
+    b.ast.InsertVals = vals
+    return b
+}
+
+func (b *InsertBuilder) Returning(cols ...Column) *InsertBuilder {
+    b.ast.Returning = cols
+    return b
+}
+
+func (b *InsertBuilder) Build() *AST {
+    return b.ast
+}
+
+// query/builder_update.go
+package query
+
+// Update starts building an UPDATE query
+func Update(table Table) *UpdateBuilder {
+    return &UpdateBuilder{
+        ast: &AST{
+            Kind:      UpdateQuery,
+            FromTable: TableRef{Name: table.TableName()},
+        },
+    }
+}
+
+type UpdateBuilder struct {
+    ast *AST
+}
+
+func (b *UpdateBuilder) Set(col Column, value Expr) *UpdateBuilder {
+    b.ast.SetClauses = append(b.ast.SetClauses, SetClause{
+        Column: col,
+        Value:  value,
+    })
+    return b
+}
+
+func (b *UpdateBuilder) Where(expr Expr) *UpdateBuilder {
+    b.ast.Where = expr
+    return b
+}
+
+func (b *UpdateBuilder) Build() *AST {
+    return b.ast
+}
+
+// query/builder_delete.go
+package query
+
+// Delete starts building a DELETE query
+func Delete(table Table) *DeleteBuilder {
+    return &DeleteBuilder{
+        ast: &AST{
+            Kind:      DeleteQuery,
+            FromTable: TableRef{Name: table.TableName()},
+        },
+    }
+}
+
+type DeleteBuilder struct {
+    ast *AST
+}
+
+func (b *DeleteBuilder) Where(expr Expr) *DeleteBuilder {
+    b.ast.Where = expr
+    return b
+}
+
+func (b *DeleteBuilder) Build() *AST {
+    return b.ast
+}
+----
+
+== Implementation
+
+=== Files to Create
+
+[source]
+----
+packages/go/src/query/
+├── ast.go              # AST type definitions
+├── ast_test.go
+├── expr.go             # Expression types
+├── expr_test.go
+├── builder.go          # SELECT builder
+├── builder_test.go
+├── builder_insert.go   # INSERT builder
+├── builder_insert_test.go
+├── builder_update.go   # UPDATE builder
+├── builder_update_test.go
+├── builder_delete.go   # DELETE builder
+├── builder_delete_test.go
+├── helpers.go          # Param, Literal, And, Or, Now
+└── helpers_test.go
+----
+
+== Tests
+
+=== AST Construction Tests
+
+[source,go]
+----
+// query/builder_test.go
+
+func TestFrom_SimpleSelect(t *testing.T) {
+    // Mock table for testing
+    authors := mockTable{name: "authors"}
+    idCol := Int64Column{Table: "authors", Name: "id"}
+    nameCol := StringColumn{Table: "authors", Name: "name"}
+    
+    ast := From(authors).
+        Select(idCol, nameCol).
+        Build()
+    
+    assert.Equal(t, SelectQuery, ast.Kind)
+    assert.Equal(t, "authors", ast.FromTable.Name)
+    assert.Len(t, ast.SelectCols, 2)
+}
+
+func TestFrom_WithWhere(t *testing.T) {
+    authors := mockTable{name: "authors"}
+    idCol := Int64Column{Table: "authors", Name: "id"}
+    
+    ast := From(authors).
+        Select(idCol).
+        Where(idCol.Eq(Param[int64]("id"))).
+        Build()
+    
+    assert.NotNil(t, ast.Where)
+    
+    // Check it's a binary expression
+    binExpr, ok := ast.Where.(BinaryExpr)
+    require.True(t, ok)
+    assert.Equal(t, OpEq, binExpr.Op)
+}
+
+func TestFrom_WithJoin(t *testing.T) {
+    authors := mockTable{name: "authors"}
+    books := mockTable{name: "books"}
+    authorID := Int64Column{Table: "authors", Name: "id"}
+    bookAuthorID := Int64Column{Table: "books", Name: "author_id"}
+    
+    ast := From(authors).
+        LeftJoin(books).On(authorID.Eq(bookAuthorID)).
+        Select(authorID).
+        Build()
+    
+    require.Len(t, ast.Joins, 1)
+    assert.Equal(t, LeftJoin, ast.Joins[0].Type)
+    assert.Equal(t, "books", ast.Joins[0].Table.Name)
+}
+
+func TestFrom_WithOrderByAndLimit(t *testing.T) {
+    authors := mockTable{name: "authors"}
+    createdAt := TimeColumn{Table: "authors", Name: "created_at"}
+    
+    ast := From(authors).
+        Select(createdAt).
+        OrderBy(createdAt.Desc()).
+        Limit(Param[int]("limit")).
+        Offset(Param[int]("offset")).
+        Build()
+    
+    require.Len(t, ast.OrderBy, 1)
+    assert.True(t, ast.OrderBy[0].Desc)
+    assert.NotNil(t, ast.Limit)
+    assert.NotNil(t, ast.Offset)
+}
+
+type mockTable struct {
+    name string
+}
+
+func (m mockTable) TableName() string { return m.name }
+----
+
+=== Expression Tests
+
+[source,go]
+----
+// query/expr_test.go
+
+func TestColumn_Eq_WithParam(t *testing.T) {
+    col := Int64Column{Table: "users", Name: "id"}
+    expr := col.Eq(Param[int64]("user_id"))
+    
+    binExpr, ok := expr.(BinaryExpr)
+    require.True(t, ok)
+    
+    assert.Equal(t, OpEq, binExpr.Op)
+    
+    // Left should be column
+    left, ok := binExpr.Left.(ColumnExpr)
+    require.True(t, ok)
+    assert.Equal(t, "id", left.Column.ColumnName())
+    
+    // Right should be param
+    right, ok := binExpr.Right.(ParamExpr)
+    require.True(t, ok)
+    assert.Equal(t, "user_id", right.Name)
+    assert.Equal(t, "int64", right.GoType)
+}
+
+func TestColumn_Eq_WithColumn(t *testing.T) {
+    authorID := Int64Column{Table: "authors", Name: "id"}
+    bookAuthorID := Int64Column{Table: "books", Name: "author_id"}
+    
+    expr := authorID.Eq(bookAuthorID)
+    
+    binExpr, ok := expr.(BinaryExpr)
+    require.True(t, ok)
+    
+    // Both sides should be columns
+    left, ok := binExpr.Left.(ColumnExpr)
+    require.True(t, ok)
+    assert.Equal(t, "authors", left.Column.TableName())
+    
+    right, ok := binExpr.Right.(ColumnExpr)
+    require.True(t, ok)
+    assert.Equal(t, "books", right.Column.TableName())
+}
+
+func TestColumn_In(t *testing.T) {
+    statusCol := StringColumn{Table: "orders", Name: "status"}
+    expr := statusCol.In("pending", "processing", "shipped")
+    
+    binExpr, ok := expr.(BinaryExpr)
+    require.True(t, ok)
+    assert.Equal(t, OpIn, binExpr.Op)
+    
+    list, ok := binExpr.Right.(ListExpr)
+    require.True(t, ok)
+    assert.Len(t, list.Values, 3)
+}
+
+func TestAnd_MultipleConditions(t *testing.T) {
+    col1 := Int64Column{Table: "t", Name: "a"}
+    col2 := Int64Column{Table: "t", Name: "b"}
+    col3 := Int64Column{Table: "t", Name: "c"}
+    
+    expr := And(
+        col1.Gt(Literal(10)),
+        col2.Lt(Literal(20)),
+        col3.Eq(Literal(30)),
+    )
+    
+    // Should create nested AND expressions
+    bin1, ok := expr.(BinaryExpr)
+    require.True(t, ok)
+    assert.Equal(t, OpAnd, bin1.Op)
+    
+    // Left of outer AND should also be AND
+    bin2, ok := bin1.Left.(BinaryExpr)
+    require.True(t, ok)
+    assert.Equal(t, OpAnd, bin2.Op)
+}
+
+func TestOr_MultipleConditions(t *testing.T) {
+    statusCol := StringColumn{Table: "orders", Name: "status"}
+    
+    expr := Or(
+        statusCol.Eq(Literal("pending")),
+        statusCol.Eq(Literal("processing")),
+    )
+    
+    binExpr, ok := expr.(BinaryExpr)
+    require.True(t, ok)
+    assert.Equal(t, OpOr, binExpr.Op)
+}
+----
+
+=== Insert/Update/Delete Builder Tests
+
+[source,go]
+----
+// query/builder_insert_test.go
+
+func TestInsertInto(t *testing.T) {
+    authors := mockTable{name: "authors"}
+    nameCol := StringColumn{Table: "authors", Name: "name"}
+    emailCol := StringColumn{Table: "authors", Name: "email"}
+    
+    ast := InsertInto(authors).
+        Columns(nameCol, emailCol).
+        Values(Param[string]("name"), Param[string]("email")).
+        Build()
+    
+    assert.Equal(t, InsertQuery, ast.Kind)
+    assert.Equal(t, "authors", ast.FromTable.Name)
+    assert.Len(t, ast.InsertCols, 2)
+    assert.Len(t, ast.InsertVals, 2)
+}
+
+func TestInsertInto_WithReturning(t *testing.T) {
+    authors := mockTable{name: "authors"}
+    publicIDCol := StringColumn{Table: "authors", Name: "public_id"}
+    nameCol := StringColumn{Table: "authors", Name: "name"}
+    
+    ast := InsertInto(authors).
+        Columns(publicIDCol, nameCol).
+        Values(Param[string]("public_id"), Param[string]("name")).
+        Returning(publicIDCol).
+        Build()
+    
+    require.Len(t, ast.Returning, 1)
+    assert.Equal(t, "public_id", ast.Returning[0].ColumnName())
+}
+
+// query/builder_update_test.go
+
+func TestUpdate(t *testing.T) {
+    authors := mockTable{name: "authors"}
+    nameCol := StringColumn{Table: "authors", Name: "name"}
+    publicIDCol := StringColumn{Table: "authors", Name: "public_id"}
+    
+    ast := Update(authors).
+        Set(nameCol, Param[string]("name")).
+        Where(publicIDCol.Eq(Param[string]("public_id"))).
+        Build()
+    
+    assert.Equal(t, UpdateQuery, ast.Kind)
+    require.Len(t, ast.SetClauses, 1)
+    assert.Equal(t, "name", ast.SetClauses[0].Column.ColumnName())
+    assert.NotNil(t, ast.Where)
+}
+
+// query/builder_delete_test.go
+
+func TestDelete(t *testing.T) {
+    authors := mockTable{name: "authors"}
+    publicIDCol := StringColumn{Table: "authors", Name: "public_id"}
+    
+    ast := Delete(authors).
+        Where(publicIDCol.Eq(Param[string]("public_id"))).
+        Build()
+    
+    assert.Equal(t, DeleteQuery, ast.Kind)
+    assert.Equal(t, "authors", ast.FromTable.Name)
+    assert.NotNil(t, ast.Where)
+}
+----
+
+=== Helper Tests
+
+[source,go]
+----
+// query/helpers_test.go
+
+func TestParam(t *testing.T) {
+    p := Param[int64]("user_id")
+    
+    assert.Equal(t, "user_id", p.Name)
+    assert.Equal(t, "int64", p.GoType)
+}
+
+func TestParam_String(t *testing.T) {
+    p := Param[string]("name")
+    
+    assert.Equal(t, "name", p.Name)
+    assert.Equal(t, "string", p.GoType)
+}
+
+func TestLiteral(t *testing.T) {
+    l := Literal(42)
+    
+    assert.Equal(t, 42, l.Value)
+}
+
+func TestNow(t *testing.T) {
+    n := Now()
+    
+    assert.Equal(t, "NOW", n.Name)
+    assert.Nil(t, n.Args)
+}
+----
+
+== Acceptance Criteria
+
+1. [ ] AST types defined for all query components
+2. [ ] Expression types cover all SQL operations we need
+3. [ ] `From()` builder creates valid SELECT AST
+4. [ ] `InsertInto()` builder creates valid INSERT AST
+5. [ ] `Update()` builder creates valid UPDATE AST
+6. [ ] `Delete()` builder creates valid DELETE AST
+7. [ ] Column comparison methods (`Eq`, `Lt`, `Gt`, etc.) produce correct expressions
+8. [ ] `Param[T]()` captures type information
+9. [ ] `And()` and `Or()` combine expressions correctly
+10. [ ] Join builder handles `On()` conditions
+11. [ ] Order by, limit, offset work correctly
+12. [ ] All builders return proper AST that can be inspected
+
+== Dependencies
+
+- Phase 1: Column types must be defined
+
+== Next Phase
+
+Phase 3: Translating AST to Postgres SQL

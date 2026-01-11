@@ -1,0 +1,659 @@
+= Phase 5: Translating AST to SQLite SQL
+
+Compile the query AST to SQLite-specific SQL.
+
+== Overview
+
+This phase takes an AST from Phase 2 and compiles it to SQLite SQL string,
+handling SQLite-specific syntax:
+
+- Double-quote identifier quoting (`"table"`, `"column"`) - same as Postgres
+- Question mark parameter placeholders (`?`, `?`, `?`) - same as MySQL
+- `RETURNING` clause supported (SQLite 3.35+)
+- `datetime('now')` instead of `NOW()`
+- `JSON_GROUP_ARRAY` and `JSON_OBJECT` for JSON aggregation
+- `1/0` for boolean literals (same as MySQL)
+
+== Output
+
+=== Compiler Interface
+
+[source,go]
+----
+// query/compile/sqlite.go
+package compile
+
+import (
+    "strings"
+    
+    "myapp/src/query"
+)
+
+// SQLiteCompiler compiles AST to SQLite SQL
+type SQLiteCompiler struct {
+    params []string  // Tracks param names in order
+}
+
+// Compile compiles an AST to SQLite SQL
+func (c *SQLiteCompiler) Compile(ast *query.AST) (sql string, paramOrder []string, err error) {
+    c.params = nil
+    
+    switch ast.Kind {
+    case query.SelectQuery:
+        sql, err = c.compileSelect(ast)
+    case query.InsertQuery:
+        sql, err = c.compileInsert(ast)
+    case query.UpdateQuery:
+        sql, err = c.compileUpdate(ast)
+    case query.DeleteQuery:
+        sql, err = c.compileDelete(ast)
+    default:
+        err = fmt.Errorf("unknown query kind: %s", ast.Kind)
+    }
+    
+    return sql, c.params, err
+}
+
+// CompileSQLite is a convenience function
+func CompileSQLite(ast *query.AST) (string, []string, error) {
+    c := &SQLiteCompiler{}
+    return c.Compile(ast)
+}
+----
+
+=== Key Differences from Postgres/MySQL
+
+[source,go]
+----
+// Identifier quoting uses double quotes (like Postgres)
+func (c *SQLiteCompiler) writeIdentifier(b *strings.Builder, name string) {
+    fmt.Fprintf(b, `"%s"`, name)
+}
+
+// Parameters use ? placeholder (like MySQL)
+func (c *SQLiteCompiler) writeParam(b *strings.Builder, p query.ParamExpr) {
+    c.params = append(c.params, p.Name)
+    b.WriteString("?")
+}
+
+// Boolean literals use 1/0 (like MySQL)
+func (c *SQLiteCompiler) writeBoolLiteral(b *strings.Builder, val bool) {
+    if val {
+        b.WriteString("1")
+    } else {
+        b.WriteString("0")
+    }
+}
+
+// NOW() becomes datetime('now')
+func (c *SQLiteCompiler) writeNow(b *strings.Builder) {
+    b.WriteString("datetime('now')")
+}
+
+// ILIKE translated to LOWER() LIKE LOWER() (like MySQL)
+func (c *SQLiteCompiler) writeILike(b *strings.Builder, col, pattern query.Expr) error {
+    b.WriteString("LOWER(")
+    if err := c.writeExpr(b, col); err != nil {
+        return err
+    }
+    b.WriteString(") LIKE LOWER(")
+    if err := c.writeExpr(b, pattern); err != nil {
+        return err
+    }
+    b.WriteString(")")
+    return nil
+}
+
+// JSON aggregation uses JSON_GROUP_ARRAY and JSON_OBJECT
+func (c *SQLiteCompiler) writeJSONAgg(b *strings.Builder, j query.JSONAggExpr) {
+    // COALESCE(JSON_GROUP_ARRAY(JSON_OBJECT(...)), '[]')
+    b.WriteString("COALESCE(JSON_GROUP_ARRAY(JSON_OBJECT(")
+    for i, col := range j.Columns {
+        if i > 0 {
+            b.WriteString(", ")
+        }
+        // Key is column name as string literal
+        fmt.Fprintf(b, "'%s', ", col.ColumnName())
+        c.writeColumn(b, col)
+    }
+    b.WriteString(")), '[]')")
+}
+----
+
+=== INSERT with RETURNING
+
+[source,go]
+----
+func (c *SQLiteCompiler) compileInsert(ast *query.AST) (string, error) {
+    var b strings.Builder
+    
+    b.WriteString("INSERT INTO ")
+    c.writeIdentifier(&b, ast.FromTable.Name)
+    
+    // Column list
+    if len(ast.InsertCols) > 0 {
+        b.WriteString(" (")
+        for i, col := range ast.InsertCols {
+            if i > 0 {
+                b.WriteString(", ")
+            }
+            c.writeIdentifier(&b, col.ColumnName())
+        }
+        b.WriteString(")")
+    }
+    
+    // VALUES clause
+    b.WriteString(" VALUES (")
+    for i, val := range ast.InsertVals {
+        if i > 0 {
+            b.WriteString(", ")
+        }
+        if err := c.writeExpr(&b, val); err != nil {
+            return "", err
+        }
+    }
+    b.WriteString(")")
+    
+    // RETURNING clause (SQLite 3.35+ supports this!)
+    if len(ast.Returning) > 0 {
+        b.WriteString(" RETURNING ")
+        for i, col := range ast.Returning {
+            if i > 0 {
+                b.WriteString(", ")
+            }
+            c.writeIdentifier(&b, col.ColumnName())
+        }
+    }
+    
+    return b.String(), nil
+}
+----
+
+== SQLite-Specific Considerations
+
+=== SQLite Version Requirements
+
+The following features require specific SQLite versions:
+
+[cols="1,1,1"]
+|===
+| Feature | Minimum Version | Notes
+
+| RETURNING clause | 3.35.0 (2021-03-12) | Essential for our design
+| JSON functions | 3.9.0 (2015-10-14) | JSON_OBJECT, JSON_GROUP_ARRAY
+| JSON_GROUP_ARRAY | 3.18.0 (2017-03-28) | For JSON aggregation
+|===
+
+=== Type Affinity
+
+SQLite has type affinity, not strict types. Our generated code handles this:
+
+- BOOLEAN stored as INTEGER (0/1)
+- DATETIME stored as TEXT (ISO8601 format)
+- JSON stored as TEXT
+
+== Implementation
+
+=== Files to Create
+
+[source]
+----
+packages/go/src/query/compile/
+├── sqlite.go              # SQLite compiler
+├── sqlite_test.go         # Unit tests
+└── sqlite_integration_test.go  # Integration tests
+----
+
+== Tests
+
+=== Unit Tests
+
+[source,go]
+----
+// compile/sqlite_test.go
+
+func TestSQLite_SimpleSelect(t *testing.T) {
+    ast := &query.AST{
+        Kind:      query.SelectQuery,
+        FromTable: query.TableRef{Name: "authors"},
+        SelectCols: []query.SelectExpr{
+            {Expr: query.ColumnExpr{Column: query.Int64Column{Table: "authors", Name: "id"}}},
+            {Expr: query.ColumnExpr{Column: query.StringColumn{Table: "authors", Name: "name"}}},
+        },
+    }
+    
+    sql, params, err := CompileSQLite(ast)
+    require.NoError(t, err)
+    
+    // SQLite uses double quotes (like Postgres)
+    expected := `SELECT "authors"."id", "authors"."name" FROM "authors"`
+    assert.Equal(t, expected, sql)
+    assert.Empty(t, params)
+}
+
+func TestSQLite_SelectWithWhere(t *testing.T) {
+    idCol := query.Int64Column{Table: "authors", Name: "id"}
+    
+    ast := &query.AST{
+        Kind:      query.SelectQuery,
+        FromTable: query.TableRef{Name: "authors"},
+        SelectCols: []query.SelectExpr{
+            {Expr: query.ColumnExpr{Column: idCol}},
+        },
+        Where: query.BinaryExpr{
+            Left:  query.ColumnExpr{Column: idCol},
+            Op:    query.OpEq,
+            Right: query.ParamExpr{Name: "id", GoType: "int64"},
+        },
+    }
+    
+    sql, params, err := CompileSQLite(ast)
+    require.NoError(t, err)
+    
+    // SQLite uses ? for params (like MySQL)
+    expected := `SELECT "authors"."id" FROM "authors" WHERE ("authors"."id" = ?)`
+    assert.Equal(t, expected, sql)
+    assert.Equal(t, []string{"id"}, params)
+}
+
+func TestSQLite_InsertWithReturning(t *testing.T) {
+    publicID := query.StringColumn{Table: "authors", Name: "public_id"}
+    name := query.StringColumn{Table: "authors", Name: "name"}
+    
+    ast := &query.AST{
+        Kind:       query.InsertQuery,
+        FromTable:  query.TableRef{Name: "authors"},
+        InsertCols: []query.Column{publicID, name},
+        InsertVals: []query.Expr{
+            query.ParamExpr{Name: "public_id", GoType: "string"},
+            query.ParamExpr{Name: "name", GoType: "string"},
+        },
+        Returning: []query.Column{publicID},
+    }
+    
+    sql, params, err := CompileSQLite(ast)
+    require.NoError(t, err)
+    
+    // SQLite supports RETURNING (3.35+)
+    expected := `INSERT INTO "authors" ("public_id", "name") VALUES (?, ?) RETURNING "public_id"`
+    assert.Equal(t, expected, sql)
+    assert.Equal(t, []string{"public_id", "name"}, params)
+}
+
+func TestSQLite_InsertWithNow(t *testing.T) {
+    name := query.StringColumn{Table: "authors", Name: "name"}
+    createdAt := query.TimeColumn{Table: "authors", Name: "created_at"}
+    
+    ast := &query.AST{
+        Kind:       query.InsertQuery,
+        FromTable:  query.TableRef{Name: "authors"},
+        InsertCols: []query.Column{name, createdAt},
+        InsertVals: []query.Expr{
+            query.ParamExpr{Name: "name", GoType: "string"},
+            query.FuncExpr{Name: "NOW"},
+        },
+    }
+    
+    sql, _, err := CompileSQLite(ast)
+    require.NoError(t, err)
+    
+    // SQLite uses datetime('now')
+    assert.Contains(t, sql, "datetime('now')")
+    assert.NotContains(t, sql, "NOW()")
+}
+
+func TestSQLite_BooleanLiterals(t *testing.T) {
+    active := query.BoolColumn{Table: "users", Name: "active"}
+    
+    ast := &query.AST{
+        Kind:      query.SelectQuery,
+        FromTable: query.TableRef{Name: "users"},
+        Where: query.BinaryExpr{
+            Left:  query.ColumnExpr{Column: active},
+            Op:    query.OpEq,
+            Right: query.LiteralExpr{Value: true},
+        },
+    }
+    
+    sql, _, err := CompileSQLite(ast)
+    require.NoError(t, err)
+    
+    // SQLite uses 1/0 for booleans
+    assert.Contains(t, sql, "= 1)")
+    assert.NotContains(t, sql, "TRUE")
+}
+
+func TestSQLite_ILike(t *testing.T) {
+    name := query.StringColumn{Table: "users", Name: "name"}
+    
+    ast := &query.AST{
+        Kind:      query.SelectQuery,
+        FromTable: query.TableRef{Name: "users"},
+        Where: query.FuncExpr{
+            Name: "ILIKE",
+            Args: []query.Expr{
+                query.ColumnExpr{Column: name},
+                query.LiteralExpr{Value: "%john%"},
+            },
+        },
+    }
+    
+    sql, _, err := CompileSQLite(ast)
+    require.NoError(t, err)
+    
+    // SQLite: ILIKE becomes LOWER() LIKE LOWER()
+    assert.Contains(t, sql, `LOWER("users"."name") LIKE LOWER('%john%')`)
+}
+
+func TestSQLite_JSONAggregation(t *testing.T) {
+    bookID := query.Int64Column{Table: "books", Name: "id"}
+    bookTitle := query.StringColumn{Table: "books", Name: "title"}
+    
+    jsonAgg := query.JSONAggExpr{
+        FieldName: "books",
+        Columns:   []query.Column{bookID, bookTitle},
+    }
+    
+    ast := &query.AST{
+        Kind:      query.SelectQuery,
+        FromTable: query.TableRef{Name: "books"},
+        SelectCols: []query.SelectExpr{
+            {Expr: jsonAgg, Alias: "books"},
+        },
+    }
+    
+    sql, _, err := CompileSQLite(ast)
+    require.NoError(t, err)
+    
+    // SQLite uses JSON_GROUP_ARRAY and JSON_OBJECT
+    assert.Contains(t, sql, "JSON_GROUP_ARRAY")
+    assert.Contains(t, sql, "JSON_OBJECT")
+    assert.Contains(t, sql, "'[]'")  // Empty fallback as string
+    assert.NotContains(t, sql, "JSON_AGG")  // Postgres syntax
+    assert.NotContains(t, sql, "JSON_ARRAYAGG")  // MySQL syntax
+}
+
+func TestSQLite_Update(t *testing.T) {
+    name := query.StringColumn{Table: "authors", Name: "name"}
+    publicID := query.StringColumn{Table: "authors", Name: "public_id"}
+    
+    ast := &query.AST{
+        Kind:      query.UpdateQuery,
+        FromTable: query.TableRef{Name: "authors"},
+        SetClauses: []query.SetClause{
+            {Column: name, Value: query.ParamExpr{Name: "name", GoType: "string"}},
+        },
+        Where: query.BinaryExpr{
+            Left:  query.ColumnExpr{Column: publicID},
+            Op:    query.OpEq,
+            Right: query.ParamExpr{Name: "public_id", GoType: "string"},
+        },
+    }
+    
+    sql, params, err := CompileSQLite(ast)
+    require.NoError(t, err)
+    
+    expected := `UPDATE "authors" SET "name" = ? WHERE ("authors"."public_id" = ?)`
+    assert.Equal(t, expected, sql)
+    assert.Equal(t, []string{"name", "public_id"}, params)
+}
+
+func TestSQLite_Delete(t *testing.T) {
+    publicID := query.StringColumn{Table: "authors", Name: "public_id"}
+    
+    ast := &query.AST{
+        Kind:      query.DeleteQuery,
+        FromTable: query.TableRef{Name: "authors"},
+        Where: query.BinaryExpr{
+            Left:  query.ColumnExpr{Column: publicID},
+            Op:    query.OpEq,
+            Right: query.ParamExpr{Name: "public_id", GoType: "string"},
+        },
+    }
+    
+    sql, params, err := CompileSQLite(ast)
+    require.NoError(t, err)
+    
+    expected := `DELETE FROM "authors" WHERE ("authors"."public_id" = ?)`
+    assert.Equal(t, expected, sql)
+    assert.Equal(t, []string{"public_id"}, params)
+}
+----
+
+=== Integration Tests
+
+[source,go]
+----
+// compile/sqlite_integration_test.go
+
+func TestSQLiteIntegration_SelectExecutes(t *testing.T) {
+    db := setupSQLiteTestDB(t)
+    defer db.Close()
+    
+    // Create test table
+    _, err := db.Exec(`
+        CREATE TABLE IF NOT EXISTS test_authors (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            public_id TEXT NOT NULL,
+            name TEXT NOT NULL
+        )
+    `)
+    require.NoError(t, err)
+    
+    // Insert test data
+    _, err = db.Exec("INSERT INTO test_authors (public_id, name) VALUES ('abc123', 'Alice')")
+    require.NoError(t, err)
+    
+    // Build and compile query
+    publicID := query.StringColumn{Table: "test_authors", Name: "public_id"}
+    name := query.StringColumn{Table: "test_authors", Name: "name"}
+    
+    ast := query.From(mockTable{name: "test_authors"}).
+        Select(publicID, name).
+        Where(publicID.Eq(query.Param[string]("public_id"))).
+        Build()
+    
+    sql, _, err := CompileSQLite(ast)
+    require.NoError(t, err)
+    
+    // Execute the query
+    row := db.QueryRow(sql, "abc123")
+    
+    var gotPublicID, gotName string
+    err = row.Scan(&gotPublicID, &gotName)
+    require.NoError(t, err)
+    
+    assert.Equal(t, "abc123", gotPublicID)
+    assert.Equal(t, "Alice", gotName)
+}
+
+func TestSQLiteIntegration_InsertWithReturning(t *testing.T) {
+    db := setupSQLiteTestDB(t)
+    defer db.Close()
+    
+    // Create test table
+    _, err := db.Exec(`
+        CREATE TABLE IF NOT EXISTS test_posts (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            public_id TEXT NOT NULL,
+            title TEXT NOT NULL
+        )
+    `)
+    require.NoError(t, err)
+    
+    // Build INSERT with RETURNING
+    publicID := query.StringColumn{Table: "test_posts", Name: "public_id"}
+    title := query.StringColumn{Table: "test_posts", Name: "title"}
+    
+    ast := query.InsertInto(mockTable{name: "test_posts"}).
+        Columns(publicID, title).
+        Values(query.Param[string]("public_id"), query.Param[string]("title")).
+        Returning(publicID).
+        Build()
+    
+    sql, _, err := CompileSQLite(ast)
+    require.NoError(t, err)
+    
+    // Execute with RETURNING (SQLite 3.35+)
+    var returnedID string
+    err = db.QueryRow(sql, "xyz789", "Test Post").Scan(&returnedID)
+    require.NoError(t, err)
+    
+    assert.Equal(t, "xyz789", returnedID)
+}
+
+func TestSQLiteIntegration_DatetimeNow(t *testing.T) {
+    db := setupSQLiteTestDB(t)
+    defer db.Close()
+    
+    // Create table with datetime
+    _, err := db.Exec(`
+        CREATE TABLE IF NOT EXISTS test_events (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            name TEXT NOT NULL,
+            created_at TEXT NOT NULL
+        )
+    `)
+    require.NoError(t, err)
+    
+    // Insert with datetime('now')
+    _, err = db.Exec("INSERT INTO test_events (name, created_at) VALUES ('test', datetime('now'))")
+    require.NoError(t, err)
+    
+    // Verify it's a valid datetime
+    var createdAt string
+    err = db.QueryRow("SELECT created_at FROM test_events WHERE name = 'test'").Scan(&createdAt)
+    require.NoError(t, err)
+    
+    // Should be ISO8601 format
+    _, err = time.Parse("2006-01-02 15:04:05", createdAt)
+    assert.NoError(t, err, "created_at should be valid datetime: %s", createdAt)
+}
+
+func TestSQLiteIntegration_JSONAggregation(t *testing.T) {
+    db := setupSQLiteTestDB(t)
+    defer db.Close()
+    
+    // Create tables
+    _, err := db.Exec(`
+        CREATE TABLE IF NOT EXISTS test_authors2 (
+            id INTEGER PRIMARY KEY,
+            name TEXT NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS test_books (
+            id INTEGER PRIMARY KEY,
+            author_id INTEGER,
+            title TEXT NOT NULL,
+            FOREIGN KEY (author_id) REFERENCES test_authors2(id)
+        );
+        INSERT INTO test_authors2 (id, name) VALUES (1, 'Alice');
+        INSERT INTO test_books (author_id, title) VALUES (1, 'Book 1'), (1, 'Book 2');
+    `)
+    require.NoError(t, err)
+    
+    // Query with JSON aggregation
+    sql := `
+        SELECT 
+            "test_authors2"."name",
+            COALESCE(JSON_GROUP_ARRAY(JSON_OBJECT('id', "test_books"."id", 'title', "test_books"."title")), '[]') as books
+        FROM "test_authors2"
+        LEFT JOIN "test_books" ON "test_authors2"."id" = "test_books"."author_id"
+        GROUP BY "test_authors2"."name"
+    `
+    
+    var name string
+    var booksJSON string
+    err = db.QueryRow(sql).Scan(&name, &booksJSON)
+    require.NoError(t, err)
+    
+    assert.Equal(t, "Alice", name)
+    
+    var books []map[string]any
+    err = json.Unmarshal([]byte(booksJSON), &books)
+    require.NoError(t, err)
+    assert.Len(t, books, 2)
+}
+
+func TestSQLiteIntegration_BooleanValues(t *testing.T) {
+    db := setupSQLiteTestDB(t)
+    defer db.Close()
+    
+    // Create table with boolean (stored as INTEGER in SQLite)
+    _, err := db.Exec(`
+        CREATE TABLE IF NOT EXISTS test_flags (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            active INTEGER NOT NULL DEFAULT 0
+        )
+    `)
+    require.NoError(t, err)
+    
+    // Insert with boolean as 1
+    _, err = db.Exec("INSERT INTO test_flags (active) VALUES (1)")
+    require.NoError(t, err)
+    
+    // Query with boolean literal compiled to 1
+    active := query.BoolColumn{Table: "test_flags", Name: "active"}
+    
+    ast := query.From(mockTable{name: "test_flags"}).
+        Select(active).
+        Where(active.Eq(query.Literal(true))).
+        Build()
+    
+    sql, _, err := CompileSQLite(ast)
+    require.NoError(t, err)
+    
+    var gotActive int
+    err = db.QueryRow(sql).Scan(&gotActive)
+    require.NoError(t, err)
+    assert.Equal(t, 1, gotActive)
+}
+
+func setupSQLiteTestDB(t *testing.T) *sql.DB {
+    t.Helper()
+    
+    // Use in-memory database for tests
+    db, err := sql.Open("sqlite3", ":memory:")
+    require.NoError(t, err)
+    
+    return db
+}
+----
+
+== Comparison Table
+
+Summary of differences between the three compilers:
+
+[cols="1,1,1,1"]
+|===
+| Feature | Postgres | MySQL | SQLite
+
+| Identifier quote | `"` | `` ` `` | `"`
+| Param placeholder | `$1, $2` | `?` | `?`
+| RETURNING | Yes | No | Yes (3.35+)
+| Boolean literal | TRUE/FALSE | 1/0 | 1/0
+| NOW() | NOW() | NOW() | datetime('now')
+| ILIKE | Native | LOWER() LIKE | LOWER() LIKE
+| JSON agg | JSON_AGG | JSON_ARRAYAGG | JSON_GROUP_ARRAY
+| JSON object | JSON_BUILD_OBJECT | JSON_OBJECT | JSON_OBJECT
+|===
+
+== Acceptance Criteria
+
+1. [ ] SELECT queries compile with double-quote quoting
+2. [ ] Parameter placeholders use `?` style
+3. [ ] INSERT with RETURNING compiles correctly
+4. [ ] Boolean literals emit `1`/`0`
+5. [ ] NOW() translated to `datetime('now')`
+6. [ ] ILIKE translated to `LOWER() LIKE LOWER()`
+7. [ ] JSON aggregation uses `JSON_GROUP_ARRAY`/`JSON_OBJECT`
+8. [ ] Integration tests pass against real SQLite
+9. [ ] Generated SQL executes correctly
+
+== Dependencies
+
+- Phase 1: Column types
+- Phase 2: AST types and builder
+
+== Next Phase
+
+Phase 6: Property Tests for Cross-Database Correctness

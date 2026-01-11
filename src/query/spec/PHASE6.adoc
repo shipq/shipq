@@ -1,0 +1,877 @@
+= Phase 6: Property Tests for Cross-Database Correctness
+
+Verify that queries produce equivalent results across all three databases.
+
+== Overview
+
+This phase uses property-based testing to verify the key invariant:
+
+> For any valid input, executing a query compiled for Postgres, MySQL, and SQLite
+> should produce semantically equivalent results.
+
+We use the existing `proptest` package to generate random test data and verify
+consistency across databases.
+
+== Test Infrastructure
+
+=== Multi-Database Test Harness
+
+[source,go]
+----
+// query/testing/harness.go
+package testing
+
+import (
+    "database/sql"
+    "fmt"
+    "testing"
+    
+    "myapp/src/ddl"
+    "myapp/src/migrate"
+    "myapp/src/query"
+    "myapp/src/query/compile"
+)
+
+// TestDBs holds connections to all three database types.
+type TestDBs struct {
+    Postgres *sql.DB
+    MySQL    *sql.DB
+    SQLite   *sql.DB
+}
+
+// Dialect represents a database dialect
+type Dialect string
+
+const (
+    DialectPostgres Dialect = "postgres"
+    DialectMySQL    Dialect = "mysql"
+    DialectSQLite   Dialect = "sqlite"
+)
+
+// CompileFor compiles an AST for the specified dialect
+func CompileFor(ast *query.AST, dialect Dialect) (string, []string, error) {
+    switch dialect {
+    case DialectPostgres:
+        return compile.CompilePostgres(ast)
+    case DialectMySQL:
+        return compile.CompileMySQL(ast)
+    case DialectSQLite:
+        return compile.CompileSQLite(ast)
+    default:
+        return "", nil, fmt.Errorf("unknown dialect: %s", dialect)
+    }
+}
+
+// DBFor returns the database connection for the specified dialect
+func (dbs *TestDBs) DBFor(dialect Dialect) *sql.DB {
+    switch dialect {
+    case DialectPostgres:
+        return dbs.Postgres
+    case DialectMySQL:
+        return dbs.MySQL
+    case DialectSQLite:
+        return dbs.SQLite
+    default:
+        return nil
+    }
+}
+
+// AllDialects returns all supported dialects
+func AllDialects() []Dialect {
+    return []Dialect{DialectPostgres, DialectMySQL, DialectSQLite}
+}
+
+// SetupTestDBs creates test databases with identical schemas
+func SetupTestDBs(t *testing.T) (*TestDBs, func()) {
+    t.Helper()
+    
+    pgDB := setupPostgres(t)
+    myDB := setupMySQL(t)
+    sqDB := setupSQLite(t)
+    
+    dbs := &TestDBs{
+        Postgres: pgDB,
+        MySQL:    myDB,
+        SQLite:   sqDB,
+    }
+    
+    // Create identical schemas on all databases
+    createTestSchema(t, dbs)
+    
+    cleanup := func() {
+        pgDB.Close()
+        myDB.Close()
+        sqDB.Close()
+    }
+    
+    return dbs, cleanup
+}
+
+// buildTestMigrationPlan creates a MigrationPlan for the test schema.
+// This uses the same DDL builder as production code, ensuring test schemas
+// are generated consistently across all databases.
+//
+// NOTE: In production, you'd typically use ddl.MakeTable() which auto-includes
+// standard columns (id, public_id, created_at, updated_at, deleted_at).
+// Here we add them explicitly to demonstrate the full schema structure.
+func buildTestMigrationPlan() *migrate.MigrationPlan {
+    plan := &migrate.MigrationPlan{}
+    
+    // Authors table with standard columns for testing CRUD operations
+    plan, _ = plan.AddEmptyTable("test_authors", func(tb *ddl.TableBuilder) error {
+        // Standard columns (matches what ddl.MakeTable provides automatically)
+        tb.Bigint("id").PrimaryKey()
+        tb.String("public_id").Unique()
+        tb.Datetime("created_at")
+        tb.Datetime("updated_at")
+        tb.Datetime("deleted_at").Nullable()
+        
+        // Domain-specific columns
+        tb.String("name")
+        tb.String("email").Unique()
+        tb.Text("bio").Nullable()
+        tb.Bool("active").Default(true)
+        return nil
+    })
+    
+    // Books table with foreign key to authors
+    plan, _ = plan.AddEmptyTable("test_books", func(tb *ddl.TableBuilder) error {
+        // Standard columns
+        tb.Bigint("id").PrimaryKey()
+        tb.String("public_id").Unique()
+        tb.Datetime("created_at")
+        
+        // Domain-specific columns
+        tb.Bigint("author_id").Indexed()
+        tb.String("title")
+        tb.Decimal("price", 10, 2).Nullable()
+        return nil
+    })
+    
+    return plan
+}
+
+// createTestSchema applies the migration plan to all databases
+func createTestSchema(t *testing.T, dbs *TestDBs) {
+    t.Helper()
+    
+    plan := buildTestMigrationPlan()
+    
+    // Drop existing tables first (in reverse order due to foreign keys)
+    dropStatements := map[Dialect][]string{
+        DialectPostgres: {
+            "DROP TABLE IF EXISTS test_books CASCADE",
+            "DROP TABLE IF EXISTS test_authors CASCADE",
+        },
+        DialectMySQL: {
+            "DROP TABLE IF EXISTS test_books",
+            "DROP TABLE IF EXISTS test_authors",
+        },
+        DialectSQLite: {
+            "DROP TABLE IF EXISTS test_books",
+            "DROP TABLE IF EXISTS test_authors",
+        },
+    }
+    
+    for _, dialect := range AllDialects() {
+        db := dbs.DBFor(dialect)
+        for _, stmt := range dropStatements[dialect] {
+            if _, err := db.Exec(stmt); err != nil {
+                t.Fatalf("failed to drop table for %s: %s: %v", dialect, stmt, err)
+            }
+        }
+    }
+    
+    // Apply migrations from the plan
+    for _, migration := range plan.Migrations {
+        // Execute Postgres migration
+        if _, err := dbs.Postgres.Exec(migration.Instructions.Postgres); err != nil {
+            t.Fatalf("postgres migration %s failed: %v\nSQL: %s", 
+                migration.Name, err, migration.Instructions.Postgres)
+        }
+        
+        // Execute MySQL migration
+        if _, err := dbs.MySQL.Exec(migration.Instructions.MySQL); err != nil {
+            t.Fatalf("mysql migration %s failed: %v\nSQL: %s", 
+                migration.Name, err, migration.Instructions.MySQL)
+        }
+        
+        // Execute SQLite migration
+        if _, err := dbs.SQLite.Exec(migration.Instructions.Sqlite); err != nil {
+            t.Fatalf("sqlite migration %s failed: %v\nSQL: %s", 
+                migration.Name, err, migration.Instructions.Sqlite)
+        }
+    }
+}
+
+// GetTestSchema returns the schema from the test migration plan.
+// This can be used by codegen tests to verify generated code matches the schema.
+func GetTestSchema() migrate.Schema {
+    plan := buildTestMigrationPlan()
+    return plan.Schema
+}
+----
+
+=== Data Insertion Helpers
+
+[source,go]
+----
+// query/testing/insert.go
+package testing
+
+// InsertAuthor inserts an author into all databases
+func (dbs *TestDBs) InsertAuthor(t *testing.T, publicID, name, email string, bio *string, active bool) {
+    t.Helper()
+    
+    // Postgres
+    if _, err := dbs.Postgres.Exec(
+        `INSERT INTO test_authors (public_id, name, email, bio, active) VALUES ($1, $2, $3, $4, $5)`,
+        publicID, name, email, bio, active,
+    ); err != nil {
+        t.Fatalf("postgres insert author failed: %v", err)
+    }
+    
+    // MySQL - convert bool to int
+    activeInt := 0
+    if active {
+        activeInt = 1
+    }
+    if _, err := dbs.MySQL.Exec(
+        "INSERT INTO test_authors (public_id, name, email, bio, active) VALUES (?, ?, ?, ?, ?)",
+        publicID, name, email, bio, activeInt,
+    ); err != nil {
+        t.Fatalf("mysql insert author failed: %v", err)
+    }
+    
+    // SQLite
+    if _, err := dbs.SQLite.Exec(
+        `INSERT INTO test_authors (public_id, name, email, bio, active) VALUES (?, ?, ?, ?, ?)`,
+        publicID, name, email, bio, activeInt,
+    ); err != nil {
+        t.Fatalf("sqlite insert author failed: %v", err)
+    }
+}
+
+// InsertBook inserts a book into all databases
+func (dbs *TestDBs) InsertBook(t *testing.T, publicID string, authorPublicID string, title string, price string) {
+    t.Helper()
+    
+    // Postgres
+    if _, err := dbs.Postgres.Exec(`
+        INSERT INTO test_books (public_id, author_id, title, price)
+        SELECT $1, id, $2, $3 FROM test_authors WHERE public_id = $4
+    `, publicID, title, price, authorPublicID); err != nil {
+        t.Fatalf("postgres insert book failed: %v", err)
+    }
+    
+    // MySQL
+    if _, err := dbs.MySQL.Exec(`
+        INSERT INTO test_books (public_id, author_id, title, price)
+        SELECT ?, id, ?, ? FROM test_authors WHERE public_id = ?
+    `, publicID, title, price, authorPublicID); err != nil {
+        t.Fatalf("mysql insert book failed: %v", err)
+    }
+    
+    // SQLite
+    if _, err := dbs.SQLite.Exec(`
+        INSERT INTO test_books (public_id, author_id, title, price)
+        SELECT ?, id, ?, ? FROM test_authors WHERE public_id = ?
+    `, publicID, title, price, authorPublicID); err != nil {
+        t.Fatalf("sqlite insert book failed: %v", err)
+    }
+}
+
+// ClearAllData removes all test data from all databases
+func (dbs *TestDBs) ClearAllData(t *testing.T) {
+    t.Helper()
+    
+    for _, db := range []*sql.DB{dbs.Postgres, dbs.MySQL, dbs.SQLite} {
+        db.Exec("DELETE FROM test_books")
+        db.Exec("DELETE FROM test_authors")
+    }
+}
+----
+
+== Property Tests
+
+=== Property: Query Results Match Across Databases
+
+[source,go]
+----
+// query/testing/crossdb_test.go
+package testing
+
+import (
+    "context"
+    "testing"
+    
+    "myapp/src/proptest"
+    "myapp/src/query"
+)
+
+func TestCrossDB_SimpleSelect(t *testing.T) {
+    if testing.Short() {
+        t.Skip("skipping cross-db test")
+    }
+    
+    dbs, cleanup := SetupTestDBs(t)
+    defer cleanup()
+    
+    proptest.Check(t, "simple select returns same results", proptest.Config{NumTrials: 50}, func(g *proptest.Generator) bool {
+        // Clear previous data
+        dbs.ClearAllData(t)
+        
+        // Generate random author data
+        publicID := g.Identifier(20)
+        name := g.StringAlphaNum(30)
+        email := g.StringAlphaNum(20) + "@test.com"
+        
+        // Insert same data into all databases
+        dbs.InsertAuthor(t, publicID, name, email, nil, true)
+        
+        // Build query
+        publicIDCol := query.StringColumn{Table: "test_authors", Name: "public_id"}
+        nameCol := query.StringColumn{Table: "test_authors", Name: "name"}
+        
+        ast := query.From(mockTable{name: "test_authors"}).
+            Select(publicIDCol, nameCol).
+            Where(publicIDCol.Eq(query.Param[string]("public_id"))).
+            Build()
+        
+        // Execute on all databases and collect results
+        results := make(map[Dialect]struct {
+            PublicID string
+            Name     string
+        })
+        
+        for _, dialect := range AllDialects() {
+            sql, _, err := CompileFor(ast, dialect)
+            if err != nil {
+                t.Logf("compile error for %s: %v", dialect, err)
+                return false
+            }
+            
+            db := dbs.DBFor(dialect)
+            row := db.QueryRow(sql, publicID)
+            
+            var r struct {
+                PublicID string
+                Name     string
+            }
+            if err := row.Scan(&r.PublicID, &r.Name); err != nil {
+                t.Logf("scan error for %s: %v", dialect, err)
+                return false
+            }
+            results[dialect] = r
+        }
+        
+        // Verify all results match
+        pg := results[DialectPostgres]
+        my := results[DialectMySQL]
+        sq := results[DialectSQLite]
+        
+        if pg.PublicID != my.PublicID || my.PublicID != sq.PublicID {
+            t.Logf("public_id mismatch: pg=%s my=%s sq=%s", pg.PublicID, my.PublicID, sq.PublicID)
+            return false
+        }
+        if pg.Name != my.Name || my.Name != sq.Name {
+            t.Logf("name mismatch: pg=%s my=%s sq=%s", pg.Name, my.Name, sq.Name)
+            return false
+        }
+        
+        return true
+    })
+}
+----
+
+=== Property: Edge Case Strings Are Handled Correctly
+
+[source,go]
+----
+func TestCrossDB_EdgeCaseStrings(t *testing.T) {
+    if testing.Short() {
+        t.Skip("skipping cross-db test")
+    }
+    
+    dbs, cleanup := SetupTestDBs(t)
+    defer cleanup()
+    
+    proptest.Check(t, "edge case strings roundtrip correctly", proptest.Config{NumTrials: 100}, func(g *proptest.Generator) bool {
+        dbs.ClearAllData(t)
+        
+        publicID := g.Identifier(20)
+        // Use edge case string generator
+        name := g.EdgeCaseString()
+        email := g.StringAlphaNum(10) + "@test.com"
+        
+        // Some edge cases may fail constraints, that's OK
+        err := tryInsertAuthor(dbs, publicID, name, email)
+        if err != nil {
+            // Skip this trial if insert fails (constraint violation)
+            return true
+        }
+        
+        // Query back and compare
+        nameCol := query.StringColumn{Table: "test_authors", Name: "name"}
+        publicIDCol := query.StringColumn{Table: "test_authors", Name: "public_id"}
+        
+        ast := query.From(mockTable{name: "test_authors"}).
+            Select(nameCol).
+            Where(publicIDCol.Eq(query.Param[string]("public_id"))).
+            Build()
+        
+        names := make(map[Dialect]string)
+        for _, dialect := range AllDialects() {
+            sql, _, _ := CompileFor(ast, dialect)
+            db := dbs.DBFor(dialect)
+            
+            var gotName string
+            err := db.QueryRow(sql, publicID).Scan(&gotName)
+            if err != nil {
+                t.Logf("query error for %s: %v", dialect, err)
+                return false
+            }
+            names[dialect] = gotName
+        }
+        
+        // All databases should return the exact same string
+        pg := names[DialectPostgres]
+        my := names[DialectMySQL]
+        sq := names[DialectSQLite]
+        
+        if pg != my || my != sq {
+            t.Logf("name mismatch: pg=%q my=%q sq=%q (original=%q)", pg, my, sq, name)
+            return false
+        }
+        
+        // Should match original
+        if pg != name {
+            t.Logf("roundtrip failed: got=%q want=%q", pg, name)
+            return false
+        }
+        
+        return true
+    })
+}
+----
+
+=== Property: Boolean Values Are Consistent
+
+[source,go]
+----
+func TestCrossDB_BooleanValues(t *testing.T) {
+    if testing.Short() {
+        t.Skip("skipping cross-db test")
+    }
+    
+    dbs, cleanup := SetupTestDBs(t)
+    defer cleanup()
+    
+    proptest.Check(t, "boolean values consistent across dbs", proptest.Config{NumTrials: 50}, func(g *proptest.Generator) bool {
+        dbs.ClearAllData(t)
+        
+        publicID := g.Identifier(20)
+        name := g.StringAlphaNum(20)
+        email := g.StringAlphaNum(10) + "@test.com"
+        active := g.Bool()
+        
+        dbs.InsertAuthor(t, publicID, name, email, nil, active)
+        
+        // Query with boolean literal
+        activeCol := query.BoolColumn{Table: "test_authors", Name: "active"}
+        publicIDCol := query.StringColumn{Table: "test_authors", Name: "public_id"}
+        
+        ast := query.From(mockTable{name: "test_authors"}).
+            Select(publicIDCol).
+            Where(activeCol.Eq(query.Literal(active))).
+            Build()
+        
+        // All databases should find the same row (or no row)
+        foundPublicIDs := make(map[Dialect]string)
+        for _, dialect := range AllDialects() {
+            sql, _, _ := CompileFor(ast, dialect)
+            db := dbs.DBFor(dialect)
+            
+            var found string
+            err := db.QueryRow(sql).Scan(&found)
+            if err == sql.ErrNoRows {
+                foundPublicIDs[dialect] = ""
+            } else if err != nil {
+                t.Logf("query error for %s: %v", dialect, err)
+                return false
+            } else {
+                foundPublicIDs[dialect] = found
+            }
+        }
+        
+        pg := foundPublicIDs[DialectPostgres]
+        my := foundPublicIDs[DialectMySQL]
+        sq := foundPublicIDs[DialectSQLite]
+        
+        if pg != my || my != sq {
+            t.Logf("boolean query mismatch: pg=%q my=%q sq=%q (active=%v)", pg, my, sq, active)
+            return false
+        }
+        
+        // Should find the row we inserted
+        if pg != publicID {
+            t.Logf("expected to find %q but got %q", publicID, pg)
+            return false
+        }
+        
+        return true
+    })
+}
+----
+
+=== Property: NULL Handling Is Consistent
+
+[source,go]
+----
+func TestCrossDB_NullHandling(t *testing.T) {
+    if testing.Short() {
+        t.Skip("skipping cross-db test")
+    }
+    
+    dbs, cleanup := SetupTestDBs(t)
+    defer cleanup()
+    
+    proptest.Check(t, "NULL values handled consistently", proptest.Config{NumTrials: 50}, func(g *proptest.Generator) bool {
+        dbs.ClearAllData(t)
+        
+        publicID := g.Identifier(20)
+        name := g.StringAlphaNum(20)
+        email := g.StringAlphaNum(10) + "@test.com"
+        
+        // Randomly make bio NULL or non-NULL
+        var bio *string
+        if g.Bool() {
+            s := g.StringAlphaNum(50)
+            bio = &s
+        }
+        
+        dbs.InsertAuthor(t, publicID, name, email, bio, true)
+        
+        // Query bio column
+        bioCol := query.NullStringColumn{Table: "test_authors", Name: "bio"}
+        publicIDCol := query.StringColumn{Table: "test_authors", Name: "public_id"}
+        
+        ast := query.From(mockTable{name: "test_authors"}).
+            Select(bioCol).
+            Where(publicIDCol.Eq(query.Param[string]("public_id"))).
+            Build()
+        
+        bios := make(map[Dialect]*string)
+        for _, dialect := range AllDialects() {
+            sql, _, _ := CompileFor(ast, dialect)
+            db := dbs.DBFor(dialect)
+            
+            var gotBio sql.NullString
+            err := db.QueryRow(sql, publicID).Scan(&gotBio)
+            if err != nil {
+                t.Logf("query error for %s: %v", dialect, err)
+                return false
+            }
+            
+            if gotBio.Valid {
+                bios[dialect] = &gotBio.String
+            } else {
+                bios[dialect] = nil
+            }
+        }
+        
+        pg := bios[DialectPostgres]
+        my := bios[DialectMySQL]
+        sq := bios[DialectSQLite]
+        
+        // All should be nil or all should have same value
+        allNil := pg == nil && my == nil && sq == nil
+        allEqual := pg != nil && my != nil && sq != nil && *pg == *my && *my == *sq
+        
+        if !allNil && !allEqual {
+            t.Logf("NULL handling mismatch: pg=%v my=%v sq=%v", pg, my, sq)
+            return false
+        }
+        
+        return true
+    })
+}
+----
+
+=== Property: JSON Aggregation Produces Equivalent Results
+
+[source,go]
+----
+func TestCrossDB_JSONAggregation(t *testing.T) {
+    if testing.Short() {
+        t.Skip("skipping cross-db test")
+    }
+    
+    dbs, cleanup := SetupTestDBs(t)
+    defer cleanup()
+    
+    proptest.Check(t, "JSON aggregation produces equivalent results", proptest.Config{NumTrials: 30}, func(g *proptest.Generator) bool {
+        dbs.ClearAllData(t)
+        
+        // Create author with random number of books
+        authorPublicID := g.Identifier(20)
+        authorName := g.StringAlphaNum(20)
+        email := g.StringAlphaNum(10) + "@test.com"
+        
+        dbs.InsertAuthor(t, authorPublicID, authorName, email, nil, true)
+        
+        numBooks := g.IntRange(0, 5)
+        bookTitles := make([]string, numBooks)
+        for i := 0; i < numBooks; i++ {
+            bookPublicID := g.Identifier(20)
+            title := g.StringAlphaNum(30)
+            price := fmt.Sprintf("%.2f", g.Float64Range(1.0, 100.0))
+            bookTitles[i] = title
+            
+            dbs.InsertBook(t, bookPublicID, authorPublicID, title, price)
+        }
+        
+        // Query with JSON aggregation
+        authorNameCol := query.StringColumn{Table: "test_authors", Name: "name"}
+        authorIDCol := query.Int64Column{Table: "test_authors", Name: "id"}
+        authorPublicIDCol := query.StringColumn{Table: "test_authors", Name: "public_id"}
+        bookAuthorIDCol := query.Int64Column{Table: "test_books", Name: "author_id"}
+        bookTitleCol := query.StringColumn{Table: "test_books", Name: "title"}
+        
+        ast := query.From(mockTable{name: "test_authors"}).
+            Select(authorNameCol).
+            SelectJSONAgg("books", bookTitleCol).
+            LeftJoin(mockTable{name: "test_books"}).On(authorIDCol.Eq(bookAuthorIDCol)).
+            Where(authorPublicIDCol.Eq(query.Param[string]("public_id"))).
+            GroupBy(authorNameCol).
+            Build()
+        
+        type Result struct {
+            Name  string
+            Books []map[string]any
+        }
+        
+        results := make(map[Dialect]Result)
+        for _, dialect := range AllDialects() {
+            sql, _, err := CompileFor(ast, dialect)
+            if err != nil {
+                t.Logf("compile error for %s: %v", dialect, err)
+                return false
+            }
+            
+            db := dbs.DBFor(dialect)
+            
+            var name string
+            var booksJSON []byte
+            err = db.QueryRow(sql, authorPublicID).Scan(&name, &booksJSON)
+            if err != nil {
+                t.Logf("query error for %s: %v", dialect, err)
+                return false
+            }
+            
+            var books []map[string]any
+            if err := json.Unmarshal(booksJSON, &books); err != nil {
+                t.Logf("JSON unmarshal error for %s: %v (json=%s)", dialect, err, booksJSON)
+                return false
+            }
+            
+            results[dialect] = Result{Name: name, Books: books}
+        }
+        
+        pg := results[DialectPostgres]
+        my := results[DialectMySQL]
+        sq := results[DialectSQLite]
+        
+        // Names should match
+        if pg.Name != my.Name || my.Name != sq.Name {
+            t.Logf("name mismatch: pg=%s my=%s sq=%s", pg.Name, my.Name, sq.Name)
+            return false
+        }
+        
+        // Book counts should match
+        if len(pg.Books) != len(my.Books) || len(my.Books) != len(sq.Books) {
+            t.Logf("book count mismatch: pg=%d my=%d sq=%d", len(pg.Books), len(my.Books), len(sq.Books))
+            return false
+        }
+        
+        // Book count should match expected
+        if len(pg.Books) != numBooks {
+            t.Logf("unexpected book count: got=%d want=%d", len(pg.Books), numBooks)
+            return false
+        }
+        
+        return true
+    })
+}
+----
+
+=== Property: Soft Delete Filtering Works
+
+[source,go]
+----
+func TestCrossDB_SoftDeleteFiltering(t *testing.T) {
+    if testing.Short() {
+        t.Skip("skipping cross-db test")
+    }
+    
+    dbs, cleanup := SetupTestDBs(t)
+    defer cleanup()
+    
+    proptest.Check(t, "soft delete filtering works", proptest.Config{NumTrials: 30}, func(g *proptest.Generator) bool {
+        dbs.ClearAllData(t)
+        
+        // Insert some active and some deleted authors
+        numActive := g.IntRange(1, 5)
+        numDeleted := g.IntRange(0, 3)
+        
+        activePublicIDs := make([]string, numActive)
+        for i := 0; i < numActive; i++ {
+            publicID := g.Identifier(20)
+            activePublicIDs[i] = publicID
+            dbs.InsertAuthor(t, publicID, g.StringAlphaNum(20), g.StringAlphaNum(10)+"@test.com", nil, true)
+        }
+        
+        for i := 0; i < numDeleted; i++ {
+            publicID := g.Identifier(20)
+            dbs.InsertAuthor(t, publicID, g.StringAlphaNum(20), g.StringAlphaNum(10)+"@test.com", nil, true)
+            // Soft delete
+            for _, db := range []*sql.DB{dbs.Postgres, dbs.MySQL, dbs.SQLite} {
+                db.Exec("UPDATE test_authors SET deleted_at = datetime('now') WHERE public_id = ?", publicID)
+            }
+        }
+        
+        // Query with deleted_at IS NULL filter
+        publicIDCol := query.StringColumn{Table: "test_authors", Name: "public_id"}
+        deletedAtCol := query.NullTimeColumn{Table: "test_authors", Name: "deleted_at"}
+        
+        ast := query.From(mockTable{name: "test_authors"}).
+            Select(publicIDCol).
+            Where(deletedAtCol.IsNull()).
+            Build()
+        
+        counts := make(map[Dialect]int)
+        for _, dialect := range AllDialects() {
+            sql, _, _ := CompileFor(ast, dialect)
+            db := dbs.DBFor(dialect)
+            
+            rows, err := db.Query(sql)
+            if err != nil {
+                t.Logf("query error for %s: %v", dialect, err)
+                return false
+            }
+            defer rows.Close()
+            
+            count := 0
+            for rows.Next() {
+                count++
+            }
+            counts[dialect] = count
+        }
+        
+        pg := counts[DialectPostgres]
+        my := counts[DialectMySQL]
+        sq := counts[DialectSQLite]
+        
+        // All should return same count
+        if pg != my || my != sq {
+            t.Logf("count mismatch: pg=%d my=%d sq=%d", pg, my, sq)
+            return false
+        }
+        
+        // Should only return active (non-deleted) authors
+        if pg != numActive {
+            t.Logf("expected %d active authors, got %d", numActive, pg)
+            return false
+        }
+        
+        return true
+    })
+}
+----
+
+== Implementation
+
+=== Files to Create
+
+[source]
+----
+packages/go/src/query/testing/
+├── harness.go           # Test database setup
+├── insert.go            # Data insertion helpers
+├── crossdb_test.go      # Property tests
+└── helpers_test.go      # Test utilities
+----
+
+=== CI Configuration
+
+[source,yaml]
+----
+# .gitlab-ci.yml
+test:crossdb:
+  stage: test
+  services:
+    - postgres:15
+    - mysql:8
+  variables:
+    POSTGRES_DB: test
+    POSTGRES_USER: test
+    POSTGRES_PASSWORD: test
+    MYSQL_DATABASE: test
+    MYSQL_ROOT_PASSWORD: test
+  script:
+    - go test ./query/testing/... -v -count=1
+  tags:
+    - docker
+----
+
+== Acceptance Criteria
+
+1. [ ] Test harness creates identical schemas on all 3 databases
+2. [ ] Data insertion helpers work on all 3 databases
+3. [ ] Simple SELECT returns identical results across databases
+4. [ ] Edge case strings roundtrip correctly
+5. [ ] Boolean values are consistent (TRUE/FALSE vs 1/0)
+6. [ ] NULL handling is consistent
+7. [ ] JSON aggregation produces equivalent structures
+8. [ ] Soft delete filtering works identically
+9. [ ] ILIKE/case-insensitive search works identically
+10. [ ] Property tests pass with 100+ trials
+11. [ ] Seeds are logged for reproducibility
+
+== Dependencies
+
+- Phase 1: Column types
+- Phase 2: AST and builder
+- Phase 3: Postgres compiler
+- Phase 4: MySQL compiler
+- Phase 5: SQLite compiler
+- `proptest` package
+
+== Running Tests
+
+[source,bash]
+----
+# Run all property tests
+go test ./query/testing/... -v
+
+# Run with more trials
+go test ./query/testing/... -v -args -trials=500
+
+# Reproduce a specific failure
+PROPTEST_SEED=12345 go test ./query/testing/... -v
+
+# Skip integration tests (unit tests only)
+go test ./query/testing/... -v -short
+----
+
+== Completion
+
+When this phase is complete, we have verified that:
+
+1. The query DSL produces correct ASTs
+2. All three SQL compilers produce syntactically correct SQL
+3. The compiled SQL executes correctly on real databases
+4. The results are semantically equivalent across all databases
+
+This gives us confidence that queries written once will work correctly on
+Postgres, MySQL, and SQLite.

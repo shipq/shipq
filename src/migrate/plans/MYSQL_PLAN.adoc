@@ -1,0 +1,221 @@
+= Phase 3: MySQL Vertical Slice
+:toc:
+:toclevels: 2
+
+== Implementation File
+
+**All MySQL SQL generation code should go in `mysql_plan.go`.**
+
+== Overview
+
+This phase implements full MySQL support following the same pattern as PostgreSQL:
+
+1. **End-to-end tests first** - Write integration tests that execute SQL against MySQL
+2. **Implementation** - Write code to generate valid MySQL SQL
+3. **SQL generation tests** - Add unit tests for tricky SQL patterns
+
+== Prerequisites
+
+- Phase 1 complete (schema updates work)
+- Phase 2 complete (PostgreSQL working - pattern established)
+- MySQL running
+
+== Step 3a: End-to-End Integration Tests
+
+Write tests in `mysql_integration_test.go` following the same structure as PostgreSQL.
+
+=== Integration Test Structure
+
+[source,go]
+----
+func TestMySQLIntegration_CreateTable_BasicColumns(t *testing.T) {
+    db := connectMySQL(t)
+    defer db.Close()
+
+    // 1. Create migration plan
+    plan := &MigrationPlan{Schema: Schema{Tables: map[string]ddl.Table{}}}
+    plan.AddEmptyTable("test_basic", func(tb *ddl.TableBuilder) error {
+        tb.Integer("age")
+        tb.String("name")
+        tb.Bool("active")
+        return nil
+    })
+
+    // 2. Execute the MySQL SQL
+    sql := plan.Migrations[0].Instructions.MySQL
+    _, err := db.Exec(sql)
+    if err != nil {
+        t.Fatalf("failed to execute SQL: %v\nSQL: %s", err, sql)
+    }
+    defer db.Exec("DROP TABLE IF EXISTS `test_basic`")
+
+    // 3. Introspect and verify
+    schema := introspectMySQLTable(t, db, "test_basic")
+    assertColumnExists(t, schema, "age", "int", false)
+    assertColumnExists(t, schema, "name", "varchar", false)
+    assertColumnExists(t, schema, "active", "tinyint", false)
+}
+----
+
+=== Test Cases
+
+Same test cases as PostgreSQL:
+
+- `TestMySQLIntegration_CreateTable_BasicColumns`
+- `TestMySQLIntegration_CreateTable_AllColumnTypes`
+- `TestMySQLIntegration_CreateTable_Nullable`
+- `TestMySQLIntegration_CreateTable_Defaults`
+- `TestMySQLIntegration_CreateTable_PrimaryKey`
+- `TestMySQLIntegration_CreateTable_Unique`
+- `TestMySQLIntegration_CreateTable_Indexes`
+- `TestMySQLIntegration_AlterTable_AddColumn`
+- `TestMySQLIntegration_AlterTable_DropColumn`
+- `TestMySQLIntegration_AlterTable_RenameColumn`
+- `TestMySQLIntegration_AlterTable_ChangeType`
+- `TestMySQLIntegration_AlterTable_SetNullable`
+- `TestMySQLIntegration_AlterTable_SetNotNull`
+- `TestMySQLIntegration_AlterTable_SetDefault`
+- `TestMySQLIntegration_AlterTable_DropDefault`
+- `TestMySQLIntegration_AlterTable_AddIndex`
+- `TestMySQLIntegration_AlterTable_DropIndex`
+- `TestMySQLIntegration_DropTable`
+
+=== Schema Introspection Helpers
+
+[source,go]
+----
+// Query information_schema.columns for column metadata
+func introspectMySQLTable(t *testing.T, db *sql.DB, tableName string) TableSchema {
+    query := `
+        SELECT COLUMN_NAME, DATA_TYPE, IS_NULLABLE, COLUMN_DEFAULT
+        FROM information_schema.COLUMNS
+        WHERE TABLE_NAME = ?
+        ORDER BY ORDINAL_POSITION
+    `
+    // ... execute and parse results
+}
+
+// Query information_schema.statistics for index metadata
+func introspectMySQLIndexes(t *testing.T, db *sql.DB, tableName string) []IndexInfo {
+    query := `
+        SELECT INDEX_NAME, COLUMN_NAME, NON_UNIQUE
+        FROM information_schema.STATISTICS
+        WHERE TABLE_NAME = ?
+        ORDER BY INDEX_NAME, SEQ_IN_INDEX
+    `
+    // ... execute and parse results
+}
+----
+
+== Step 3b: Implementation
+
+=== MySQL Type Mappings
+
+[cols="1,1,2"]
+|===
+| DDL Type | MySQL Type | Notes
+
+| `integer` | `INT` |
+| `bigint` | `BIGINT` |
+| `string` | `VARCHAR(n)` | n from Length, default 255
+| `text` | `TEXT` |
+| `boolean` | `TINYINT(1)` | MySQL uses TINYINT for booleans
+| `decimal` | `DECIMAL(p,s)` | p=precision, s=scale
+| `float` | `DOUBLE` |
+| `datetime` | `DATETIME` |
+| `timestamp` | `TIMESTAMP` |
+| `binary` | `BLOB` |
+| `json` | `JSON` | Native JSON type (MySQL 5.7+)
+|===
+
+=== Key MySQL Differences from PostgreSQL
+
+1. **Identifier quoting**: Backticks instead of double quotes
+   - PostgreSQL: `"users"`
+   - MySQL: `` `users` ``
+
+2. **Boolean type**: TINYINT(1) instead of BOOLEAN
+   - TRUE = 1, FALSE = 0
+
+3. **ALTER COLUMN syntax**: Uses `MODIFY COLUMN` instead of `ALTER COLUMN`
+
+4. **Rename column**: Requires full column definition in older MySQL versions
+
+=== ALTER TABLE Syntax
+
+[source,sql]
+----
+-- Add column
+ALTER TABLE `users` ADD COLUMN `email` VARCHAR(255) NOT NULL;
+
+-- Drop column
+ALTER TABLE `users` DROP COLUMN `legacy_field`;
+
+-- Rename column (MySQL 8.0+)
+ALTER TABLE `users` RENAME COLUMN `name` TO `full_name`;
+
+-- Change type (uses MODIFY COLUMN)
+ALTER TABLE `users` MODIFY COLUMN `count` BIGINT;
+
+-- Set nullable (uses MODIFY COLUMN)
+ALTER TABLE `users` MODIFY COLUMN `bio` TEXT NULL;
+
+-- Set not null (uses MODIFY COLUMN)
+ALTER TABLE `users` MODIFY COLUMN `email` VARCHAR(255) NOT NULL;
+
+-- Set default
+ALTER TABLE `users` ALTER COLUMN `status` SET DEFAULT 'pending';
+
+-- Drop default
+ALTER TABLE `users` ALTER COLUMN `status` DROP DEFAULT;
+
+-- Add index
+CREATE INDEX `idx_users_email` ON `users` (`email`);
+
+-- Add unique index
+CREATE UNIQUE INDEX `idx_users_email` ON `users` (`email`);
+
+-- Drop index
+DROP INDEX `idx_users_email` ON `users`;
+----
+
+== Step 3c: SQL Generation Tests
+
+Tests for MySQL-specific patterns in `mysql_sql_test.go`:
+
+[cols="1,3"]
+|===
+| Test Name | What It Verifies
+
+| `TestMySQL_BacktickIdentifiers`
+| Table/column names use backticks
+
+| `TestMySQL_BooleanAsTinyint`
+| Boolean columns become TINYINT(1)
+
+| `TestMySQL_ModifyColumnSyntax`
+| ALTER uses MODIFY COLUMN
+
+| `TestMySQL_DropIndexOnTable`
+| DROP INDEX includes ON table_name
+
+| `TestMySQL_StringDefaultEscaping`
+| String defaults properly quoted
+|===
+
+== Success Criteria
+
+All MySQL tests pass:
+
+[source,bash]
+----
+# Integration tests
+go test -v ./migrate/... -tags=integration -run TestMySQLIntegration
+
+# SQL generation tests
+go test -v ./migrate/... -run TestMySQL_
+----
+
+== Next Phase
+
+Once MySQL is complete, move to `SQLITE_PLAN.adoc`.

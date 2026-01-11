@@ -1,0 +1,548 @@
+= Phase 1: Struct Generation from Migration Package
+
+Generate Go type definitions from a `MigrationPlan` schema.
+
+== Overview
+
+This phase takes a `MigrationPlan` (which contains the schema with all tables and columns)
+and generates Go source code with:
+
+1. Table structs with column accessor methods
+2. Column type definitions
+3. CRUD param and result struct definitions
+4. Method signatures (implementation comes later when SQL compilers are done)
+
+== Input
+
+The existing `migrate.MigrationPlan` structure:
+
+[source,go]
+----
+// From migrate/plan.go
+type MigrationPlan struct {
+    Schema     Schema      `json:"schema"`
+    Migrations []Migration `json:"migrations"`
+}
+
+type Schema struct {
+    Name   string               `json:"name"`
+    Tables map[string]ddl.Table `json:"tables"`
+}
+
+// From ddl/types.go
+type Table struct {
+    Name    string             `json:"name"`
+    Columns []ColumnDefinition `json:"columns"`
+    Indexes []IndexDefinition  `json:"indexes"`
+}
+
+type ColumnDefinition struct {
+    Name       string  `json:"name"`
+    Type       string  `json:"type"`       // "bigint", "string", "datetime", etc.
+    Length     *int    `json:"length"`
+    Precision  *int    `json:"precision"`
+    Scale      *int    `json:"scale"`
+    Nullable   bool    `json:"nullable"`
+    Default    *string `json:"default"`
+    Unique     bool    `json:"unique"`
+    PrimaryKey bool    `json:"primary_key"`
+    Index      bool    `json:"index"`
+    ForeignKey string  `json:"foreign_key"`
+}
+----
+
+== Output
+
+=== 1. Column Type Definitions
+
+Define the typed column structs that carry type information for the DSL:
+
+[source,go]
+----
+// query/columns.go (hand-written, not generated)
+package query
+
+type Column interface {
+    TableName() string
+    ColumnName() string
+    IsNullable() bool
+    GoType() string  // "int64", "string", "*string", etc.
+}
+
+type Int64Column struct {
+    Table string
+    Name  string
+}
+
+func (c Int64Column) TableName() string  { return c.Table }
+func (c Int64Column) ColumnName() string { return c.Name }
+func (c Int64Column) IsNullable() bool   { return false }
+func (c Int64Column) GoType() string     { return "int64" }
+
+type NullInt64Column struct {
+    Table string
+    Name  string
+}
+
+func (c NullInt64Column) IsNullable() bool { return true }
+func (c NullInt64Column) GoType() string   { return "*int64" }
+
+// Similar for: StringColumn, NullStringColumn, BoolColumn, NullBoolColumn,
+// TimeColumn, NullTimeColumn, DecimalColumn, NullDecimalColumn,
+// BytesColumn, JSONColumn, NullJSONColumn
+----
+
+=== 2. Table Struct Generation
+
+For each table in the schema, generate a table struct with column accessors:
+
+[source,go]
+----
+// gen/schema/authors.go (GENERATED)
+package schema
+
+import "myapp/src/query"
+
+type AuthorsTable struct{}
+
+var Authors = AuthorsTable{}
+
+func (AuthorsTable) TableName() string { return "authors" }
+
+// Column accessors - type depends on column definition
+func (AuthorsTable) ID() query.Int64Column {
+    return query.Int64Column{Table: "authors", Name: "id"}
+}
+func (AuthorsTable) PublicID() query.StringColumn {
+    return query.StringColumn{Table: "authors", Name: "public_id"}
+}
+func (AuthorsTable) Name() query.StringColumn {
+    return query.StringColumn{Table: "authors", Name: "name"}
+}
+func (AuthorsTable) Email() query.StringColumn {
+    return query.StringColumn{Table: "authors", Name: "email"}
+}
+func (AuthorsTable) Bio() query.NullStringColumn {
+    return query.NullStringColumn{Table: "authors", Name: "bio"}
+}
+func (AuthorsTable) CreatedAt() query.TimeColumn {
+    return query.TimeColumn{Table: "authors", Name: "created_at"}
+}
+func (AuthorsTable) UpdatedAt() query.TimeColumn {
+    return query.TimeColumn{Table: "authors", Name: "updated_at"}
+}
+func (AuthorsTable) DeletedAt() query.NullTimeColumn {
+    return query.NullTimeColumn{Table: "authors", Name: "deleted_at"}
+}
+----
+
+=== 3. CRUD Param/Result Struct Generation
+
+For each table, generate the param and result structs for auto-generated CRUD:
+
+[source,go]
+----
+// gen/crud/authors_types.go (GENERATED)
+package crud
+
+import "time"
+
+// ========== Authors CRUD Types ==========
+
+// --- Get ---
+type GetAuthorParams struct {
+    PublicID string
+}
+
+type GetAuthorResult struct {
+    PublicID  string
+    Name      string
+    Email     string
+    Bio       *string
+    CreatedAt time.Time
+    UpdatedAt time.Time
+}
+
+// --- List ---
+type ListAuthorsParams struct {
+    Limit  int
+    Offset int
+}
+
+type ListAuthorsResult struct {
+    PublicID  string
+    Name      string
+    Email     string
+    Bio       *string
+    CreatedAt time.Time
+}
+
+// --- Insert ---
+type InsertAuthorParams struct {
+    Name  string
+    Email string
+    Bio   *string
+}
+
+// --- Update ---
+type UpdateAuthorParams struct {
+    PublicID string
+    Name     string
+    Email    string
+    Bio      *string
+}
+
+// --- Delete ---
+type DeleteAuthorParams struct {
+    PublicID string
+}
+
+type HardDeleteAuthorParams struct {
+    PublicID string
+}
+----
+
+=== 4. QueryRunner Method Signatures
+
+Generate the QueryRunner struct with method signatures (bodies are stubs until SQL compilers are done):
+
+[source,go]
+----
+// gen/crud/authors_runner.go (GENERATED)
+package crud
+
+import (
+    "context"
+    
+    "myapp/src/query"
+)
+
+// Method signatures - implementations filled in after SQL compilers are done
+
+func (r *query.QueryRunner) GetAuthor(ctx context.Context, params GetAuthorParams) (*GetAuthorResult, error) {
+    panic("not implemented - waiting for SQL compiler")
+}
+
+func (r *query.QueryRunner) ListAuthors(ctx context.Context, params ListAuthorsParams) ([]ListAuthorsResult, error) {
+    panic("not implemented - waiting for SQL compiler")
+}
+
+func (r *query.QueryRunner) InsertAuthor(ctx context.Context, params InsertAuthorParams) (string, error) {
+    panic("not implemented - waiting for SQL compiler")
+}
+
+func (r *query.QueryRunner) UpdateAuthor(ctx context.Context, params UpdateAuthorParams) error {
+    panic("not implemented - waiting for SQL compiler")
+}
+
+func (r *query.QueryRunner) DeleteAuthor(ctx context.Context, params DeleteAuthorParams) error {
+    panic("not implemented - waiting for SQL compiler")
+}
+
+func (r *query.QueryRunner) HardDeleteAuthor(ctx context.Context, params HardDeleteAuthorParams) error {
+    panic("not implemented - waiting for SQL compiler")
+}
+----
+
+== Implementation
+
+=== Files to Create
+
+[source]
+----
+packages/go/src/
+├── query/
+│   ├── columns.go          # Hand-written column type definitions
+│   ├── columns_test.go     # Tests for column types
+│   ├── runner.go           # QueryRunner struct, Dialect enum
+│   └── runner_test.go
+└── codegen/
+    ├── schema_gen.go       # Generate table structs from Schema
+    ├── schema_gen_test.go
+    ├── crud_gen.go         # Generate CRUD types from Schema
+    └── crud_gen_test.go
+----
+
+=== Type Mapping
+
+The codegen must map DDL types to Go types and column types:
+
+[cols="1,1,1,1"]
+|===
+| DDL Type | Nullable | Go Type | Column Type
+
+| integer | false | int32 | Int32Column
+| integer | true | *int32 | NullInt32Column
+| bigint | false | int64 | Int64Column
+| bigint | true | *int64 | NullInt64Column
+| decimal | false | string | DecimalColumn
+| decimal | true | *string | NullDecimalColumn
+| float | false | float64 | Float64Column
+| float | true | *float64 | NullFloat64Column
+| boolean | false | bool | BoolColumn
+| boolean | true | *bool | NullBoolColumn
+| string | false | string | StringColumn
+| string | true | *string | NullStringColumn
+| text | false | string | StringColumn
+| text | true | *string | NullStringColumn
+| datetime | false | time.Time | TimeColumn
+| datetime | true | *time.Time | NullTimeColumn
+| timestamp | false | time.Time | TimeColumn
+| timestamp | true | *time.Time | NullTimeColumn
+| binary | - | []byte | BytesColumn
+| json | false | json.RawMessage | JSONColumn
+| json | true | json.RawMessage | NullJSONColumn
+|===
+
+=== Column Detection Logic
+
+The codegen must detect standard columns and adjust CRUD generation:
+
+[source,go]
+----
+// codegen/schema_gen.go
+
+type TableAnalysis struct {
+    Table         ddl.Table
+    HasPublicID   bool
+    HasCreatedAt  bool
+    HasUpdatedAt  bool
+    HasDeletedAt  bool
+    PrimaryKey    *ddl.ColumnDefinition
+    UserColumns   []ddl.ColumnDefinition  // Columns for params (not auto-filled)
+    ResultColumns []ddl.ColumnDefinition  // Columns for results (not internal id, deleted_at)
+}
+
+func AnalyzeTable(table ddl.Table) TableAnalysis {
+    analysis := TableAnalysis{Table: table}
+    
+    for _, col := range table.Columns {
+        switch col.Name {
+        case "public_id":
+            analysis.HasPublicID = true
+        case "created_at":
+            analysis.HasCreatedAt = true
+        case "updated_at":
+            analysis.HasUpdatedAt = true
+        case "deleted_at":
+            analysis.HasDeletedAt = true
+        }
+        
+        if col.PrimaryKey {
+            analysis.PrimaryKey = &col
+        }
+    }
+    
+    // UserColumns: exclude auto-filled columns
+    for _, col := range table.Columns {
+        if col.Name == "id" || col.Name == "public_id" || 
+           col.Name == "created_at" || col.Name == "updated_at" || 
+           col.Name == "deleted_at" {
+            continue
+        }
+        analysis.UserColumns = append(analysis.UserColumns, col)
+    }
+    
+    // ResultColumns: exclude internal id, deleted_at
+    for _, col := range table.Columns {
+        if col.Name == "id" || col.Name == "deleted_at" {
+            continue
+        }
+        analysis.ResultColumns = append(analysis.ResultColumns, col)
+    }
+    
+    return analysis
+}
+----
+
+== Tests
+
+=== Unit Tests for Column Types
+
+[source,go]
+----
+// query/columns_test.go
+
+func TestInt64Column(t *testing.T) {
+    col := Int64Column{Table: "users", Name: "id"}
+    
+    assert.Equal(t, "users", col.TableName())
+    assert.Equal(t, "id", col.ColumnName())
+    assert.False(t, col.IsNullable())
+    assert.Equal(t, "int64", col.GoType())
+}
+
+func TestNullStringColumn(t *testing.T) {
+    col := NullStringColumn{Table: "users", Name: "bio"}
+    
+    assert.Equal(t, "users", col.TableName())
+    assert.Equal(t, "bio", col.ColumnName())
+    assert.True(t, col.IsNullable())
+    assert.Equal(t, "*string", col.GoType())
+}
+----
+
+=== Unit Tests for Table Analysis
+
+[source,go]
+----
+// codegen/schema_gen_test.go
+
+func TestAnalyzeTable_StandardColumns(t *testing.T) {
+    table := ddl.Table{
+        Name: "authors",
+        Columns: []ddl.ColumnDefinition{
+            {Name: "id", Type: "bigint", PrimaryKey: true},
+            {Name: "public_id", Type: "string"},
+            {Name: "name", Type: "string"},
+            {Name: "email", Type: "string"},
+            {Name: "bio", Type: "text", Nullable: true},
+            {Name: "created_at", Type: "datetime"},
+            {Name: "updated_at", Type: "datetime"},
+            {Name: "deleted_at", Type: "datetime", Nullable: true},
+        },
+    }
+    
+    analysis := AnalyzeTable(table)
+    
+    assert.True(t, analysis.HasPublicID)
+    assert.True(t, analysis.HasCreatedAt)
+    assert.True(t, analysis.HasUpdatedAt)
+    assert.True(t, analysis.HasDeletedAt)
+    
+    // UserColumns should only have name, email, bio
+    assert.Len(t, analysis.UserColumns, 3)
+    assert.Equal(t, "name", analysis.UserColumns[0].Name)
+    assert.Equal(t, "email", analysis.UserColumns[1].Name)
+    assert.Equal(t, "bio", analysis.UserColumns[2].Name)
+    
+    // ResultColumns should exclude id and deleted_at
+    resultNames := make([]string, len(analysis.ResultColumns))
+    for i, col := range analysis.ResultColumns {
+        resultNames[i] = col.Name
+    }
+    assert.NotContains(t, resultNames, "id")
+    assert.NotContains(t, resultNames, "deleted_at")
+    assert.Contains(t, resultNames, "public_id")
+}
+----
+
+=== Unit Tests for Code Generation
+
+[source,go]
+----
+// codegen/schema_gen_test.go
+
+func TestGenerateTableStruct(t *testing.T) {
+    table := ddl.Table{
+        Name: "authors",
+        Columns: []ddl.ColumnDefinition{
+            {Name: "id", Type: "bigint", PrimaryKey: true},
+            {Name: "name", Type: "string"},
+            {Name: "bio", Type: "text", Nullable: true},
+        },
+    }
+    
+    code, err := GenerateTableStruct(table, "myapp/gen/schema")
+    require.NoError(t, err)
+    
+    // Verify generated code contains expected elements
+    assert.Contains(t, string(code), "type AuthorsTable struct{}")
+    assert.Contains(t, string(code), "var Authors = AuthorsTable{}")
+    assert.Contains(t, string(code), "func (AuthorsTable) ID() query.Int64Column")
+    assert.Contains(t, string(code), "func (AuthorsTable) Name() query.StringColumn")
+    assert.Contains(t, string(code), "func (AuthorsTable) Bio() query.NullStringColumn")
+}
+
+func TestGeneratedCodeCompiles(t *testing.T) {
+    // Generate code for a test schema
+    plan := buildTestMigrationPlan()
+    code, err := GenerateSchemaPackage(plan, "testpkg")
+    require.NoError(t, err)
+    
+    // Write to temp file and try to parse it
+    tmpDir := t.TempDir()
+    err = os.WriteFile(filepath.Join(tmpDir, "schema.go"), code, 0644)
+    require.NoError(t, err)
+    
+    // Use go/parser to verify it's valid Go
+    fset := token.NewFileSet()
+    _, err = parser.ParseFile(fset, "schema.go", code, parser.AllErrors)
+    assert.NoError(t, err, "Generated code should be valid Go")
+}
+----
+
+=== Unit Tests for CRUD Type Generation
+
+[source,go]
+----
+// codegen/crud_gen_test.go
+
+func TestGenerateCRUDTypes_WithPublicID(t *testing.T) {
+    table := ddl.Table{
+        Name: "authors",
+        Columns: []ddl.ColumnDefinition{
+            {Name: "id", Type: "bigint", PrimaryKey: true},
+            {Name: "public_id", Type: "string"},
+            {Name: "name", Type: "string"},
+            {Name: "created_at", Type: "datetime"},
+            {Name: "updated_at", Type: "datetime"},
+            {Name: "deleted_at", Type: "datetime", Nullable: true},
+        },
+    }
+    
+    code, err := GenerateCRUDTypes(table, "myapp/gen/crud")
+    require.NoError(t, err)
+    
+    // GetAuthorParams should use PublicID
+    assert.Contains(t, string(code), "type GetAuthorParams struct")
+    assert.Contains(t, string(code), "PublicID string")
+    
+    // InsertAuthorParams should NOT include public_id, created_at, updated_at
+    assert.Contains(t, string(code), "type InsertAuthorParams struct")
+    assert.NotContains(t, string(code), "PublicID string") // in InsertParams context
+    
+    // Should generate HardDelete for tables with deleted_at
+    assert.Contains(t, string(code), "type HardDeleteAuthorParams struct")
+}
+
+func TestGenerateCRUDTypes_WithoutPublicID(t *testing.T) {
+    table := ddl.Table{
+        Name: "settings",
+        Columns: []ddl.ColumnDefinition{
+            {Name: "id", Type: "bigint", PrimaryKey: true},
+            {Name: "key", Type: "string"},
+            {Name: "value", Type: "text"},
+        },
+    }
+    
+    code, err := GenerateCRUDTypes(table, "myapp/gen/crud")
+    require.NoError(t, err)
+    
+    // GetSettingParams should use ID (int64) when no public_id
+    assert.Contains(t, string(code), "type GetSettingParams struct")
+    assert.Contains(t, string(code), "ID int64")
+}
+----
+
+== Acceptance Criteria
+
+1. [ ] Column types defined in `query/columns.go` with all variants
+2. [ ] `AnalyzeTable` correctly detects standard columns
+3. [ ] `GenerateTableStruct` produces valid Go code for any table
+4. [ ] `GenerateCRUDTypes` produces correct param/result structs
+5. [ ] Generated code compiles (verified by go/parser)
+6. [ ] Type mapping handles all DDL types correctly
+7. [ ] Nullable columns produce pointer types in results and params
+8. [ ] `public_id` tables use string identifiers
+9. [ ] `deleted_at` tables get `HardDelete` variant
+10. [ ] Auto-filled columns excluded from param structs
+
+== Dependencies
+
+- Existing `ddl.Table` and `ddl.ColumnDefinition` types
+- Existing `migrate.MigrationPlan` and `migrate.Schema` types
+
+== Next Phase
+
+Phase 2: Translating the Go builder DSL to ASTs

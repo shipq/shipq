@@ -1,0 +1,307 @@
+= Phase 4: SQLite Vertical Slice
+:toc:
+:toclevels: 2
+
+== Implementation File
+
+**All SQLite SQL generation code should go in `sqlite_plan.go`.**
+
+== Overview
+
+This phase implements full SQLite support. SQLite has more limited ALTER TABLE
+support than PostgreSQL/MySQL, which requires special handling.
+
+1. **End-to-end tests first** - Write integration tests against in-memory SQLite
+2. **Implementation** - Write code to generate valid SQLite SQL
+3. **SQL generation tests** - Add unit tests for tricky patterns
+
+== Prerequisites
+
+- Phase 1 complete (schema updates work)
+- Phase 2-3 complete (PostgreSQL and MySQL working)
+- No external setup needed (SQLite is embedded)
+
+== SQLite Limitations
+
+IMPORTANT: SQLite has limited ALTER TABLE support:
+
+[cols="1,1,2"]
+|===
+| Operation | Supported? | Notes
+
+| ADD COLUMN | ✅ Yes |
+| DROP COLUMN | ✅ Yes | SQLite 3.35.0+ (2021)
+| RENAME COLUMN | ✅ Yes | SQLite 3.25.0+ (2018)
+| CHANGE TYPE | ❌ No | Requires table rebuild
+| SET NOT NULL | ❌ No | Requires table rebuild
+| SET DEFAULT | ❌ No | Requires table rebuild (for existing columns)
+| ADD INDEX | ✅ Yes | CREATE INDEX
+| DROP INDEX | ✅ Yes | DROP INDEX
+|===
+
+For unsupported operations, SQLite requires a **table rebuild**:
+
+1. Create new table with desired schema
+2. Copy data from old table
+3. Drop old table
+4. Rename new table
+
+== Step 4a: End-to-End Integration Tests
+
+Write tests in `sqlite_integration_test.go`.
+
+=== Integration Test Structure
+
+[source,go]
+----
+func TestSQLiteIntegration_CreateTable_BasicColumns(t *testing.T) {
+    db := connectSQLite(t)
+    defer db.Close()
+
+    // 1. Create migration plan
+    plan := &MigrationPlan{Schema: Schema{Tables: map[string]ddl.Table{}}}
+    plan.AddEmptyTable("test_basic", func(tb *ddl.TableBuilder) error {
+        tb.Integer("age")
+        tb.String("name")
+        tb.Bool("active")
+        return nil
+    })
+
+    // 2. Execute the SQLite SQL
+    sql := plan.Migrations[0].Instructions.Sqlite
+    _, err := db.Exec(sql)
+    if err != nil {
+        t.Fatalf("failed to execute SQL: %v\nSQL: %s", err, sql)
+    }
+
+    // 3. Introspect and verify
+    schema := introspectSQLiteTable(t, db, "test_basic")
+    assertColumnExists(t, schema, "age", "INTEGER", false)
+    assertColumnExists(t, schema, "name", "TEXT", false)
+    assertColumnExists(t, schema, "active", "INTEGER", false)
+}
+----
+
+=== Test Cases
+
+CREATE TABLE tests (same as PostgreSQL/MySQL):
+
+- `TestSQLiteIntegration_CreateTable_BasicColumns`
+- `TestSQLiteIntegration_CreateTable_AllColumnTypes`
+- `TestSQLiteIntegration_CreateTable_Nullable`
+- `TestSQLiteIntegration_CreateTable_Defaults`
+- `TestSQLiteIntegration_CreateTable_PrimaryKey`
+- `TestSQLiteIntegration_CreateTable_Unique`
+- `TestSQLiteIntegration_CreateTable_Indexes`
+
+ALTER TABLE tests (subset due to limitations):
+
+- `TestSQLiteIntegration_AlterTable_AddColumn`
+- `TestSQLiteIntegration_AlterTable_DropColumn`
+- `TestSQLiteIntegration_AlterTable_RenameColumn`
+- `TestSQLiteIntegration_AlterTable_AddIndex`
+- `TestSQLiteIntegration_AlterTable_DropIndex`
+
+DROP TABLE:
+
+- `TestSQLiteIntegration_DropTable`
+
+=== Schema Introspection Helpers
+
+[source,go]
+----
+// Use pragma_table_info for column metadata
+func introspectSQLiteTable(t *testing.T, db *sql.DB, tableName string) TableSchema {
+    query := fmt.Sprintf("PRAGMA table_info(%s)", tableName)
+    // Returns: cid, name, type, notnull, dflt_value, pk
+    // ... execute and parse results
+}
+
+// Use pragma_index_list and pragma_index_info for indexes
+func introspectSQLiteIndexes(t *testing.T, db *sql.DB, tableName string) []IndexInfo {
+    listQuery := fmt.Sprintf("PRAGMA index_list(%s)", tableName)
+    // Returns: seq, name, unique, origin, partial
+
+    // For each index:
+    infoQuery := fmt.Sprintf("PRAGMA index_info(%s)", indexName)
+    // Returns: seqno, cid, name
+}
+----
+
+== Step 4b: Implementation
+
+=== SQLite Type Mappings
+
+SQLite uses dynamic typing with "type affinity". These are the recommended mappings:
+
+[cols="1,1,2"]
+|===
+| DDL Type | SQLite Type | Notes
+
+| `integer` | `INTEGER` |
+| `bigint` | `INTEGER` | SQLite INTEGER is always 64-bit
+| `string` | `TEXT` | SQLite doesn't have VARCHAR
+| `text` | `TEXT` |
+| `boolean` | `INTEGER` | 0 = false, 1 = true
+| `decimal` | `REAL` | Or TEXT for exact precision
+| `float` | `REAL` |
+| `datetime` | `TEXT` | ISO8601 format
+| `timestamp` | `TEXT` | ISO8601 format
+| `binary` | `BLOB` |
+| `json` | `TEXT` | JSON stored as text
+|===
+
+=== Key SQLite Differences
+
+1. **Identifier quoting**: Double quotes (like PostgreSQL)
+   - `"users"`, `"email"`
+
+2. **No VARCHAR**: Use TEXT for all string types
+
+3. **No native BOOLEAN**: Use INTEGER (0/1)
+
+4. **No native DATETIME**: Use TEXT with ISO8601 format
+
+5. **Limited ALTER TABLE**: Many operations require table rebuild
+
+=== ALTER TABLE Syntax
+
+[source,sql]
+----
+-- Add column
+ALTER TABLE "users" ADD COLUMN "email" TEXT NOT NULL DEFAULT '';
+
+-- Drop column (SQLite 3.35.0+)
+ALTER TABLE "users" DROP COLUMN "legacy_field";
+
+-- Rename column (SQLite 3.25.0+)
+ALTER TABLE "users" RENAME COLUMN "name" TO "full_name";
+
+-- Add index
+CREATE INDEX "idx_users_email" ON "users" ("email");
+
+-- Add unique index
+CREATE UNIQUE INDEX "idx_users_email" ON "users" ("email");
+
+-- Drop index
+DROP INDEX "idx_users_email";
+----
+
+=== Table Rebuild Pattern
+
+For unsupported ALTER operations (change type, set not null, etc.):
+
+[source,sql]
+----
+-- 1. Create new table with desired schema
+CREATE TABLE "users_new" (
+    "id" INTEGER PRIMARY KEY,
+    "email" TEXT NOT NULL,  -- changed from nullable to not null
+    "name" TEXT
+);
+
+-- 2. Copy data
+INSERT INTO "users_new" ("id", "email", "name")
+SELECT "id", COALESCE("email", ''), "name"
+FROM "users";
+
+-- 3. Drop old table
+DROP TABLE "users";
+
+-- 4. Rename new table
+ALTER TABLE "users_new" RENAME TO "users";
+
+-- 5. Recreate indexes
+CREATE INDEX "idx_users_email" ON "users" ("email");
+----
+
+== Step 4c: SQL Generation Tests
+
+Tests for SQLite-specific patterns in `sqlite_sql_test.go`:
+
+[cols="1,3"]
+|===
+| Test Name | What It Verifies
+
+| `TestSQLite_TextForStrings`
+| VARCHAR columns become TEXT
+
+| `TestSQLite_IntegerForBooleans`
+| Boolean columns become INTEGER
+
+| `TestSQLite_IntegerForBigint`
+| Bigint columns become INTEGER
+
+| `TestSQLite_AddColumnWithDefault`
+| ADD COLUMN requires DEFAULT for NOT NULL
+
+| `TestSQLite_QuotesIdentifiers`
+| Uses double quotes like PostgreSQL
+|===
+
+== Handling Unsupported Operations
+
+For operations that require table rebuild, we have options:
+
+=== Option A: Generate Multi-Statement SQL
+
+Return multiple SQL statements that perform the rebuild:
+
+[source,go]
+----
+instructions.Sqlite = `
+CREATE TABLE "users_new" (...);
+INSERT INTO "users_new" SELECT * FROM "users";
+DROP TABLE "users";
+ALTER TABLE "users_new" RENAME TO "users";
+`
+----
+
+=== Option B: Return Error
+
+Return an error for unsupported operations and require manual migration:
+
+[source,go]
+----
+return fmt.Errorf("SQLite does not support changing column type; manual migration required")
+----
+
+=== Option C: Skip Operation
+
+Skip the operation for SQLite and log a warning:
+
+[source,go]
+----
+// Only generate for Postgres/MySQL, leave Sqlite empty
+instructions.Sqlite = "" // or "-- Not supported in SQLite"
+----
+
+RECOMMENDATION: Start with Option A for completeness, but document the complexity.
+
+== Success Criteria
+
+All SQLite tests pass:
+
+[source,bash]
+----
+# Integration tests
+go test -v ./migrate/... -tags=integration -run TestSQLiteIntegration
+
+# SQL generation tests
+go test -v ./migrate/... -run TestSQLite_
+----
+
+== Completion
+
+Once this phase is complete, the migration system supports all three databases!
+
+Run full test suite:
+
+[source,bash]
+----
+# All unit and SQL generation tests
+go test -v ./migrate/...
+
+# All integration tests
+go test -v ./migrate/... -tags=integration
+----
