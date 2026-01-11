@@ -1,0 +1,3 @@
+= PortSQL
+
+A portable database migration and querying system for Go.
