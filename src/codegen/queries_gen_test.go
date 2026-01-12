@@ -619,3 +619,246 @@ func containsField(code, fieldName, fieldType string) bool {
 	}
 	return false
 }
+
+// =============================================================================
+// Tests for GenerateQueryRunner
+// =============================================================================
+
+func TestGenerateQueryRunner_OneQuery(t *testing.T) {
+	queries := []CompiledQueryWithDialects{
+		{
+			CompiledQuery: CompiledQuery{
+				Name: "GetUserById",
+				Params: []ParamInfo{
+					{Name: "id", GoType: "int64"},
+				},
+				Results: []ResultInfo{
+					{Name: "id", GoType: "int64"},
+					{Name: "name", GoType: "string"},
+					{Name: "email", GoType: "string"},
+				},
+				ReturnType: "one",
+			},
+			SQL: DialectSQL{
+				Postgres: `SELECT "id", "name", "email" FROM "users" WHERE "id" = $1`,
+				MySQL:    "SELECT `id`, `name`, `email` FROM `users` WHERE `id` = ?",
+				SQLite:   `SELECT "id", "name", "email" FROM "users" WHERE "id" = ?`,
+			},
+		},
+	}
+
+	code, err := GenerateQueryRunner(queries, "queries")
+	if err != nil {
+		t.Fatalf("GenerateQueryRunner failed: %v", err)
+	}
+
+	codeStr := string(code)
+
+	// Check that it contains QueryRunner struct
+	if !strings.Contains(codeStr, "type QueryRunner struct") {
+		t.Error("missing QueryRunner struct")
+	}
+
+	// Check that method returns (*Result, error) for ONE type
+	if !strings.Contains(codeStr, "func (r *QueryRunner) GetUserById(ctx context.Context, params GetUserByIdParams) (*GetUserByIdResult, error)") {
+		t.Error("missing GetUserById method with correct ONE signature")
+	}
+
+	// Check that sql.ErrNoRows returns nil, nil
+	if !strings.Contains(codeStr, "if err == sql.ErrNoRows {") {
+		t.Error("missing ErrNoRows handling for ONE query")
+	}
+	if !strings.Contains(codeStr, "return nil, nil") {
+		t.Error("missing return nil, nil for ONE query")
+	}
+}
+
+func TestGenerateQueryRunner_ManyQuery(t *testing.T) {
+	queries := []CompiledQueryWithDialects{
+		{
+			CompiledQuery: CompiledQuery{
+				Name: "ListUsers",
+				Params: []ParamInfo{
+					{Name: "limit", GoType: "int"},
+				},
+				Results: []ResultInfo{
+					{Name: "id", GoType: "int64"},
+					{Name: "name", GoType: "string"},
+				},
+				ReturnType: "many",
+			},
+			SQL: DialectSQL{
+				Postgres: `SELECT "id", "name" FROM "users" LIMIT $1`,
+				MySQL:    "SELECT `id`, `name` FROM `users` LIMIT ?",
+				SQLite:   `SELECT "id", "name" FROM "users" LIMIT ?`,
+			},
+		},
+	}
+
+	code, err := GenerateQueryRunner(queries, "queries")
+	if err != nil {
+		t.Fatalf("GenerateQueryRunner failed: %v", err)
+	}
+
+	codeStr := string(code)
+
+	// Check that method returns ([]Result, error) for MANY type
+	if !strings.Contains(codeStr, "func (r *QueryRunner) ListUsers(ctx context.Context, params ListUsersParams) ([]ListUsersResult, error)") {
+		t.Error("missing ListUsers method with correct MANY signature")
+	}
+
+	// Check that it uses QueryContext
+	if !strings.Contains(codeStr, "rows, err := r.db.QueryContext") {
+		t.Error("missing QueryContext for MANY query")
+	}
+
+	// Check that it iterates rows
+	if !strings.Contains(codeStr, "for rows.Next()") {
+		t.Error("missing rows iteration for MANY query")
+	}
+}
+
+func TestGenerateQueryRunner_ExecQuery(t *testing.T) {
+	queries := []CompiledQueryWithDialects{
+		{
+			CompiledQuery: CompiledQuery{
+				Name: "UpdateUserName",
+				Params: []ParamInfo{
+					{Name: "id", GoType: "int64"},
+					{Name: "name", GoType: "string"},
+				},
+				Results:    []ResultInfo{},
+				ReturnType: "exec",
+			},
+			SQL: DialectSQL{
+				Postgres: `UPDATE "users" SET "name" = $1 WHERE "id" = $2`,
+				MySQL:    "UPDATE `users` SET `name` = ? WHERE `id` = ?",
+				SQLite:   `UPDATE "users" SET "name" = ? WHERE "id" = ?`,
+			},
+		},
+	}
+
+	code, err := GenerateQueryRunner(queries, "queries")
+	if err != nil {
+		t.Fatalf("GenerateQueryRunner failed: %v", err)
+	}
+
+	codeStr := string(code)
+
+	// Check that method returns (sql.Result, error) for EXEC type
+	if !strings.Contains(codeStr, "func (r *QueryRunner) UpdateUserName(ctx context.Context, params UpdateUserNameParams) (sql.Result, error)") {
+		t.Error("missing UpdateUserName method with correct EXEC signature")
+	}
+
+	// Check that it uses ExecContext
+	if !strings.Contains(codeStr, "return r.db.ExecContext") {
+		t.Error("missing ExecContext for EXEC query")
+	}
+}
+
+func TestGenerateQueryRunner_MultipleDialects(t *testing.T) {
+	queries := []CompiledQueryWithDialects{
+		{
+			CompiledQuery: CompiledQuery{
+				Name: "GetUser",
+				Params: []ParamInfo{
+					{Name: "id", GoType: "int64"},
+				},
+				Results: []ResultInfo{
+					{Name: "id", GoType: "int64"},
+				},
+				ReturnType: "one",
+			},
+			SQL: DialectSQL{
+				Postgres: `SELECT "id" FROM "users" WHERE "id" = $1`,
+				MySQL:    "SELECT `id` FROM `users` WHERE `id` = ?",
+				SQLite:   `SELECT "id" FROM "users" WHERE "id" = ?`,
+			},
+		},
+	}
+
+	code, err := GenerateQueryRunner(queries, "queries")
+	if err != nil {
+		t.Fatalf("GenerateQueryRunner failed: %v", err)
+	}
+
+	codeStr := string(code)
+
+	// Check that all dialects are initialized
+	if !strings.Contains(codeStr, "case Postgres:") {
+		t.Error("missing Postgres dialect case")
+	}
+	if !strings.Contains(codeStr, "case MySQL:") {
+		t.Error("missing MySQL dialect case")
+	}
+	if !strings.Contains(codeStr, "case SQLite:") {
+		t.Error("missing SQLite dialect case")
+	}
+
+	// Check that SQL is different for different dialects
+	if !strings.Contains(codeStr, `$1`) {
+		t.Error("missing Postgres placeholder $1")
+	}
+}
+
+func TestGenerateQueryRunner_NoParams(t *testing.T) {
+	queries := []CompiledQueryWithDialects{
+		{
+			CompiledQuery: CompiledQuery{
+				Name:   "CountUsers",
+				Params: []ParamInfo{},
+				Results: []ResultInfo{
+					{Name: "count", GoType: "int64"},
+				},
+				ReturnType: "one",
+			},
+			SQL: DialectSQL{
+				Postgres: `SELECT COUNT(*) FROM "users"`,
+				MySQL:    "SELECT COUNT(*) FROM `users`",
+				SQLite:   `SELECT COUNT(*) FROM "users"`,
+			},
+		},
+	}
+
+	code, err := GenerateQueryRunner(queries, "queries")
+	if err != nil {
+		t.Fatalf("GenerateQueryRunner failed: %v", err)
+	}
+
+	codeStr := string(code)
+
+	// Check that method signature doesn't have params argument
+	if !strings.Contains(codeStr, "func (r *QueryRunner) CountUsers(ctx context.Context) (*CountUsersResult, error)") {
+		t.Error("CountUsers should not require params argument when there are no parameters")
+	}
+}
+
+func TestGenerateQueryRunner_WithTx(t *testing.T) {
+	queries := []CompiledQueryWithDialects{
+		{
+			CompiledQuery: CompiledQuery{
+				Name:       "GetUser",
+				Params:     []ParamInfo{{Name: "id", GoType: "int64"}},
+				Results:    []ResultInfo{{Name: "id", GoType: "int64"}},
+				ReturnType: "one",
+			},
+			SQL: DialectSQL{
+				Postgres: `SELECT "id" FROM "users" WHERE "id" = $1`,
+				MySQL:    "SELECT `id` FROM `users` WHERE `id` = ?",
+				SQLite:   `SELECT "id" FROM "users" WHERE "id" = ?`,
+			},
+		},
+	}
+
+	code, err := GenerateQueryRunner(queries, "queries")
+	if err != nil {
+		t.Fatalf("GenerateQueryRunner failed: %v", err)
+	}
+
+	codeStr := string(code)
+
+	// Check that WithTx method exists
+	if !strings.Contains(codeStr, "func (r *QueryRunner) WithTx(tx *sql.Tx) *QueryRunner") {
+		t.Error("missing WithTx method")
+	}
+}

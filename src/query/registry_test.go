@@ -28,8 +28,12 @@ func TestDefineQuery_RegistersQuery(t *testing.T) {
 	if len(queries) != 1 {
 		t.Errorf("expected 1 registered query, got %d", len(queries))
 	}
-	if queries["GetAuthorByName"] != ast {
+	if queries["GetAuthorByName"].AST != ast {
 		t.Error("registered query does not match returned query")
+	}
+	// DefineQuery defaults to ReturnMany for backward compatibility
+	if queries["GetAuthorByName"].ReturnType != ReturnMany {
+		t.Errorf("expected ReturnMany, got %v", queries["GetAuthorByName"].ReturnType)
 	}
 }
 
@@ -56,13 +60,13 @@ func TestDefineQuery_MultipleQueries(t *testing.T) {
 	}
 
 	queries := GetRegisteredQueries()
-	if queries["GetAuthor"] != ast1 {
+	if queries["GetAuthor"].AST != ast1 {
 		t.Error("GetAuthor not found or mismatched")
 	}
-	if queries["GetBook"] != ast2 {
+	if queries["GetBook"].AST != ast2 {
 		t.Error("GetBook not found or mismatched")
 	}
-	if queries["UpdateAuthor"] != ast3 {
+	if queries["UpdateAuthor"].AST != ast3 {
 		t.Error("UpdateAuthor not found or mismatched")
 	}
 }
@@ -213,4 +217,183 @@ func TestDefineQuery_ReturnsOriginalAST(t *testing.T) {
 	if returned != original {
 		t.Error("DefineQuery should return the same AST pointer")
 	}
+}
+
+// =============================================================================
+// Tests for DefineOne, DefineMany, DefineExec
+// =============================================================================
+
+func TestDefineOne_RegistersWithCorrectReturnType(t *testing.T) {
+	ClearRegistry()
+
+	authors := mockTable{name: "authors"}
+	nameCol := StringColumn{Table: "authors", Name: "name"}
+	idCol := Int64Column{Table: "authors", Name: "id"}
+
+	ast := DefineOne("GetAuthorById",
+		From(authors).
+			Select(nameCol).
+			Where(idCol.Eq(Param[int64]("id"))).
+			Build(),
+	)
+
+	if ast == nil {
+		t.Fatal("DefineOne returned nil")
+	}
+
+	queries := GetRegisteredQueries()
+	rq, ok := queries["GetAuthorById"]
+	if !ok {
+		t.Fatal("GetAuthorById not found in registry")
+	}
+	if rq.AST != ast {
+		t.Error("registered AST does not match returned AST")
+	}
+	if rq.ReturnType != ReturnOne {
+		t.Errorf("expected ReturnOne, got %v", rq.ReturnType)
+	}
+}
+
+func TestDefineMany_RegistersWithCorrectReturnType(t *testing.T) {
+	ClearRegistry()
+
+	authors := mockTable{name: "authors"}
+	nameCol := StringColumn{Table: "authors", Name: "name"}
+
+	ast := DefineMany("ListAuthors",
+		From(authors).
+			Select(nameCol).
+			Build(),
+	)
+
+	if ast == nil {
+		t.Fatal("DefineMany returned nil")
+	}
+
+	queries := GetRegisteredQueries()
+	rq, ok := queries["ListAuthors"]
+	if !ok {
+		t.Fatal("ListAuthors not found in registry")
+	}
+	if rq.AST != ast {
+		t.Error("registered AST does not match returned AST")
+	}
+	if rq.ReturnType != ReturnMany {
+		t.Errorf("expected ReturnMany, got %v", rq.ReturnType)
+	}
+}
+
+func TestDefineExec_RegistersWithCorrectReturnType(t *testing.T) {
+	ClearRegistry()
+
+	authors := mockTable{name: "authors"}
+	nameCol := StringColumn{Table: "authors", Name: "name"}
+	idCol := Int64Column{Table: "authors", Name: "id"}
+
+	ast := DefineExec("UpdateAuthorName",
+		Update(authors).
+			Set(nameCol, Param[string]("name")).
+			Where(idCol.Eq(Param[int64]("id"))).
+			Build(),
+	)
+
+	if ast == nil {
+		t.Fatal("DefineExec returned nil")
+	}
+
+	queries := GetRegisteredQueries()
+	rq, ok := queries["UpdateAuthorName"]
+	if !ok {
+		t.Fatal("UpdateAuthorName not found in registry")
+	}
+	if rq.AST != ast {
+		t.Error("registered AST does not match returned AST")
+	}
+	if rq.ReturnType != ReturnExec {
+		t.Errorf("expected ReturnExec, got %v", rq.ReturnType)
+	}
+}
+
+func TestMixedQueryTypes(t *testing.T) {
+	ClearRegistry()
+
+	authors := mockTable{name: "authors"}
+	nameCol := StringColumn{Table: "authors", Name: "name"}
+	idCol := Int64Column{Table: "authors", Name: "id"}
+
+	DefineOne("GetAuthor", From(authors).Select(nameCol).Where(idCol.Eq(Param[int64]("id"))).Build())
+	DefineMany("ListAuthors", From(authors).Select(nameCol).Build())
+	DefineExec("DeleteAuthor", Delete(authors).Where(idCol.Eq(Param[int64]("id"))).Build())
+
+	if QueryCount() != 3 {
+		t.Errorf("expected 3 queries, got %d", QueryCount())
+	}
+
+	queries := GetRegisteredQueries()
+
+	if queries["GetAuthor"].ReturnType != ReturnOne {
+		t.Errorf("GetAuthor: expected ReturnOne, got %v", queries["GetAuthor"].ReturnType)
+	}
+	if queries["ListAuthors"].ReturnType != ReturnMany {
+		t.Errorf("ListAuthors: expected ReturnMany, got %v", queries["ListAuthors"].ReturnType)
+	}
+	if queries["DeleteAuthor"].ReturnType != ReturnExec {
+		t.Errorf("DeleteAuthor: expected ReturnExec, got %v", queries["DeleteAuthor"].ReturnType)
+	}
+}
+
+func TestDefineOne_PanicsOnDuplicateName(t *testing.T) {
+	ClearRegistry()
+
+	defer func() {
+		if r := recover(); r == nil {
+			t.Error("expected panic for duplicate name")
+		}
+	}()
+
+	authors := mockTable{name: "authors"}
+	DefineOne("GetAuthor", From(authors).Build())
+	DefineOne("GetAuthor", From(authors).Build()) // Should panic
+}
+
+func TestDefineMany_PanicsOnDuplicateName(t *testing.T) {
+	ClearRegistry()
+
+	defer func() {
+		if r := recover(); r == nil {
+			t.Error("expected panic for duplicate name")
+		}
+	}()
+
+	authors := mockTable{name: "authors"}
+	DefineMany("ListAuthors", From(authors).Build())
+	DefineMany("ListAuthors", From(authors).Build()) // Should panic
+}
+
+func TestDefineExec_PanicsOnDuplicateName(t *testing.T) {
+	ClearRegistry()
+
+	defer func() {
+		if r := recover(); r == nil {
+			t.Error("expected panic for duplicate name")
+		}
+	}()
+
+	authors := mockTable{name: "authors"}
+	DefineExec("UpdateAuthor", Update(authors).Build())
+	DefineExec("UpdateAuthor", Update(authors).Build()) // Should panic
+}
+
+func TestDifferentDefineTypes_SameNamePanics(t *testing.T) {
+	ClearRegistry()
+
+	defer func() {
+		if r := recover(); r == nil {
+			t.Error("expected panic for duplicate name across different define types")
+		}
+	}()
+
+	authors := mockTable{name: "authors"}
+	DefineOne("SomeQuery", From(authors).Build())
+	DefineMany("SomeQuery", From(authors).Build()) // Should panic even though different define type
 }

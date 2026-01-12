@@ -6,8 +6,8 @@ import (
 )
 
 func init() {
-	// GetPetById - Simple SELECT with WHERE clause
-	query.DefineQuery("GetPetById",
+	// GetPetById - Simple SELECT with WHERE clause (returns 0 or 1 row)
+	query.DefineOne("GetPetById",
 		query.From(schema.Pets).
 			Select(
 				schema.Pets.Id(),
@@ -20,8 +20,8 @@ func init() {
 			Build(),
 	)
 
-	// FindPetsByStatus - Filter pets by status
-	query.DefineQuery("FindPetsByStatus",
+	// FindPetsByStatus - Filter pets by status (returns multiple rows)
+	query.DefineMany("FindPetsByStatus",
 		query.From(schema.Pets).
 			Select(
 				schema.Pets.Id(),
@@ -33,8 +33,8 @@ func init() {
 			Build(),
 	)
 
-	// GetUserByUsername - Find user by username, demonstrating AddTable columns
-	query.DefineQuery("GetUserByUsername",
+	// GetUserByUsername - Find user by username (returns 0 or 1 row)
+	query.DefineOne("GetUserByUsername",
 		query.From(schema.Users).
 			Select(
 				schema.Users.Id(),
@@ -49,8 +49,8 @@ func init() {
 			Build(),
 	)
 
-	// GetOrderById - Order lookup
-	query.DefineQuery("GetOrderById",
+	// GetOrderById - Order lookup (returns 0 or 1 row)
+	query.DefineOne("GetOrderById",
 		query.From(schema.Orders).
 			Select(
 				schema.Orders.Id(),
@@ -64,8 +64,8 @@ func init() {
 			Build(),
 	)
 
-	// ListPetsWithCategory - JOIN example
-	query.DefineQuery("ListPetsWithCategory",
+	// ListPetsWithCategory - JOIN example (returns multiple rows)
+	query.DefineMany("ListPetsWithCategory",
 		query.From(schema.Pets).
 			Join(schema.Categories).On(schema.Pets.CategoryId().Eq(schema.Categories.Id())).
 			Select(
@@ -77,10 +77,10 @@ func init() {
 			Build(),
 	)
 
-	// GetPetWithPhotos - Example using JSON column for nested data
+	// GetPetWithPhotos - Example using JSON column for nested data (returns 0 or 1 row)
 	// The photo_urls column stores an array of URLs as JSON, e.g. ["http://example.com/photo1.jpg", "http://example.com/photo2.jpg"]
 	// This demonstrates how portsql handles JSON columns - the result will be json.RawMessage
-	query.DefineQuery("GetPetWithPhotos",
+	query.DefineOne("GetPetWithPhotos",
 		query.From(schema.Pets).
 			Join(schema.Categories).On(schema.Pets.CategoryId().Eq(schema.Categories.Id())).
 			Select(
@@ -94,11 +94,11 @@ func init() {
 			Build(),
 	)
 
-	// ListCategoriesWithPets - JSON aggregation example
+	// ListCategoriesWithPets - JSON aggregation example (returns multiple rows)
 	// This demonstrates using JSON aggregation to return nested data:
 	// { "category": "Dogs", "pets": [{"id": 1, "name": "Buddy"}, ...] }
 	// Uses database-native JSON functions (json_group_array for SQLite, JSON_ARRAYAGG for MySQL, json_agg for Postgres)
-	query.DefineQuery("ListCategoriesWithPets",
+	query.DefineMany("ListCategoriesWithPets",
 		query.From(schema.Categories).
 			LeftJoin(schema.Pets).On(schema.Categories.Id().Eq(schema.Pets.CategoryId())).
 			Select(

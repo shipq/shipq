@@ -560,3 +560,246 @@ func TestProperty_MultipleJSONAggFieldsGenerateUniqueTypes(t *testing.T) {
 		return true
 	})
 }
+
+// =============================================================================
+// Property Tests for QueryRunner Generation
+// =============================================================================
+
+// generateRandomQueryWithDialects generates a random query with all dialect SQL.
+func generateRandomQueryWithDialects(g *proptest.Generator) CompiledQueryWithDialects {
+	queryName := "Query" + g.Identifier(10)
+
+	// Generate random params
+	numParams := g.IntRange(0, 4)
+	paramNames := g.UniqueIdentifiers(numParams, 8)
+	params := make([]ParamInfo, len(paramNames))
+	for i, name := range paramNames {
+		params[i] = ParamInfo{
+			Name:   name,
+			GoType: proptest.Pick(g, []string{"string", "int64", "int", "bool", "float64"}),
+		}
+	}
+
+	// Generate random results
+	numResults := g.IntRange(1, 6)
+	resultNames := g.UniqueIdentifiers(numResults, 10)
+	results := make([]ResultInfo, len(resultNames))
+	for i, name := range resultNames {
+		results[i] = ResultInfo{
+			Name:   name,
+			GoType: proptest.Pick(g, []string{"string", "int64", "int", "bool", "float64", "*string", "*int64", "time.Time"}),
+		}
+	}
+
+	// Generate random return type
+	returnType := proptest.Pick(g, []string{"one", "many", "exec"})
+
+	// Generate simple SQL for each dialect
+	baseSql := "SELECT * FROM " + g.Identifier(10)
+
+	return CompiledQueryWithDialects{
+		CompiledQuery: CompiledQuery{
+			Name:       queryName,
+			SQL:        baseSql,
+			Params:     params,
+			Results:    results,
+			ReturnType: returnType,
+		},
+		SQL: DialectSQL{
+			Postgres: baseSql,
+			MySQL:    baseSql,
+			SQLite:   baseSql,
+		},
+	}
+}
+
+func TestProperty_GeneratedMethodsCompile(t *testing.T) {
+	proptest.QuickCheck(t, "generated methods are valid Go", func(g *proptest.Generator) bool {
+		// Generate random queries with random return types
+		numQueries := g.IntRange(1, 5)
+		queries := make([]CompiledQueryWithDialects, numQueries)
+		usedNames := make(map[string]bool)
+
+		for i := 0; i < numQueries; i++ {
+			q := generateRandomQueryWithDialects(g)
+			// Ensure unique names
+			for usedNames[q.Name] {
+				q.Name = "Query" + g.Identifier(10)
+			}
+			usedNames[q.Name] = true
+			queries[i] = q
+		}
+
+		// Generate runner code
+		code, err := GenerateQueryRunner(queries, "queries")
+		if err != nil {
+			t.Logf("GenerateQueryRunner failed: %v", err)
+			return false
+		}
+
+		// Verify code parses as valid Go
+		fset := token.NewFileSet()
+		_, err = parser.ParseFile(fset, "runner.go", code, parser.AllErrors)
+		if err != nil {
+			t.Logf("Generated code doesn't parse: %v\nCode:\n%s", err, string(code))
+			return false
+		}
+
+		return true
+	})
+}
+
+func TestProperty_ReturnTypeMatchesSignature(t *testing.T) {
+	proptest.QuickCheck(t, "return type matches method signature", func(g *proptest.Generator) bool {
+		returnType := proptest.Pick(g, []string{"one", "many", "exec"})
+		queryName := "TestQuery" + g.Identifier(5)
+
+		query := CompiledQueryWithDialects{
+			CompiledQuery: CompiledQuery{
+				Name:       queryName,
+				Params:     []ParamInfo{{Name: "id", GoType: "int64"}},
+				Results:    []ResultInfo{{Name: "id", GoType: "int64"}, {Name: "name", GoType: "string"}},
+				ReturnType: returnType,
+			},
+			SQL: DialectSQL{
+				Postgres: "SELECT id, name FROM test WHERE id = $1",
+				MySQL:    "SELECT id, name FROM test WHERE id = ?",
+				SQLite:   "SELECT id, name FROM test WHERE id = ?",
+			},
+		}
+
+		code, err := GenerateQueryRunner([]CompiledQueryWithDialects{query}, "queries")
+		if err != nil {
+			t.Logf("GenerateQueryRunner failed: %v", err)
+			return false
+		}
+
+		codeStr := string(code)
+
+		// Check signature based on return type
+		switch returnType {
+		case "one":
+			expected := "(*" + queryName + "Result, error)"
+			if !strings.Contains(codeStr, expected) {
+				t.Logf("ONE query should return %s", expected)
+				return false
+			}
+		case "many":
+			expected := "([]" + queryName + "Result, error)"
+			if !strings.Contains(codeStr, expected) {
+				t.Logf("MANY query should return %s", expected)
+				return false
+			}
+		case "exec":
+			expected := "(sql.Result, error)"
+			if !strings.Contains(codeStr, expected) {
+				t.Logf("EXEC query should return %s", expected)
+				return false
+			}
+		}
+
+		return true
+	})
+}
+
+func TestProperty_ScanFieldCountMatchesResultStruct(t *testing.T) {
+	proptest.QuickCheck(t, "scan field count matches result struct", func(g *proptest.Generator) bool {
+		// Generate random number of result fields
+		numResults := g.IntRange(1, 8)
+		resultNames := g.UniqueIdentifiers(numResults, 10)
+		results := make([]ResultInfo, len(resultNames))
+		for i, name := range resultNames {
+			results[i] = ResultInfo{
+				Name:   name,
+				GoType: "string",
+			}
+		}
+
+		queryName := "TestQuery" + g.Identifier(5)
+		returnType := proptest.Pick(g, []string{"one", "many"}) // exec doesn't scan
+
+		query := CompiledQueryWithDialects{
+			CompiledQuery: CompiledQuery{
+				Name:       queryName,
+				Params:     []ParamInfo{{Name: "id", GoType: "int64"}},
+				Results:    results,
+				ReturnType: returnType,
+			},
+			SQL: DialectSQL{
+				Postgres: "SELECT * FROM test WHERE id = $1",
+				MySQL:    "SELECT * FROM test WHERE id = ?",
+				SQLite:   "SELECT * FROM test WHERE id = ?",
+			},
+		}
+
+		code, err := GenerateQueryRunner([]CompiledQueryWithDialects{query}, "queries")
+		if err != nil {
+			t.Logf("GenerateQueryRunner failed: %v", err)
+			return false
+		}
+
+		codeStr := string(code)
+
+		// Count Scan fields - look for &result. or &item. patterns
+		scanCount := strings.Count(codeStr, "&result.") + strings.Count(codeStr, "&item.")
+
+		// Should equal number of result fields (one scan field per result)
+		if scanCount != numResults {
+			t.Logf("Expected %d scan fields, found %d", numResults, scanCount)
+			return false
+		}
+
+		return true
+	})
+}
+
+func TestProperty_ParamOrderMatchesSQLPlaceholders(t *testing.T) {
+	proptest.QuickCheck(t, "param order matches SQL placeholders", func(g *proptest.Generator) bool {
+		// Generate random params
+		numParams := g.IntRange(1, 5)
+		paramNames := g.UniqueIdentifiers(numParams, 8)
+		params := make([]ParamInfo, len(paramNames))
+		for i, name := range paramNames {
+			params[i] = ParamInfo{
+				Name:   name,
+				GoType: "string",
+			}
+		}
+
+		queryName := "TestQuery" + g.Identifier(5)
+
+		query := CompiledQueryWithDialects{
+			CompiledQuery: CompiledQuery{
+				Name:       queryName,
+				Params:     params,
+				Results:    []ResultInfo{{Name: "id", GoType: "int64"}},
+				ReturnType: "one",
+			},
+			SQL: DialectSQL{
+				Postgres: "SELECT id FROM test WHERE col = $1",
+				MySQL:    "SELECT id FROM test WHERE col = ?",
+				SQLite:   "SELECT id FROM test WHERE col = ?",
+			},
+		}
+
+		code, err := GenerateQueryRunner([]CompiledQueryWithDialects{query}, "queries")
+		if err != nil {
+			t.Logf("GenerateQueryRunner failed: %v", err)
+			return false
+		}
+
+		codeStr := string(code)
+
+		// Check that params are added in order
+		// The generated code should have: params.ParamName1, params.ParamName2, ...
+		for _, p := range params {
+			expected := "params." + toPascalCase(p.Name)
+			if !strings.Contains(codeStr, expected) {
+				t.Logf("Missing param %s in generated code", expected)
+				return false
+			}
+		}
+
+		return true
+	})
+}

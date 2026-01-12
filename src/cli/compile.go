@@ -30,7 +30,7 @@ func Compile(ctx context.Context, config *Config) error {
 
 	// Check if queries_in directory exists
 	if _, err := os.Stat(config.Paths.QueriesIn); os.IsNotExist(err) {
-		return fmt.Errorf("queries directory not found: %s\nCreate a package with query definitions using query.DefineQuery()", config.Paths.QueriesIn)
+		return fmt.Errorf("queries directory not found: %s\nCreate a package with query definitions using query.DefineOne/DefineMany/DefineExec()", config.Paths.QueriesIn)
 	}
 
 	// Generate and run temp program to extract registered queries
@@ -40,26 +40,53 @@ func Compile(ctx context.Context, config *Config) error {
 	}
 
 	if len(queries) == 0 {
-		return fmt.Errorf("no queries registered in %s\nUse query.DefineQuery() in init() to register queries", config.Paths.QueriesIn)
+		return fmt.Errorf("no queries registered in %s\nUse query.DefineOne/DefineMany/DefineExec() in init() to register queries", config.Paths.QueriesIn)
 	}
 
 	fmt.Printf("Found %d registered queries\n", len(queries))
 
-	// Compile each query
+	// Compile each query for all dialects
 	var compiledQueries []codegen.CompiledQuery
-	for name, ast := range queries {
-		fmt.Printf("  Compiling: %s\n", name)
+	var compiledWithDialects []codegen.CompiledQueryWithDialects
+	for name, rq := range queries {
+		fmt.Printf("  Compiling: %s (%s)\n", name, rq.ReturnType)
 
-		sql, _, err := compileQuery(ast, dialect)
+		// Compile for all dialects
+		postgresSQL, _, err := compileQuery(rq.AST, "postgres")
+		if err != nil {
+			return fmt.Errorf("failed to compile query %s for postgres: %w", name, err)
+		}
+		mysqlSQL, _, err := compileQuery(rq.AST, "mysql")
+		if err != nil {
+			return fmt.Errorf("failed to compile query %s for mysql: %w", name, err)
+		}
+		sqliteSQL, _, err := compileQuery(rq.AST, "sqlite")
+		if err != nil {
+			return fmt.Errorf("failed to compile query %s for sqlite: %w", name, err)
+		}
+
+		// Get SQL for the current dialect (for backward-compatible queries.go)
+		sql, _, err := compileQuery(rq.AST, dialect)
 		if err != nil {
 			return fmt.Errorf("failed to compile query %s: %w", name, err)
 		}
 
-		compiledQueries = append(compiledQueries, codegen.CompiledQuery{
-			Name:    name,
-			SQL:     sql,
-			Params:  codegen.ExtractParamInfo(ast),
-			Results: codegen.ExtractResultInfo(ast),
+		cq := codegen.CompiledQuery{
+			Name:       name,
+			SQL:        sql,
+			Params:     codegen.ExtractParamInfo(rq.AST),
+			Results:    codegen.ExtractResultInfo(rq.AST),
+			ReturnType: string(rq.ReturnType),
+		}
+		compiledQueries = append(compiledQueries, cq)
+
+		compiledWithDialects = append(compiledWithDialects, codegen.CompiledQueryWithDialects{
+			CompiledQuery: cq,
+			SQL: codegen.DialectSQL{
+				Postgres: postgresSQL,
+				MySQL:    mysqlSQL,
+				SQLite:   sqliteSQL,
+			},
 		})
 	}
 
@@ -68,6 +95,7 @@ func Compile(ctx context.Context, config *Config) error {
 		return fmt.Errorf("failed to create queries output directory: %w", err)
 	}
 
+	// Generate types file (queries.go)
 	code, err := codegen.GenerateQueriesPackage(compiledQueries, "queries")
 	if err != nil {
 		return fmt.Errorf("failed to generate queries package: %w", err)
@@ -77,8 +105,20 @@ func Compile(ctx context.Context, config *Config) error {
 	if err := os.WriteFile(outputPath, code, 0644); err != nil {
 		return fmt.Errorf("failed to write queries.go: %w", err)
 	}
-
 	fmt.Printf("Generated: %s\n", outputPath)
+
+	// Generate runner file (runner.go)
+	runnerCode, err := codegen.GenerateQueryRunner(compiledWithDialects, "queries")
+	if err != nil {
+		return fmt.Errorf("failed to generate query runner: %w", err)
+	}
+
+	runnerPath := filepath.Join(config.Paths.QueriesOut, "runner.go")
+	if err := os.WriteFile(runnerPath, runnerCode, 0644); err != nil {
+		return fmt.Errorf("failed to write runner.go: %w", err)
+	}
+	fmt.Printf("Generated: %s\n", runnerPath)
+
 	fmt.Printf("\nSuccessfully compiled %d queries.\n", len(compiledQueries))
 
 	// --- CRUD Generation for AddTable tables ---
@@ -127,17 +167,6 @@ func Compile(ctx context.Context, config *Config) error {
 		crudPlan.Schema.Tables[table.Name] = table
 	}
 
-	// Convert dialect string to codegen.Dialect
-	var codegenDialect codegen.Dialect
-	switch dialect {
-	case "postgres":
-		codegenDialect = codegen.DialectPostgres
-	case "mysql":
-		codegenDialect = codegen.DialectMySQL
-	case "sqlite":
-		codegenDialect = codegen.DialectSQLite
-	}
-
 	// Generate CRUD types
 	crudTypesCode, err := codegen.GenerateCRUDPackageWithOptions(crudPlan, "queries", tableOpts)
 	if err != nil {
@@ -150,20 +179,21 @@ func Compile(ctx context.Context, config *Config) error {
 	}
 	fmt.Printf("Generated: %s\n", crudTypesPath)
 
-	// Generate CRUD runner (QueryRunner with methods)
-	crudRunnerCode, err := codegen.GenerateCRUDRunner(crudPlan, "queries", tableOpts)
+	// Generate combined runner with both user-defined queries and CRUD methods
+	combinedRunnerCode, err := codegen.GenerateCombinedRunner(compiledWithDialects, crudPlan, "queries", tableOpts)
 	if err != nil {
-		return fmt.Errorf("failed to generate CRUD runner: %w", err)
+		return fmt.Errorf("failed to generate combined runner: %w", err)
 	}
 
-	crudRunnerPath := filepath.Join(config.Paths.QueriesOut, "crud_runner.go")
-	if err := os.WriteFile(crudRunnerPath, crudRunnerCode, 0644); err != nil {
-		return fmt.Errorf("failed to write crud_runner.go: %w", err)
-	}
-	fmt.Printf("Generated: %s\n", crudRunnerPath)
+	// Remove old runner.go if it exists (will be replaced by combined runner)
+	os.Remove(filepath.Join(config.Paths.QueriesOut, "runner.go"))
+	os.Remove(filepath.Join(config.Paths.QueriesOut, "crud_runner.go"))
 
-	// Silence unused variable warning
-	_ = codegenDialect
+	combinedRunnerPath := filepath.Join(config.Paths.QueriesOut, "runner.go")
+	if err := os.WriteFile(combinedRunnerPath, combinedRunnerCode, 0644); err != nil {
+		return fmt.Errorf("failed to write runner.go: %w", err)
+	}
+	fmt.Printf("Generated: %s\n", combinedRunnerPath)
 
 	fmt.Printf("\nSuccessfully generated CRUD for %d tables.\n", len(crudTables))
 
@@ -171,7 +201,7 @@ func Compile(ctx context.Context, config *Config) error {
 }
 
 // extractRegisteredQueries generates a temp program to extract queries from the registry.
-func extractRegisteredQueries(ctx context.Context, queriesInPath string) (map[string]*query.AST, error) {
+func extractRegisteredQueries(ctx context.Context, queriesInPath string) (map[string]query.RegisteredQuery, error) {
 	// Get the module path for imports
 	modulePath, err := getModulePath()
 	if err != nil {
@@ -212,7 +242,7 @@ import (
 	"encoding/json"
 	"os"
 
-	_ %q  // Import triggers DefineQuery calls in init()
+	_ %q  // Import triggers DefineOne/DefineMany/DefineExec calls in init()
 	"github.com/portsql/portsql/src/query"
 )
 
@@ -242,7 +272,7 @@ func main() {
 	}
 
 	// Parse the JSON output
-	var queries map[string]*query.AST
+	var queries map[string]query.RegisteredQuery
 	if err := json.Unmarshal(output, &queries); err != nil {
 		return nil, fmt.Errorf("failed to parse queries output: %w", err)
 	}
