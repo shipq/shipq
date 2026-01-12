@@ -1,0 +1,218 @@
+= Phase 2: Migration System
+
+Implement the migration commands: `migrate new`, `migrate up`, and `migrate reset`.
+
+== Goal
+
+Build a complete migration system that creates migration files, runs them against the database, tracks what's been applied, and generates the `schematypes` package and `runner.go`.
+
+== Dependencies
+
+- Phase 1 (CLI scaffold) must be complete
+- Existing `src/ddl` and `src/migrate` packages
+
+== Scope
+
+=== In Scope
+
+- `portsql migrate new <name>` - Generate timestamped migration file
+- `portsql migrate up` - Run pending migrations, generate outputs
+- `portsql migrate reset` - Drop all and re-run (localhost safety check)
+- Migration tracking table (`_portsql_migrations`)
+- Schema JSON serialization (`schema.json`)
+- Runner generation (`runner.go` with embedded schema)
+- Schematypes generation (`schematypes/tables.go`)
+- Temporary Go program generation and execution
+- Unit and integration tests
+
+=== Out of Scope
+
+- Query compilation (Phase 3)
+- Property tests (Phase 4)
+
+== Deliverables
+
+=== File Structure
+
+[source]
+----
+src/
+├── cli/
+│   ├── migrate_new.go        # migrate new command
+│   ├── migrate_new_test.go
+│   ├── migrate_up.go         # migrate up command
+│   ├── migrate_up_test.go
+│   ├── migrate_reset.go      # migrate reset command
+│   ├── migrate_reset_test.go
+│   └── localhost.go          # Localhost detection for safety check
+│
+├── migrate/
+│   ├── (existing files)
+│   ├── tracking.go           # Migration tracking table operations
+│   ├── tracking_test.go
+│   ├── run.go                # migrate.Run(ctx, db, plan) runtime function
+│   ├── run_test.go
+│   ├── json.go               # Schema JSON serialization
+│   └── json_test.go
+│
+└── codegen/
+    ├── runner.go             # Generate runner.go
+    ├── runner_test.go
+    ├── schematypes.go        # Generate schematypes/tables.go
+    └── schematypes_test.go
+----
+
+== Implementation Details
+
+=== `migrate new`
+
+[source,go]
+----
+func MigrateNew(config *Config, name string) error {
+    // 1. Generate timestamp: time.Now().Format("20060102150405")
+    // 2. Create filename: {timestamp}_{name}.go
+    // 3. Write stub file with Migrate_{timestamp}_{name} function
+    // 4. Print success message
+}
+----
+
+=== `migrate up`
+
+[source,go]
+----
+func MigrateUp(config *Config) error {
+    // 1. Parse DATABASE_URL to get dialect
+    // 2. Connect to database
+    // 3. Ensure _portsql_migrations table exists
+    // 4. Get list of applied migrations from tracking table
+    // 5. Scan migrations directory for .go files
+    // 6. Filter to unapplied migrations, sort by timestamp
+    // 7. For each unapplied migration:
+    //    a. Generate temp main.go that calls the migration function
+    //    b. Run with `go run`, capture JSON output
+    //    c. Parse MigrationPlan from JSON
+    //    d. Generate SQL for dialect
+    //    e. Execute SQL
+    //    f. Insert into _portsql_migrations
+    // 8. Accumulate final schema state
+    // 9. Write schema.json
+    // 10. Generate runner.go
+    // 11. Generate schematypes/tables.go
+}
+----
+
+=== `migrate reset`
+
+[source,go]
+----
+func MigrateReset(config *Config) error {
+    // 1. Parse DATABASE_URL
+    // 2. Check localhost safety (fail if not localhost/127.0.0.1/sqlite)
+    // 3. Connect to database
+    // 4. Get list of all tables
+    // 5. DROP each table (including _portsql_migrations)
+    // 6. Call MigrateUp(config)
+}
+----
+
+=== Localhost Safety Check
+
+[source,go]
+----
+func IsLocalhostURL(databaseURL string) bool {
+    // Parse URL
+    // For sqlite:// - always return true
+    // For postgres:// and mysql:// - check if host is "localhost" or "127.0.0.1"
+}
+----
+
+=== Migration Tracking
+
+[source,go]
+----
+// EnsureTrackingTable creates _portsql_migrations if it doesn't exist
+func EnsureTrackingTable(ctx context.Context, db *sql.DB, dialect string) error
+
+// GetAppliedMigrations returns list of applied migration versions
+func GetAppliedMigrations(ctx context.Context, db *sql.DB) ([]string, error)
+
+// RecordMigration inserts a migration into the tracking table
+func RecordMigration(ctx context.Context, db *sql.DB, version, name string) error
+----
+
+=== Schema JSON
+
+[source,go]
+----
+// ToJSON serializes a MigrationPlan to JSON
+func (p *MigrationPlan) ToJSON() ([]byte, error)
+
+// PlanFromJSON deserializes a MigrationPlan from JSON
+func PlanFromJSON(data []byte) (*MigrationPlan, error)
+----
+
+=== Runner Generation
+
+Generate `migrations/runner.go`:
+
+[source,go]
+----
+func GenerateRunner(outputPath string) error {
+    // Write the runner.go file with //go:embed schema.json
+}
+----
+
+=== Schematypes Generation
+
+Generate `schematypes/tables.go`:
+
+[source,go]
+----
+func GenerateSchematypes(plan *MigrationPlan, outputPath string) error {
+    // For each table in plan:
+    //   Generate XxxTable struct
+    //   Generate var Xxx = XxxTable{}
+    //   Generate TableName() method
+    //   Generate column accessor methods
+}
+----
+
+== Testing Strategy
+
+=== Unit Tests
+
+- Config parsing edge cases
+- Localhost detection with various URL formats
+- Migration file scanning and sorting
+- JSON serialization round-trip
+- Code generation output correctness
+
+=== Integration Tests
+
+Requires running databases (Postgres, MySQL, SQLite):
+
+- Create migration, run up, verify table exists
+- Run up twice (idempotent)
+- Run reset, verify tables dropped and recreated
+- Reset refuses on non-localhost URL
+- Generated runner.go compiles and works
+- Generated schematypes/tables.go compiles
+
+== Acceptance Criteria
+
+1. [ ] `portsql migrate new foo` creates correctly named file with stub
+2. [ ] `portsql migrate up` runs migrations and creates tracking entries
+3. [ ] `portsql migrate up` is idempotent (running twice is safe)
+4. [ ] `portsql migrate up` generates `schema.json`
+5. [ ] `portsql migrate up` generates `runner.go`
+6. [ ] `portsql migrate up` generates `schematypes/tables.go`
+7. [ ] `portsql migrate reset` refuses on non-localhost databases
+8. [ ] `portsql migrate reset` works on localhost/SQLite
+9. [ ] Generated `runner.go` compiles and `migrations.Run()` works
+10. [ ] Generated `schematypes` package compiles and provides correct types
+11. [ ] All unit tests pass
+12. [ ] Integration tests pass against Postgres, MySQL, SQLite
+
+== Estimated Effort
+
+~8-16 hours

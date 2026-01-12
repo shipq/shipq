@@ -1,0 +1,306 @@
+= Phase 4: Property Tests
+
+Add property-based tests to ensure cross-database correctness and robustness.
+
+== Goal
+
+Build confidence that the migration and query systems work correctly across all supported databases through property-based testing.
+
+== Dependencies
+
+- Phase 2 (migrations) must be complete
+- Phase 3 (compiler) must be complete
+- Existing `proptest` package
+
+== Scope
+
+=== In Scope
+
+- Property tests for schema JSON round-trip
+- Property tests for migration SQL generation across dialects
+- Property tests for query SQL generation across dialects
+- Property tests for generated code correctness
+- Cross-database equivalence tests
+
+=== Out of Scope
+
+- Performance testing
+- Fuzz testing of SQL parsing
+
+== Deliverables
+
+=== File Structure
+
+[source]
+----
+src/
+├── cli/
+│   └── property_test.go      # End-to-end property tests for CLI
+│
+├── migrate/
+│   └── property_test.go      # Migration property tests
+│
+├── query/
+│   └── property_test.go      # Query property tests (may already exist)
+│
+└── codegen/
+    └── property_test.go      # Code generation property tests
+----
+
+== Property Test Categories
+
+=== 1. Schema Serialization Round-Trip
+
+**Property**: Any valid MigrationPlan can be serialized to JSON and deserialized back to an equivalent plan.
+
+[source,go]
+----
+func TestProperty_SchemaJSONRoundTrip(t *testing.T) {
+    proptest.QuickCheck(t, "schema JSON round-trip", func(g *proptest.Generator) bool {
+        plan := generateRandomMigrationPlan(g)
+        
+        jsonBytes, err := plan.ToJSON()
+        if err != nil {
+            return false
+        }
+        
+        restored, err := migrate.PlanFromJSON(jsonBytes)
+        if err != nil {
+            return false
+        }
+        
+        return reflect.DeepEqual(plan, restored)
+    })
+}
+----
+
+=== 2. Migration SQL Validity
+
+**Property**: SQL generated from any valid migration plan is syntactically valid for the target dialect.
+
+[source,go]
+----
+func TestProperty_MigrationSQLValid(t *testing.T) {
+    dialects := []string{"postgres", "mysql", "sqlite"}
+    
+    proptest.QuickCheck(t, "migration SQL valid", func(g *proptest.Generator) bool {
+        plan := generateRandomMigrationPlan(g)
+        dialect := dialects[g.Intn(len(dialects))]
+        
+        sql, err := plan.GenerateSQL(dialect)
+        if err != nil {
+            return false
+        }
+        
+        // Parse with dialect-specific parser to verify syntax
+        return validateSQL(sql, dialect) == nil
+    })
+}
+----
+
+=== 3. Query SQL Equivalence
+
+**Property**: For any valid query, the generated SQL for different dialects produces equivalent results when run against the same data.
+
+[source,go]
+----
+func TestProperty_QueryCrossDatabaseEquivalence(t *testing.T) {
+    proptest.QuickCheck(t, "query cross-database equivalence", func(g *proptest.Generator) bool {
+        query := generateRandomQuery(g)
+        testData := generateRandomTestData(g)
+        
+        // Run against all three databases
+        postgresResult := runQuery(postgresDB, query, "postgres", testData)
+        mysqlResult := runQuery(mysqlDB, query, "mysql", testData)
+        sqliteResult := runQuery(sqliteDB, query, "sqlite", testData)
+        
+        // Results should be equivalent
+        return reflect.DeepEqual(postgresResult, mysqlResult) &&
+               reflect.DeepEqual(postgresResult, sqliteResult)
+    })
+}
+----
+
+=== 4. Generated Code Compiles
+
+**Property**: Generated schematypes and queries code always compiles.
+
+[source,go]
+----
+func TestProperty_GeneratedCodeCompiles(t *testing.T) {
+    proptest.QuickCheck(t, "generated code compiles", func(g *proptest.Generator) bool {
+        plan := generateRandomMigrationPlan(g)
+        queries := generateRandomQueries(g, plan)
+        
+        // Generate schematypes
+        schematypesCode := codegen.GenerateSchematypes(plan)
+        
+        // Generate queries
+        queriesCode := codegen.GenerateQueries(queries, "postgres")
+        
+        // Write to temp directory and compile
+        return compileGeneratedCode(schematypesCode, queriesCode) == nil
+    })
+}
+----
+
+=== 5. Idempotent Migration
+
+**Property**: Running migrations twice produces the same database state.
+
+[source,go]
+----
+func TestProperty_MigrationIdempotent(t *testing.T) {
+    proptest.QuickCheck(t, "migration idempotent", func(g *proptest.Generator) bool {
+        plan := generateRandomMigrationPlan(g)
+        
+        // Run migrations
+        db := setupTestDB(t)
+        if err := migrate.Run(ctx, db, plan); err != nil {
+            return false
+        }
+        
+        schema1 := captureDBSchema(db)
+        
+        // Run again
+        if err := migrate.Run(ctx, db, plan); err != nil {
+            return false
+        }
+        
+        schema2 := captureDBSchema(db)
+        
+        return reflect.DeepEqual(schema1, schema2)
+    })
+}
+----
+
+== Random Generators
+
+=== Random Migration Plan Generator
+
+[source,go]
+----
+func generateRandomMigrationPlan(g *proptest.Generator) *migrate.MigrationPlan {
+    plan := migrate.NewPlan()
+    
+    numTables := g.IntRange(1, 10)
+    for i := 0; i < numTables; i++ {
+        tableName := g.IdentifierLower(20)
+        columns := generateColumns(g)
+        plan.AddTable(tableName, columns)
+    }
+    
+    return plan
+}
+
+func generateColumns(g *proptest.Generator) []ddl.Column {
+    numColumns := g.IntRange(1, 20)
+    columns := make([]ddl.Column, numColumns)
+    
+    for i := 0; i < numColumns; i++ {
+        columns[i] = generateColumn(g)
+    }
+    
+    return columns
+}
+
+func generateColumn(g *proptest.Generator) ddl.Column {
+    colTypes := []string{"bigint", "string", "text", "bool", "datetime", "float"}
+    
+    return ddl.Column{
+        Name:     g.IdentifierLower(20),
+        Type:     colTypes[g.Intn(len(colTypes))],
+        Nullable: g.Bool(),
+    }
+}
+----
+
+=== Random Query Generator
+
+[source,go]
+----
+func generateRandomQuery(g *proptest.Generator, schema *migrate.MigrationPlan) *query.AST {
+    // Pick a random table
+    table := schema.Tables[g.Intn(len(schema.Tables))]
+    
+    // Generate SELECT with random columns (at least 1)
+    numCols := g.IntRange(1, len(table.Columns))
+    
+    q := query.From(table)
+    for i := 0; i < numCols; i++ {
+        col := table.Columns[g.Intn(len(table.Columns))]
+        q = q.Select(col)
+    }
+    
+    // Optionally add WHERE (50% chance)
+    if g.Bool() {
+        col := table.Columns[g.Intn(len(table.Columns))]
+        q = q.Where(col.Eq(query.Param("param1")))
+    }
+    
+    // Optionally add ORDER BY (50% chance)
+    if g.Bool() {
+        col := table.Columns[g.Intn(len(table.Columns))]
+        if g.Bool() {
+            q = q.OrderBy(col.Desc())
+        } else {
+            q = q.OrderBy(col.Asc())
+        }
+    }
+    
+    // Optionally add LIMIT (50% chance)
+    if g.Bool() {
+        q = q.Limit(query.Param("limit"))
+    }
+    
+    return q.Build()
+}
+----
+
+== Test Infrastructure
+
+=== Multi-Database Test Helper
+
+[source,go]
+----
+type MultiDBTest struct {
+    Postgres *sql.DB
+    MySQL    *sql.DB
+    SQLite   *sql.DB
+}
+
+func SetupMultiDBTest(t *testing.T) *MultiDBTest {
+    // Connect to all three databases
+    // Create identical schema in each
+    // Return handles
+}
+
+func (m *MultiDBTest) SeedIdenticalData(data TestData) error {
+    // Insert same data into all three databases
+}
+
+func (m *MultiDBTest) RunQueryAll(query string, params ...interface{}) (postgres, mysql, sqlite []Row, err error) {
+    // Run query against all three, return results
+}
+----
+
+== Acceptance Criteria
+
+1. [ ] Schema JSON round-trip property test passes
+2. [ ] Migration SQL validity property test passes for all dialects
+3. [ ] Query cross-database equivalence property test passes
+4. [ ] Generated code compilation property test passes
+5. [ ] Migration idempotency property test passes
+6. [ ] All property tests run in CI
+7. [ ] Property tests complete in reasonable time (<5 minutes)
+
+== Notes
+
+- Property tests should be tagged with `//go:build property` to run separately
+- Use the existing `proptest` package with `Generator` and `QuickCheck`
+- Start with simpler properties and add complexity gradually
+- Some properties may require real databases - these are integration-level property tests
+
+== Estimated Effort
+
+~6-10 hours

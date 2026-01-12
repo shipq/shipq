@@ -1,0 +1,285 @@
+= Phase 3: Query Compiler
+
+Implement the `compile` command that turns query definitions into SQL strings and Go structs.
+
+== Goal
+
+Build the query compiler that reads user-defined queries from a Go package, extracts the ASTs, and generates dialect-specific SQL with typed parameter and result structs.
+
+== Dependencies
+
+- Phase 1 (CLI scaffold) must be complete
+- Phase 2 (migrations) must be complete (for schematypes)
+- Existing `src/query` package with AST and compiler
+
+== Scope
+
+=== In Scope
+
+- `portsql compile` command implementation
+- Temporary Go program generation to extract query ASTs from registry
+- Query AST JSON serialization
+- SQL generation for configured dialect
+- Parameter struct generation
+- Result struct generation
+- Unit and integration tests
+
+=== Already Completed
+
+- `query.DefineQuery()` API for registering queries with names
+- `query.GetRegisteredQueries()` for retrieving all registered queries
+- Unit tests for the registry
+
+=== Out of Scope
+
+- Property tests (Phase 4)
+- Multi-dialect output (only generate for configured dialect)
+
+== Deliverables
+
+=== File Structure
+
+[source]
+----
+src/
+├── cli/
+│   ├── compile.go            # compile command
+│   └── compile_test.go
+│
+├── query/
+│   ├── (existing files)
+│   ├── registry.go           # DefineQuery and registry (DONE)
+│   ├── registry_test.go      # Registry tests (DONE)
+│   ├── json.go               # Query AST JSON serialization
+│   └── json_test.go
+│
+└── codegen/
+    ├── queries.go            # Generate queries package
+    └── queries_test.go
+----
+
+== Implementation Details
+
+=== `compile` Command
+
+[source,go]
+----
+func Compile(config *Config) error {
+    // 1. Parse DATABASE_URL to get dialect
+    // 2. Generate temp main.go that:
+    //    a. Blank-imports the queries_in package (triggers DefineQuery calls)
+    //    b. Calls query.GetRegisteredQueries()
+    //    c. Outputs the map[string]*AST as JSON
+    // 3. Run with `go run`, capture JSON output
+    // 4. For each query:
+    //    a. Compile to SQL for dialect
+    //    b. Extract parameter info from AST.Params
+    //    c. Extract result column info from AST.SelectCols
+    // 5. Generate queries_out/queries.go
+}
+----
+
+=== Query Registration API
+
+Queries are registered using `query.DefineQuery()`, which stores the query with its name in a global registry. This happens at package initialization time:
+
+[source,go]
+----
+// querydef/queries.go
+package querydef
+
+import (
+    "myapp/schematypes"
+    ql "github.com/portsql/portsql/src/query"
+)
+
+func init() {
+    ql.DefineQuery("GetUserByEmail",
+        ql.From(schematypes.Users).
+            Select(
+                schematypes.Users.Id(),
+                schematypes.Users.Name(),
+                schematypes.Users.Email(),
+            ).
+            Where(schematypes.Users.Email().Eq(ql.Param[string]("email"))).
+            Build(),
+    )
+
+    ql.DefineQuery("ListRecentPosts",
+        ql.From(schematypes.Posts).
+            Select(
+                schematypes.Posts.Id(),
+                schematypes.Posts.Title(),
+            ).
+            OrderBy(schematypes.Posts.PublishedAt().Desc()).
+            Limit(ql.Param[int64]("limit")).
+            Build(),
+    )
+
+    ql.DefineQuery("UpdateAuthor",
+        ql.Update(schematypes.Authors).
+            Set(schematypes.Authors.Name(), ql.Param[string]("name")).
+            Where(schematypes.Authors.Id().Eq(ql.Param[int64]("id"))).
+            Build(),
+    )
+}
+----
+
+**Benefits of this approach:**
+
+- Clean, minimal syntax - just call `DefineQuery` in `init()`
+- Name is right next to the query definition
+- Duplicate names panic at startup (fail-fast)
+- Uses the actual `*AST` type, not `interface{}`
+
+=== Registry Implementation (Already Done)
+
+The registry is implemented in `src/query/registry.go`:
+
+[source,go]
+----
+// DefineQuery registers a query with a name and returns it.
+func DefineQuery(name string, ast *AST) *AST
+
+// GetRegisteredQueries returns a copy of all registered queries.
+func GetRegisteredQueries() map[string]*AST
+
+// ClearRegistry removes all registered queries (for testing).
+func ClearRegistry()
+----
+
+=== Generated Temp Program
+
+[source,go]
+----
+// /tmp/portsql-compile-xxxxx/main.go
+package main
+
+import (
+    "encoding/json"
+    "os"
+    
+    _ "myapp/querydef"  // Import triggers DefineQuery calls
+    "github.com/portsql/portsql/src/query"
+)
+
+func main() {
+    queries := query.GetRegisteredQueries()
+    json.NewEncoder(os.Stdout).Encode(queries)
+}
+----
+
+The blank import (`_ "myapp/querydef"`) triggers the package's `init()`, which runs all the `var ... = DefineQuery(...)` statements, populating the registry.
+
+=== Query JSON Serialization
+
+[source,go]
+----
+// In src/query/json.go
+
+func (q *Query) MarshalJSON() ([]byte, error) {
+    // Serialize the AST
+}
+
+func (q *Query) UnmarshalJSON(data []byte) error {
+    // Deserialize the AST
+}
+----
+
+=== Code Generation
+
+[source,go]
+----
+func GenerateQueries(queries []CompiledQuery, dialect, outputPath string) error {
+    // Generate queries.go with:
+    // - Package declaration
+    // - "DO NOT EDIT" header
+    // - For each query:
+    //   - SQL constant
+    //   - Params struct
+    //   - Result struct
+}
+
+type CompiledQuery struct {
+    Name       string
+    SQL        string
+    Params     []ParamInfo
+    Results    []ResultInfo
+}
+
+type ParamInfo struct {
+    Name string
+    Type string  // Go type: string, int64, etc.
+}
+
+type ResultInfo struct {
+    Name string
+    Type string
+}
+----
+
+=== Parameter and Result Type Mapping
+
+Map column types to Go types:
+
+[cols="1,1"]
+|===
+| Column Type | Go Type
+
+| `Int64Column` | `int64`
+| `StringColumn` | `string`
+| `BoolColumn` | `bool`
+| `TimeColumn` | `time.Time`
+| `Float64Column` | `float64`
+| `NullInt64Column` | `sql.NullInt64`
+| `NullStringColumn` | `sql.NullString`
+| `NullBoolColumn` | `sql.NullBool`
+| `NullTimeColumn` | `sql.NullTime`
+| `NullFloat64Column` | `sql.NullFloat64`
+|===
+
+== Testing Strategy
+
+=== Unit Tests
+
+- Query AST JSON round-trip
+- SQL generation correctness (leverage existing compiler tests)
+- Parameter extraction
+- Result type extraction
+- Generated code formatting
+
+=== Integration Tests
+
+End-to-end tests:
+
+1. Set up a project with migrations and schematypes
+2. Create query definitions
+3. Run `portsql compile`
+4. Verify generated code compiles
+5. Verify generated SQL is correct
+6. Verify param/result structs have correct types
+
+== Acceptance Criteria
+
+1. [x] `query.DefineQuery()` registers queries with names (DONE)
+2. [x] `query.GetRegisteredQueries()` returns all registered queries (DONE)
+3. [x] Duplicate query names panic at startup (DONE)
+4. [ ] `portsql compile` generates `queries/queries.go`
+5. [ ] Generated SQL is correct for the configured dialect
+6. [ ] Generated param structs have correct field names and types
+7. [ ] Generated result structs have correct field names and types
+8. [ ] Generated code compiles without errors
+9. [ ] Error messages are helpful when queries_in package is missing
+10. [ ] Error messages are helpful when no queries are registered
+11. [ ] All unit tests pass
+12. [ ] Integration tests pass
+
+== Open Questions
+
+1. Should we support multiple files in `queries_in`? (Yes - any file with `DefineQuery` calls will register queries when imported)
+2. Should we generate one file per query or one big file? (One big file is simpler)
+3. How do we handle query compilation errors? (Fail fast, report which query failed)
+
+== Estimated Effort
+
+~6-12 hours

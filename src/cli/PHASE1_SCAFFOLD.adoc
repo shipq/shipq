@@ -1,0 +1,129 @@
+= Phase 1: CLI Scaffold
+
+Scaffold the CLI binary with command structure and stubs.
+
+== Goal
+
+Create a working CLI binary that parses commands and flags, with stub implementations that print "not implemented yet" messages. This establishes the user-facing interface before building the internals.
+
+== Scope
+
+=== In Scope
+
+- CLI binary entry point (`cmd/portsql/main.go`)
+- Command parsing for all commands
+- `help` and `version` commands (fully implemented)
+- Stub implementations for `migrate new`, `migrate up`, `migrate reset`, `compile`
+- Config file parsing (`portsql.ini`)
+- DATABASE_URL environment variable fallback
+- Basic error handling and exit codes
+
+=== Out of Scope
+
+- Actual migration execution
+- Schema generation
+- Query compilation
+- Database connections
+
+== Deliverables
+
+=== File Structure
+
+[source]
+----
+cmd/
+└── portsql/
+    └── main.go           # Entry point, command dispatch
+
+src/
+└── cli/
+    ├── DESIGN.adoc       # (existing)
+    ├── config.go         # Config file and env var parsing
+    ├── config_test.go
+    ├── commands.go       # Command definitions and stubs
+    └── commands_test.go
+----
+
+=== Commands
+
+[source,bash]
+----
+# These should work:
+portsql help
+portsql version
+portsql --help
+portsql --version
+
+# These should print stub messages:
+portsql migrate new create_users
+# Output: "migrate new: not implemented yet"
+
+portsql migrate up
+# Output: "migrate up: not implemented yet"
+
+portsql migrate reset
+# Output: "migrate reset: not implemented yet"
+
+portsql compile
+# Output: "compile: not implemented yet"
+----
+
+=== Config Parsing
+
+The `config.go` should provide:
+
+[source,go]
+----
+type Config struct {
+    Database struct {
+        URL string
+    }
+    Paths struct {
+        Migrations  string
+        Schematypes string
+        QueriesIn   string
+        QueriesOut  string
+    }
+}
+
+// LoadConfig reads portsql.ini if present, falls back to defaults + DATABASE_URL
+func LoadConfig() (*Config, error)
+----
+
+== Implementation Notes
+
+=== Recommended Libraries
+
+- Use standard library `flag` package or a minimal CLI library
+- Use standard library for INI parsing (or a simple custom parser - INI is trivial)
+- Avoid heavy dependencies
+
+=== Config Loading Order
+
+1. Set defaults for all paths
+2. If `portsql.ini` exists, override with values from file
+3. If `database.url` is empty, use `$DATABASE_URL` environment variable
+
+=== Exit Codes
+
+- `0`: Success
+- `1`: General error
+- `2`: Configuration error (missing config, bad DATABASE_URL)
+
+== Acceptance Criteria
+
+1. [ ] `go build ./cmd/portsql` produces a working binary
+2. [ ] `portsql help` prints usage information for all commands
+3. [ ] `portsql version` prints version string
+4. [ ] `portsql migrate new foo` prints stub message
+5. [ ] `portsql migrate up` prints stub message
+6. [ ] `portsql migrate reset` prints stub message
+7. [ ] `portsql compile` prints stub message
+8. [ ] Config loading works with `portsql.ini`
+9. [ ] Config loading falls back to `DATABASE_URL` when no config file
+10. [ ] Unknown commands produce helpful error messages
+11. [ ] Unit tests pass for config parsing
+
+== Estimated Effort
+
+~2-4 hours

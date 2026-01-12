@@ -2,7 +2,7 @@ package migrate
 
 import "github.com/portsql/portsql/src/ddl"
 
-func Migrate(plan MigrationPlan, db string) error {
+func Migrate(plan MigrationPlan) error {
 	plan.AddEmptyTable("users", func(tb *ddl.TableBuilder) error {
 		tb.Bigint("id").PrimaryKey()
 		tb.String("name")

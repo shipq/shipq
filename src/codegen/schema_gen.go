@@ -140,14 +140,32 @@ func MapColumnType(col ddl.ColumnDefinition) TypeMapping {
 }
 
 // toPascalCase converts a snake_case string to PascalCase.
+// It ensures the result is a valid Go identifier.
 func toPascalCase(s string) string {
 	parts := strings.Split(s, "_")
-	for i, part := range parts {
+
+	// Filter out empty parts and capitalize
+	var result []string
+	for _, part := range parts {
 		if len(part) > 0 {
-			parts[i] = strings.ToUpper(part[:1]) + part[1:]
+			result = append(result, strings.ToUpper(part[:1])+part[1:])
 		}
 	}
-	return strings.Join(parts, "")
+
+	joined := strings.Join(result, "")
+
+	// Ensure the result starts with a letter (valid Go identifier)
+	// If it starts with a digit, prefix with X
+	if len(joined) > 0 && joined[0] >= '0' && joined[0] <= '9' {
+		joined = "X" + joined
+	}
+
+	// If still empty, return a placeholder
+	if joined == "" {
+		return "X"
+	}
+
+	return joined
 }
 
 // toSingular attempts to convert a plural table name to singular.
