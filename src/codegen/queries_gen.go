@@ -28,13 +28,23 @@ type ParamInfo struct {
 type ResultInfo struct {
 	Name   string
 	GoType string
+	// NestedFields holds the fields for JSON aggregation results.
+	// When non-empty, this result is a nested type (slice of objects).
+	NestedFields []ResultInfo
 }
 
 // GenerateQueriesPackage generates the queries.go file from compiled queries.
 func GenerateQueriesPackage(queries []CompiledQuery, packageName string) ([]byte, error) {
+	// Validate queries for duplicate field names before generating code
+	for _, q := range queries {
+		if err := validateNoDuplicateFields(q); err != nil {
+			return nil, err
+		}
+	}
+
 	var buf bytes.Buffer
 
-	// Collect imports
+	// Collect imports (including from nested fields)
 	imports := make(map[string]bool)
 	for _, q := range queries {
 		for _, p := range q.Params {
@@ -42,11 +52,7 @@ func GenerateQueriesPackage(queries []CompiledQuery, packageName string) ([]byte
 				imports[imp] = true
 			}
 		}
-		for _, r := range q.Results {
-			if imp := goTypeImport(r.GoType); imp != "" {
-				imports[imp] = true
-			}
-		}
+		collectImportsFromResults(q.Results, imports)
 	}
 
 	// Sort queries by name for deterministic output
@@ -95,9 +101,18 @@ func GenerateQueriesPackage(queries []CompiledQuery, packageName string) ([]byte
 			buf.WriteString(fmt.Sprintf("type %sResult struct {\n", q.Name))
 			for _, r := range q.Results {
 				fieldName := toPascalCase(r.Name)
-				buf.WriteString(fmt.Sprintf("\t%s %s\n", fieldName, r.GoType))
+				goType := r.GoType
+				// Handle nested types (JSON aggregation)
+				if len(r.NestedFields) > 0 {
+					nestedTypeName := q.Name + fieldName + "Item"
+					goType = "[]" + nestedTypeName
+				}
+				buf.WriteString(fmt.Sprintf("\t%s %s\n", fieldName, goType))
 			}
 			buf.WriteString("}\n\n")
+
+			// Generate nested structs for JSON aggregation fields
+			generateNestedStructs(&buf, q.Name, "", q.Results)
 		}
 	}
 
@@ -108,6 +123,89 @@ func GenerateQueriesPackage(queries []CompiledQuery, packageName string) ([]byte
 	}
 
 	return formatted, nil
+}
+
+// collectImportsFromResults recursively collects imports from results including nested fields.
+func collectImportsFromResults(results []ResultInfo, imports map[string]bool) {
+	for _, r := range results {
+		if imp := goTypeImport(r.GoType); imp != "" {
+			imports[imp] = true
+		}
+		// Recursively check nested fields
+		if len(r.NestedFields) > 0 {
+			collectImportsFromResults(r.NestedFields, imports)
+		}
+	}
+}
+
+// generateNestedStructs generates struct types for JSON aggregation fields.
+// It handles multi-level nesting by recursively processing NestedFields.
+func generateNestedStructs(buf *bytes.Buffer, queryName, parentPath string, results []ResultInfo) {
+	for _, r := range results {
+		if len(r.NestedFields) == 0 {
+			continue
+		}
+
+		fieldName := toPascalCase(r.Name)
+		// Build the current path for this type
+		var currentPath string
+		if parentPath == "" {
+			currentPath = fieldName
+		} else {
+			currentPath = parentPath + fieldName
+		}
+		typeName := queryName + currentPath + "Item"
+
+		buf.WriteString(fmt.Sprintf("// %s represents a single item in the %s JSON array.\n", typeName, r.Name))
+		buf.WriteString(fmt.Sprintf("type %s struct {\n", typeName))
+		for _, nested := range r.NestedFields {
+			nestedFieldName := toPascalCase(nested.Name)
+			goType := nested.GoType
+			// Handle deeply nested types - use the full path
+			if len(nested.NestedFields) > 0 {
+				nestedTypeName := queryName + currentPath + nestedFieldName + "Item"
+				goType = "[]" + nestedTypeName
+			}
+			buf.WriteString(fmt.Sprintf("\t%s %s\n", nestedFieldName, goType))
+		}
+		buf.WriteString("}\n\n")
+
+		// Recursively generate structs for deeply nested fields
+		generateNestedStructs(buf, queryName, currentPath, r.NestedFields)
+	}
+}
+
+// validateNoDuplicateFields checks that a query's result columns don't have duplicate
+// field names after PascalCase conversion. This would generate invalid Go code.
+func validateNoDuplicateFields(q CompiledQuery) error {
+	// Check result fields
+	resultFields := make(map[string]string) // PascalCase name -> original name
+	for _, r := range q.Results {
+		fieldName := toPascalCase(r.Name)
+		if existingName, exists := resultFields[fieldName]; exists {
+			return fmt.Errorf(
+				"query %q has duplicate result field %q (from columns %q and %q). "+
+					"Use SelectAs() to give one of them an alias",
+				q.Name, fieldName, existingName, r.Name,
+			)
+		}
+		resultFields[fieldName] = r.Name
+	}
+
+	// Check param fields
+	paramFields := make(map[string]string)
+	for _, p := range q.Params {
+		fieldName := toPascalCase(p.Name)
+		if existingName, exists := paramFields[fieldName]; exists {
+			return fmt.Errorf(
+				"query %q has duplicate parameter field %q (from params %q and %q)",
+				q.Name, fieldName, existingName, p.Name,
+			)
+		}
+		paramFields[fieldName] = p.Name
+	}
+
+	return nil
 }
 
 // goTypeImport returns the import path needed for a Go type, or empty string if none.
@@ -149,6 +247,7 @@ func ExtractResultInfo(ast *query.AST) []ResultInfo {
 	for _, sel := range ast.SelectCols {
 		name := ""
 		goType := "interface{}"
+		var nestedFields []ResultInfo
 
 		// Determine name
 		if sel.Alias != "" {
@@ -180,6 +279,18 @@ func ExtractResultInfo(ast *query.AST) []ResultInfo {
 						goType = col.Column.GoType()
 					}
 				}
+			case query.JSONAggExpr:
+				// JSON aggregation - extract nested column types
+				name = e.FieldName
+				// Extract nested fields from the columns
+				for _, col := range e.Columns {
+					nestedFields = append(nestedFields, ResultInfo{
+						Name:   col.ColumnName(),
+						GoType: col.GoType(),
+					})
+				}
+				// GoType will be set by GenerateQueriesPackage based on the nested type name
+				goType = "" // Marker - will be replaced with []TypeName
 			default:
 				// For other expressions, need an alias
 				continue
@@ -194,10 +305,25 @@ func ExtractResultInfo(ast *query.AST) []ResultInfo {
 			}
 		}
 
+		// Handle JSONAggExpr when it has an alias
+		if goType == "interface{}" || goType == "" {
+			switch e := sel.Expr.(type) {
+			case query.JSONAggExpr:
+				for _, col := range e.Columns {
+					nestedFields = append(nestedFields, ResultInfo{
+						Name:   col.ColumnName(),
+						GoType: col.GoType(),
+					})
+				}
+				goType = "" // Marker - will be replaced with []TypeName
+			}
+		}
+
 		if name != "" {
 			results = append(results, ResultInfo{
-				Name:   name,
-				GoType: goType,
+				Name:         name,
+				GoType:       goType,
+				NestedFields: nestedFields,
 			})
 		}
 	}

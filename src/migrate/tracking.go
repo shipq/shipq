@@ -10,6 +10,8 @@ import (
 const trackingTableName = "_portsql_migrations"
 
 // EnsureTrackingTable creates the _portsql_migrations table if it doesn't exist.
+// The table uses `name` (full migration name like "20260111170700_create_users") as the
+// primary key to allow multiple migrations with the same timestamp but different names.
 func EnsureTrackingTable(ctx context.Context, db *sql.DB, dialect string) error {
 	var createSQL string
 
@@ -17,22 +19,22 @@ func EnsureTrackingTable(ctx context.Context, db *sql.DB, dialect string) error 
 	case Postgres:
 		createSQL = `
 			CREATE TABLE IF NOT EXISTS _portsql_migrations (
-				version    VARCHAR(14) PRIMARY KEY,
-				name       VARCHAR(255) NOT NULL,
+				name       VARCHAR(255) PRIMARY KEY,
+				version    VARCHAR(14) NOT NULL,
 				applied_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
 			)`
 	case MySQL:
 		createSQL = `
 			CREATE TABLE IF NOT EXISTS _portsql_migrations (
-				version    VARCHAR(14) PRIMARY KEY,
-				name       VARCHAR(255) NOT NULL,
+				name       VARCHAR(255) PRIMARY KEY,
+				version    VARCHAR(14) NOT NULL,
 				applied_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
 			)`
 	case Sqlite:
 		createSQL = `
 			CREATE TABLE IF NOT EXISTS _portsql_migrations (
-				version    TEXT PRIMARY KEY,
-				name       TEXT NOT NULL,
+				name       TEXT PRIMARY KEY,
+				version    TEXT NOT NULL,
 				applied_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 			)`
 	default:
@@ -43,53 +45,56 @@ func EnsureTrackingTable(ctx context.Context, db *sql.DB, dialect string) error 
 	return err
 }
 
-// GetAppliedMigrations returns the list of applied migration versions, sorted by version.
+// GetAppliedMigrations returns the list of applied migration names, sorted by version then name.
+// The name is the full migration identifier like "20260111170700_create_users".
 func GetAppliedMigrations(ctx context.Context, db *sql.DB) ([]string, error) {
 	rows, err := db.QueryContext(ctx,
-		"SELECT version FROM _portsql_migrations ORDER BY version")
+		"SELECT name FROM _portsql_migrations ORDER BY version, name")
 	if err != nil {
 		return nil, fmt.Errorf("failed to query migrations: %w", err)
 	}
 	defer rows.Close()
 
-	var versions []string
+	var names []string
 	for rows.Next() {
-		var version string
-		if err := rows.Scan(&version); err != nil {
-			return nil, fmt.Errorf("failed to scan migration version: %w", err)
+		var name string
+		if err := rows.Scan(&name); err != nil {
+			return nil, fmt.Errorf("failed to scan migration name: %w", err)
 		}
-		versions = append(versions, version)
+		names = append(names, name)
 	}
 
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("error iterating migrations: %w", err)
 	}
 
-	return versions, nil
+	return names, nil
 }
 
 // RecordMigration inserts a migration into the tracking table.
+// The name is the full migration identifier like "20260111170700_create_users".
+// The version is just the timestamp portion for ordering.
 func RecordMigration(ctx context.Context, db *sql.DB, dialect, version, name string) error {
 	var insertSQL string
 	var args []interface{}
 
 	switch dialect {
 	case Postgres:
-		insertSQL = `INSERT INTO _portsql_migrations (version, name, applied_at) VALUES ($1, $2, $3)`
-		args = []interface{}{version, name, time.Now()}
+		insertSQL = `INSERT INTO _portsql_migrations (name, version, applied_at) VALUES ($1, $2, $3)`
+		args = []interface{}{name, version, time.Now()}
 	case MySQL:
-		insertSQL = `INSERT INTO _portsql_migrations (version, name, applied_at) VALUES (?, ?, ?)`
-		args = []interface{}{version, name, time.Now()}
+		insertSQL = `INSERT INTO _portsql_migrations (name, version, applied_at) VALUES (?, ?, ?)`
+		args = []interface{}{name, version, time.Now()}
 	case Sqlite:
-		insertSQL = `INSERT INTO _portsql_migrations (version, name, applied_at) VALUES (?, ?, ?)`
-		args = []interface{}{version, name, time.Now().Format(time.RFC3339)}
+		insertSQL = `INSERT INTO _portsql_migrations (name, version, applied_at) VALUES (?, ?, ?)`
+		args = []interface{}{name, version, time.Now().Format(time.RFC3339)}
 	default:
 		return fmt.Errorf("unsupported dialect: %s", dialect)
 	}
 
 	_, err := db.ExecContext(ctx, insertSQL, args...)
 	if err != nil {
-		return fmt.Errorf("failed to record migration %s: %w", version, err)
+		return fmt.Errorf("failed to record migration %s: %w", name, err)
 	}
 
 	return nil

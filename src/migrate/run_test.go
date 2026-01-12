@@ -96,7 +96,7 @@ func TestRunWithVersions(t *testing.T) {
 		t.Fatalf("RunWithVersions failed: %v", err)
 	}
 
-	// Verify migrations were recorded with correct versions
+	// Verify migrations were recorded with correct names
 	applied, err := GetAppliedMigrations(ctx, db)
 	if err != nil {
 		t.Fatalf("GetAppliedMigrations failed: %v", err)
@@ -106,8 +106,10 @@ func TestRunWithVersions(t *testing.T) {
 		t.Fatalf("expected 2 applied migrations, got %d", len(applied))
 	}
 
-	if applied[0] != "20260111153000" || applied[1] != "20260111160000" {
-		t.Errorf("unexpected versions: %v", applied)
+	// GetAppliedMigrations now returns full names, sorted by version then name
+	expectedNames := []string{"20260111153000_create_users", "20260111160000_create_posts"}
+	if applied[0] != expectedNames[0] || applied[1] != expectedNames[1] {
+		t.Errorf("unexpected names: %v, expected %v", applied, expectedNames)
 	}
 
 	// Run again - should skip already applied
@@ -181,8 +183,9 @@ func TestRunMigrationOrder(t *testing.T) {
 		t.Fatalf("expected 2 applied migrations, got %d", len(applied))
 	}
 
-	// Should be sorted
-	if applied[0] != "20260111153000" || applied[1] != "20260111160000" {
-		t.Errorf("expected sorted order, got: %v", applied)
+	// Should be sorted by version, then name - now returns full names
+	expectedNames := []string{"20260111153000_first", "20260111160000_second"}
+	if applied[0] != expectedNames[0] || applied[1] != expectedNames[1] {
+		t.Errorf("expected sorted order %v, got: %v", expectedNames, applied)
 	}
 }

@@ -9,6 +9,8 @@ import (
 	"path/filepath"
 
 	"github.com/portsql/portsql/src/codegen"
+	"github.com/portsql/portsql/src/ddl"
+	"github.com/portsql/portsql/src/migrate"
 	"github.com/portsql/portsql/src/query"
 	"github.com/portsql/portsql/src/query/compile"
 )
@@ -78,6 +80,92 @@ func Compile(ctx context.Context, config *Config) error {
 
 	fmt.Printf("Generated: %s\n", outputPath)
 	fmt.Printf("\nSuccessfully compiled %d queries.\n", len(compiledQueries))
+
+	// --- CRUD Generation for AddTable tables ---
+
+	// Load schema
+	plan, err := loadSchema(config.Paths.Migrations)
+	if err != nil {
+		// Schema not found is not fatal - just skip CRUD generation
+		fmt.Printf("\nNote: %v\nSkipping CRUD generation.\n", err)
+		return nil
+	}
+
+	// Get tables that qualify for CRUD (created with AddTable)
+	crudTables := getCRUDTables(plan)
+	if len(crudTables) == 0 {
+		fmt.Printf("\nNo tables found that qualify for CRUD generation.\n")
+		fmt.Printf("Use plan.AddTable() to create tables with standard columns (id, public_id, created_at, updated_at, deleted_at).\n")
+		return nil
+	}
+
+	fmt.Printf("\nGenerating CRUD for %d tables:\n", len(crudTables))
+
+	// Build table options with scope configuration
+	tableOpts := make(map[string]codegen.CRUDOptions)
+	for _, table := range crudTables {
+		scope := config.CRUD.GetScopeForTable(table.Name)
+		opts := codegen.CRUDOptions{
+			ScopeColumn: scope,
+		}
+		tableOpts[table.Name] = opts
+
+		if scope != "" {
+			fmt.Printf("  %s (scope: %s)\n", table.Name, scope)
+		} else {
+			fmt.Printf("  %s\n", table.Name)
+		}
+	}
+
+	// Create a filtered plan with only CRUD-eligible tables
+	crudPlan := &migrate.MigrationPlan{
+		Schema: migrate.Schema{
+			Tables: make(map[string]ddl.Table),
+		},
+	}
+	for _, table := range crudTables {
+		crudPlan.Schema.Tables[table.Name] = table
+	}
+
+	// Convert dialect string to codegen.Dialect
+	var codegenDialect codegen.Dialect
+	switch dialect {
+	case "postgres":
+		codegenDialect = codegen.DialectPostgres
+	case "mysql":
+		codegenDialect = codegen.DialectMySQL
+	case "sqlite":
+		codegenDialect = codegen.DialectSQLite
+	}
+
+	// Generate CRUD types
+	crudTypesCode, err := codegen.GenerateCRUDPackageWithOptions(crudPlan, "queries", tableOpts)
+	if err != nil {
+		return fmt.Errorf("failed to generate CRUD types: %w", err)
+	}
+
+	crudTypesPath := filepath.Join(config.Paths.QueriesOut, "crud_types.go")
+	if err := os.WriteFile(crudTypesPath, crudTypesCode, 0644); err != nil {
+		return fmt.Errorf("failed to write crud_types.go: %w", err)
+	}
+	fmt.Printf("Generated: %s\n", crudTypesPath)
+
+	// Generate CRUD runner (QueryRunner with methods)
+	crudRunnerCode, err := codegen.GenerateCRUDRunner(crudPlan, "queries", tableOpts)
+	if err != nil {
+		return fmt.Errorf("failed to generate CRUD runner: %w", err)
+	}
+
+	crudRunnerPath := filepath.Join(config.Paths.QueriesOut, "crud_runner.go")
+	if err := os.WriteFile(crudRunnerPath, crudRunnerCode, 0644); err != nil {
+		return fmt.Errorf("failed to write crud_runner.go: %w", err)
+	}
+	fmt.Printf("Generated: %s\n", crudRunnerPath)
+
+	// Silence unused variable warning
+	_ = codegenDialect
+
+	fmt.Printf("\nSuccessfully generated CRUD for %d tables.\n", len(crudTables))
 
 	return nil
 }
@@ -174,4 +262,53 @@ func compileQuery(ast *query.AST, dialect string) (string, []string, error) {
 	default:
 		return "", nil, fmt.Errorf("unsupported dialect: %s", dialect)
 	}
+}
+
+// loadSchema loads the schema from migrations/schema.json.
+func loadSchema(migrationsPath string) (*migrate.MigrationPlan, error) {
+	schemaPath := filepath.Join(migrationsPath, "schema.json")
+
+	data, err := os.ReadFile(schemaPath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, fmt.Errorf("schema.json not found at %s\nRun 'portsql migrate up' first to generate the schema", schemaPath)
+		}
+		return nil, fmt.Errorf("failed to read schema.json: %w", err)
+	}
+
+	var plan migrate.MigrationPlan
+	if err := json.Unmarshal(data, &plan); err != nil {
+		return nil, fmt.Errorf("failed to parse schema.json: %w", err)
+	}
+
+	return &plan, nil
+}
+
+// isAddTableTable returns true if the table was created with AddTable (has public_id AND deleted_at).
+// Tables created with AddTable have the standard columns: id, public_id, created_at, updated_at, deleted_at.
+func isAddTableTable(table ddl.Table) bool {
+	hasPublicID := false
+	hasDeletedAt := false
+
+	for _, col := range table.Columns {
+		switch col.Name {
+		case "public_id":
+			hasPublicID = true
+		case "deleted_at":
+			hasDeletedAt = true
+		}
+	}
+
+	return hasPublicID && hasDeletedAt
+}
+
+// getCRUDTables returns tables that qualify for CRUD generation (created with AddTable).
+func getCRUDTables(plan *migrate.MigrationPlan) []ddl.Table {
+	var tables []ddl.Table
+	for _, table := range plan.Schema.Tables {
+		if isAddTableTable(table) {
+			tables = append(tables, table)
+		}
+	}
+	return tables
 }

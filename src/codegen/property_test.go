@@ -393,3 +393,170 @@ func TestProperty_SchemaTableNamesPreserved(t *testing.T) {
 		return true
 	})
 }
+
+// =============================================================================
+// JSON Aggregation Property Tests
+// =============================================================================
+
+// generateRandomNestedResults generates random result info with nested fields.
+func generateRandomNestedResults(g *proptest.Generator, maxDepth int) []ResultInfo {
+	numResults := g.IntRange(1, 4)
+	resultNames := g.UniqueIdentifiers(numResults, 10)
+
+	var results []ResultInfo
+	for _, name := range resultNames {
+		r := ResultInfo{
+			Name:   name,
+			GoType: proptest.Pick(g, []string{"string", "int64", "bool", "float64", "time.Time", "*string", "*int64"}),
+		}
+
+		// 30% chance of being a nested JSON field (if we haven't hit max depth)
+		if maxDepth > 0 && g.Float64() < 0.3 {
+			r.GoType = ""
+			r.NestedFields = generateRandomNestedResults(g, maxDepth-1)
+		}
+
+		results = append(results, r)
+	}
+
+	return results
+}
+
+// TestProperty_JSONAggGeneratedCodeCompiles verifies JSON aggregation generates valid Go.
+func TestProperty_JSONAggGeneratedCodeCompiles(t *testing.T) {
+	proptest.QuickCheck(t, "json agg generates valid Go", func(g *proptest.Generator) bool {
+		// Generate random nesting depth (1-3 levels)
+		depth := g.IntRange(1, 3)
+		results := generateRandomNestedResults(g, depth)
+
+		queryName := strings.ToUpper(g.Identifier(10)[:1]) + g.Identifier(10)[1:]
+
+		query := CompiledQuery{
+			Name:    queryName,
+			SQL:     "SELECT ...",
+			Results: results,
+		}
+
+		code, err := GenerateQueriesPackage([]CompiledQuery{query}, "queries")
+		if err != nil {
+			t.Logf("GenerateQueriesPackage failed: %v", err)
+			return false
+		}
+
+		// Verify generated code parses as valid Go
+		fset := token.NewFileSet()
+		_, err = parser.ParseFile(fset, "queries.go", code, parser.AllErrors)
+		if err != nil {
+			t.Logf("Generated code doesn't parse: %v\nCode:\n%s", err, string(code))
+			return false
+		}
+
+		return true
+	})
+}
+
+// TestProperty_NestedTypesHandleAllColumnTypes verifies nested types work with all column types.
+func TestProperty_NestedTypesHandleAllColumnTypes(t *testing.T) {
+	allTypes := []string{
+		"string", "int64", "int32", "bool", "float64",
+		"time.Time", "*string", "*int64", "*int32", "*bool",
+		"*float64", "*time.Time", "json.RawMessage", "[]byte",
+	}
+
+	proptest.QuickCheck(t, "nested types handle all column types", func(g *proptest.Generator) bool {
+		// Create a query with nested fields using various types
+		var nestedFields []ResultInfo
+		numFields := g.IntRange(1, len(allTypes))
+		fieldNames := g.UniqueIdentifiers(numFields, 10)
+
+		for i, name := range fieldNames {
+			nestedFields = append(nestedFields, ResultInfo{
+				Name:   name,
+				GoType: allTypes[i%len(allTypes)],
+			})
+		}
+
+		queryName := "TestQuery" + g.Identifier(5)
+		query := CompiledQuery{
+			Name: queryName,
+			SQL:  "SELECT ...",
+			Results: []ResultInfo{
+				{Name: "id", GoType: "int64"},
+				{Name: "items", GoType: "", NestedFields: nestedFields},
+			},
+		}
+
+		code, err := GenerateQueriesPackage([]CompiledQuery{query}, "queries")
+		if err != nil {
+			t.Logf("GenerateQueriesPackage failed: %v", err)
+			return false
+		}
+
+		// Verify generated code parses as valid Go
+		fset := token.NewFileSet()
+		_, err = parser.ParseFile(fset, "queries.go", code, parser.AllErrors)
+		if err != nil {
+			t.Logf("Generated code doesn't parse: %v\nCode:\n%s", err, string(code))
+			return false
+		}
+
+		return true
+	})
+}
+
+// TestProperty_MultipleJSONAggFieldsGenerateUniqueTypes verifies no duplicate type names.
+func TestProperty_MultipleJSONAggFieldsGenerateUniqueTypes(t *testing.T) {
+	proptest.QuickCheck(t, "multiple json agg fields have unique types", func(g *proptest.Generator) bool {
+		// Create a query with multiple JSON agg fields
+		numJSONFields := g.IntRange(2, 4)
+		fieldNames := g.UniqueIdentifiers(numJSONFields, 10)
+
+		var results []ResultInfo
+		results = append(results, ResultInfo{Name: "id", GoType: "int64"})
+
+		for _, name := range fieldNames {
+			results = append(results, ResultInfo{
+				Name:   name,
+				GoType: "",
+				NestedFields: []ResultInfo{
+					{Name: "id", GoType: "int64"},
+					{Name: "value", GoType: "string"},
+				},
+			})
+		}
+
+		queryName := "TestQuery" + g.Identifier(5)
+		query := CompiledQuery{
+			Name:    queryName,
+			SQL:     "SELECT ...",
+			Results: results,
+		}
+
+		code, err := GenerateQueriesPackage([]CompiledQuery{query}, "queries")
+		if err != nil {
+			t.Logf("GenerateQueriesPackage failed: %v", err)
+			return false
+		}
+
+		codeStr := string(code)
+
+		// Verify each JSON field generates a unique type
+		for _, name := range fieldNames {
+			typeName := queryName + toPascalCase(name) + "Item"
+			if !strings.Contains(codeStr, "type "+typeName+" struct") {
+				t.Logf("Missing type %s in generated code", typeName)
+				return false
+			}
+		}
+
+		// Verify code parses
+		fset := token.NewFileSet()
+		_, err = parser.ParseFile(fset, "queries.go", code, parser.AllErrors)
+		if err != nil {
+			t.Logf("Generated code doesn't parse: %v", err)
+			return false
+		}
+
+		return true
+	})
+}

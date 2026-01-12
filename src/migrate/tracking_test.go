@@ -29,46 +29,46 @@ func TestTrackingTable(t *testing.T) {
 	}
 
 	// Test GetAppliedMigrations (should be empty)
-	versions, err := GetAppliedMigrations(ctx, db)
+	names, err := GetAppliedMigrations(ctx, db)
 	if err != nil {
 		t.Fatalf("GetAppliedMigrations failed: %v", err)
 	}
-	if len(versions) != 0 {
-		t.Errorf("expected 0 applied migrations, got %d", len(versions))
+	if len(names) != 0 {
+		t.Errorf("expected 0 applied migrations, got %d", len(names))
 	}
 
-	// Test RecordMigration
-	if err := RecordMigration(ctx, db, Sqlite, "20260111153000", "create_users"); err != nil {
+	// Test RecordMigration - now uses full name as unique key
+	if err := RecordMigration(ctx, db, Sqlite, "20260111153000", "20260111153000_create_users"); err != nil {
 		t.Fatalf("RecordMigration failed: %v", err)
 	}
 
 	// Verify it was recorded
-	versions, err = GetAppliedMigrations(ctx, db)
+	names, err = GetAppliedMigrations(ctx, db)
 	if err != nil {
 		t.Fatalf("GetAppliedMigrations failed: %v", err)
 	}
-	if len(versions) != 1 {
-		t.Fatalf("expected 1 applied migration, got %d", len(versions))
+	if len(names) != 1 {
+		t.Fatalf("expected 1 applied migration, got %d", len(names))
 	}
-	if versions[0] != "20260111153000" {
-		t.Errorf("expected version '20260111153000', got %q", versions[0])
+	if names[0] != "20260111153000_create_users" {
+		t.Errorf("expected name '20260111153000_create_users', got %q", names[0])
 	}
 
 	// Add another migration
-	if err := RecordMigration(ctx, db, Sqlite, "20260111160000", "create_posts"); err != nil {
+	if err := RecordMigration(ctx, db, Sqlite, "20260111160000", "20260111160000_create_posts"); err != nil {
 		t.Fatalf("RecordMigration failed: %v", err)
 	}
 
-	// Verify both are returned in order
-	versions, err = GetAppliedMigrations(ctx, db)
+	// Verify both are returned in order (sorted by version, then name)
+	names, err = GetAppliedMigrations(ctx, db)
 	if err != nil {
 		t.Fatalf("GetAppliedMigrations failed: %v", err)
 	}
-	if len(versions) != 2 {
-		t.Fatalf("expected 2 applied migrations, got %d", len(versions))
+	if len(names) != 2 {
+		t.Fatalf("expected 2 applied migrations, got %d", len(names))
 	}
-	if versions[0] != "20260111153000" || versions[1] != "20260111160000" {
-		t.Errorf("unexpected migration order: %v", versions)
+	if names[0] != "20260111153000_create_users" || names[1] != "20260111160000_create_posts" {
+		t.Errorf("unexpected migration order: %v", names)
 	}
 }
 
@@ -165,5 +165,52 @@ func TestUnsupportedDialect(t *testing.T) {
 
 	if err := DropAllTables(ctx, db, "unsupported"); err == nil {
 		t.Error("expected error for unsupported dialect")
+	}
+}
+
+func TestSameTimestampDifferentNames(t *testing.T) {
+	// Test that two migrations with the same timestamp but different names
+	// can both be recorded without error. This simulates migrations created
+	// within the same second.
+	db, err := sql.Open("sqlite", ":memory:")
+	if err != nil {
+		t.Fatalf("failed to open sqlite: %v", err)
+	}
+	defer db.Close()
+
+	ctx := context.Background()
+
+	// Create tracking table
+	if err := EnsureTrackingTable(ctx, db, Sqlite); err != nil {
+		t.Fatalf("EnsureTrackingTable failed: %v", err)
+	}
+
+	// Record first migration
+	if err := RecordMigration(ctx, db, Sqlite, "20260111170700", "20260111170700_create_tags"); err != nil {
+		t.Fatalf("RecordMigration (tags) failed: %v", err)
+	}
+
+	// Record second migration with SAME timestamp but different name
+	// This should NOT fail - the name is used as the unique key now
+	if err := RecordMigration(ctx, db, Sqlite, "20260111170700", "20260111170700_create_users"); err != nil {
+		t.Fatalf("RecordMigration (users) failed - same timestamp should be allowed: %v", err)
+	}
+
+	// Verify both are recorded
+	names, err := GetAppliedMigrations(ctx, db)
+	if err != nil {
+		t.Fatalf("GetAppliedMigrations failed: %v", err)
+	}
+	if len(names) != 2 {
+		t.Fatalf("expected 2 applied migrations, got %d", len(names))
+	}
+
+	// Migrations should be returned sorted by version (timestamp) then name
+	// Both have same version, so they're sorted by name
+	expected := []string{"20260111170700_create_tags", "20260111170700_create_users"}
+	for i, name := range names {
+		if name != expected[i] {
+			t.Errorf("expected migration %d to be %q, got %q", i, expected[i], name)
+		}
 	}
 }

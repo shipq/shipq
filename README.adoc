@@ -326,6 +326,143 @@ LEFT JOIN "books" ON "authors"."id" = "books"."author_id"
 GROUP BY "authors"."id", "authors"."name"
 ----
 
+== Auto-Generated CRUD Operations
+
+For tables created with `AddTable` (which includes standard columns: `id`, `public_id`, `created_at`, `updated_at`, `deleted_at`), PortSQL automatically generates CRUD operations.
+
+=== Basic CRUD Generation
+
+When you run `portsql compile`, CRUD is generated for eligible tables:
+
+[source,bash]
+----
+$ portsql compile
+Found 3 registered queries
+  Compiling: GetUserByEmail
+  Compiling: ListPosts
+  ...
+Generated: queries/queries.go
+
+Generating CRUD for 2 tables:
+  users
+  orders
+Generated: queries/crud_types.go
+Generated: queries/crud_runner.go
+
+Successfully generated CRUD for 2 tables.
+----
+
+=== Generated CRUD Methods
+
+For each table, you get:
+
+[source,go]
+----
+// GetUser - fetch by public_id
+runner.GetUser(ctx, GetUserParams{PublicID: "abc123"})
+
+// ListUsers - paginated list
+runner.ListUsers(ctx, ListUsersParams{Limit: 10, Offset: 0})
+
+// InsertUser - create new record (auto-generates public_id)
+publicID, _ := runner.InsertUser(ctx, InsertUserParams{Name: "Alice", Email: "alice@example.com"})
+
+// UpdateUser - update existing record
+runner.UpdateUser(ctx, UpdateUserParams{PublicID: "abc123", Name: "Alice Updated"})
+
+// DeleteUser - soft delete (sets deleted_at)
+runner.DeleteUser(ctx, DeleteUserParams{PublicID: "abc123"})
+
+// HardDeleteUser - permanent delete
+runner.HardDeleteUser(ctx, HardDeleteUserParams{PublicID: "abc123"})
+----
+
+=== Scope Configuration
+
+Scopes add tenant isolation or ownership filtering to CRUD operations. Configure in `portsql.ini`:
+
+==== Global Scope
+
+Set a default scope for all tables:
+
+[source,ini]
+----
+[crud]
+scope = org_id
+----
+
+This adds `org_id` to all CRUD operations:
+- `GetUser` requires `org_id` parameter, adds `WHERE org_id = ?`
+- `ListUsers` requires `org_id` parameter, filters by it
+- `InsertUser` requires `org_id` parameter, includes it in INSERT
+- `UpdateUser` requires `org_id` parameter, adds to WHERE clause
+
+==== Per-Table Scope Override
+
+Override the global scope for specific tables:
+
+[source,ini]
+----
+[crud]
+scope = org_id              # Default: all tables scoped by org_id
+
+[crud.orders]
+scope = user_id             # Orders scoped by user_id instead
+
+[crud.audit_logs]
+scope =                     # No scope (public table)
+----
+
+==== Scope Resolution Rules
+
+1. If `[crud.tablename]` exists with `scope = X`, use `X` (even if empty)
+2. Otherwise, use `[crud]` `scope` value (global default)
+3. If no `[crud]` section exists, no scope is applied
+
+==== Example: Multi-Tenant SaaS
+
+[source,ini]
+----
+[crud]
+scope = organization_id     # All tables scoped by organization
+
+[crud.users]
+scope =                     # Users table is global (admins can see all)
+
+[crud.user_sessions]
+scope = user_id             # Sessions scoped by user, not org
+----
+
+==== Generated SQL with Scope
+
+With `scope = org_id`:
+
+[source,sql]
+----
+-- GetUser
+SELECT ... FROM users WHERE public_id = ? AND org_id = ? AND deleted_at IS NULL
+
+-- ListUsers  
+SELECT ... FROM users WHERE org_id = ? AND deleted_at IS NULL ORDER BY created_at DESC LIMIT ? OFFSET ?
+
+-- InsertUser
+INSERT INTO users (public_id, org_id, name, email, created_at, updated_at) VALUES (?, ?, ?, ?, NOW(), NOW())
+
+-- UpdateUser
+UPDATE users SET name = ?, email = ?, updated_at = NOW() WHERE public_id = ? AND org_id = ? AND deleted_at IS NULL
+----
+
+Without scope:
+
+[source,sql]
+----
+-- GetUser
+SELECT ... FROM users WHERE public_id = ? AND deleted_at IS NULL
+
+-- ListUsers
+SELECT ... FROM users WHERE deleted_at IS NULL ORDER BY created_at DESC LIMIT ? OFFSET ?
+----
+
 == Project Structure
 
 [source]

@@ -63,7 +63,7 @@ func MigrateUp(ctx context.Context, config *Config) error {
 	// Filter to unapplied migrations
 	var pendingFiles []migrationFile
 	for _, mf := range migrationFiles {
-		if !appliedSet[mf.Version] {
+		if !appliedSet[mf.Name] {
 			pendingFiles = append(pendingFiles, mf)
 		}
 	}

@@ -239,3 +239,383 @@ func TestFormatSQLString(t *testing.T) {
 		})
 	}
 }
+
+func TestDuplicateColumnNamesError(t *testing.T) {
+	// This simulates a JOIN query where both tables have a "name" column
+	// and the user forgot to use aliases
+	queries := []CompiledQuery{
+		{
+			Name: "ListPetsWithCategory",
+			SQL:  `SELECT "pets"."name", "categories"."name" FROM "pets" JOIN "categories"`,
+			Results: []ResultInfo{
+				{Name: "name", GoType: "string"},  // pets.name
+				{Name: "name", GoType: "string"},  // categories.name - DUPLICATE!
+			},
+		},
+	}
+
+	_, err := GenerateQueriesPackage(queries, "queries")
+	if err == nil {
+		t.Fatal("expected error for duplicate column names, got nil")
+	}
+
+	// Error message should be helpful
+	errStr := err.Error()
+	if !strings.Contains(errStr, "ListPetsWithCategory") {
+		t.Errorf("error should mention the query name, got: %s", errStr)
+	}
+	if !strings.Contains(errStr, "Name") || !strings.Contains(errStr, "duplicate") {
+		t.Errorf("error should mention duplicate field name, got: %s", errStr)
+	}
+}
+
+func TestDuplicateColumnNamesDifferentCase(t *testing.T) {
+	// Test that snake_case columns that convert to the same PascalCase are caught
+	// e.g., "user_name" and "userName" both become "UserName"
+	queries := []CompiledQuery{
+		{
+			Name: "GetUserDetails",
+			SQL:  `SELECT user_name, user_name FROM users`,
+			Results: []ResultInfo{
+				{Name: "user_name", GoType: "string"},
+				{Name: "user_name", GoType: "string"},
+			},
+		},
+	}
+
+	_, err := GenerateQueriesPackage(queries, "queries")
+	if err == nil {
+		t.Fatal("expected error for duplicate column names, got nil")
+	}
+}
+
+func TestNoDuplicatesWithAliases(t *testing.T) {
+	// When aliases are used, there should be no error
+	queries := []CompiledQuery{
+		{
+			Name: "ListPetsWithCategory",
+			SQL:  `SELECT "pets"."name", "categories"."name" AS "category_name" FROM "pets" JOIN "categories"`,
+			Results: []ResultInfo{
+				{Name: "name", GoType: "string"},
+				{Name: "category_name", GoType: "string"}, // Different name via alias
+			},
+		},
+	}
+
+	_, err := GenerateQueriesPackage(queries, "queries")
+	if err != nil {
+		t.Fatalf("unexpected error with aliases: %v", err)
+	}
+}
+
+// =============================================================================
+// JSON Aggregation Tests
+// =============================================================================
+
+func TestGenerateQueriesWithJSONAgg_SingleLevel(t *testing.T) {
+	// Test single-level nesting: Categories with nested pets array
+	queries := []CompiledQuery{
+		{
+			Name: "ListCategoriesWithPets",
+			SQL:  `SELECT "categories"."id", "categories"."name", JSON_AGG(...) AS "pets" FROM "categories"`,
+			Results: []ResultInfo{
+				{Name: "id", GoType: "int64"},
+				{Name: "name", GoType: "string"},
+				{Name: "pets", GoType: "", NestedFields: []ResultInfo{
+					{Name: "id", GoType: "int64"},
+					{Name: "name", GoType: "string"},
+					{Name: "status", GoType: "*string"},
+				}},
+			},
+		},
+	}
+
+	code, err := GenerateQueriesPackage(queries, "queries")
+	if err != nil {
+		t.Fatalf("GenerateQueriesPackage failed: %v", err)
+	}
+
+	codeStr := string(code)
+
+	// Should have the result struct with typed Pets field
+	if !strings.Contains(codeStr, "type ListCategoriesWithPetsResult struct") {
+		t.Error("missing ListCategoriesWithPetsResult struct")
+	}
+	if !containsField(codeStr, "Pets", "[]ListCategoriesWithPetsPetsItem") {
+		t.Errorf("missing typed Pets field, got:\n%s", codeStr)
+	}
+
+	// Should have the nested item struct
+	if !strings.Contains(codeStr, "type ListCategoriesWithPetsPetsItem struct") {
+		t.Errorf("missing nested PetsItem struct, got:\n%s", codeStr)
+	}
+
+	// Check nested struct has correct fields (use regex-like matching for whitespace)
+	if !containsField(codeStr, "Id", "int64") {
+		t.Error("missing Id field in nested struct")
+	}
+	if !containsField(codeStr, "Name", "string") {
+		t.Error("missing Name field in nested struct")
+	}
+	if !containsField(codeStr, "Status", "*string") {
+		t.Error("missing Status field in nested struct")
+	}
+
+	// Verify generated code parses as valid Go
+	assertValidGoCode(t, code)
+}
+
+func TestGenerateQueriesWithJSONAgg_MultiLevel(t *testing.T) {
+	// Test multi-level nesting: Categories -> Pets -> Tags (2 levels)
+	queries := []CompiledQuery{
+		{
+			Name: "GetCategoryTree",
+			SQL:  `SELECT ... complex JSON aggregation ...`,
+			Results: []ResultInfo{
+				{Name: "id", GoType: "int64"},
+				{Name: "name", GoType: "string"},
+				{Name: "pets", GoType: "", NestedFields: []ResultInfo{
+					{Name: "id", GoType: "int64"},
+					{Name: "name", GoType: "string"},
+					{Name: "tags", GoType: "", NestedFields: []ResultInfo{
+						{Name: "id", GoType: "int64"},
+						{Name: "label", GoType: "string"},
+					}},
+				}},
+			},
+		},
+	}
+
+	code, err := GenerateQueriesPackage(queries, "queries")
+	if err != nil {
+		t.Fatalf("GenerateQueriesPackage failed: %v", err)
+	}
+
+	codeStr := string(code)
+
+	// Should have the main result struct
+	if !strings.Contains(codeStr, "type GetCategoryTreeResult struct") {
+		t.Error("missing GetCategoryTreeResult struct")
+	}
+	if !containsField(codeStr, "Pets", "[]GetCategoryTreePetsItem") {
+		t.Errorf("missing typed Pets field, got:\n%s", codeStr)
+	}
+
+	// Should have first-level nested struct
+	if !strings.Contains(codeStr, "type GetCategoryTreePetsItem struct") {
+		t.Errorf("missing nested PetsItem struct, got:\n%s", codeStr)
+	}
+
+	// First-level nested struct should have tags as typed slice
+	if !containsField(codeStr, "Tags", "[]GetCategoryTreePetsTagsItem") {
+		t.Errorf("missing Tags field in PetsItem struct, got:\n%s", codeStr)
+	}
+
+	// Should have second-level nested struct
+	if !strings.Contains(codeStr, "type GetCategoryTreePetsTagsItem struct") {
+		t.Errorf("missing nested TagsItem struct, got:\n%s", codeStr)
+	}
+
+	// Check second-level nested struct has correct fields
+	if !containsField(codeStr, "Label", "string") {
+		t.Errorf("missing Label field in TagsItem struct, got:\n%s", codeStr)
+	}
+
+	// Verify generated code parses as valid Go
+	assertValidGoCode(t, code)
+}
+
+func TestGenerateQueriesWithJSONAgg_MultipleFields(t *testing.T) {
+	// Test multiple JSON agg fields in same query: Users with both pets AND orders
+	queries := []CompiledQuery{
+		{
+			Name: "GetUserWithRelations",
+			SQL:  `SELECT ... complex query ...`,
+			Results: []ResultInfo{
+				{Name: "id", GoType: "int64"},
+				{Name: "name", GoType: "string"},
+				{Name: "pets", GoType: "", NestedFields: []ResultInfo{
+					{Name: "id", GoType: "int64"},
+					{Name: "name", GoType: "string"},
+				}},
+				{Name: "orders", GoType: "", NestedFields: []ResultInfo{
+					{Name: "id", GoType: "int64"},
+					{Name: "total", GoType: "float64"},
+					{Name: "created_at", GoType: "time.Time"},
+				}},
+			},
+		},
+	}
+
+	code, err := GenerateQueriesPackage(queries, "queries")
+	if err != nil {
+		t.Fatalf("GenerateQueriesPackage failed: %v", err)
+	}
+
+	codeStr := string(code)
+
+	// Should have both nested types
+	if !containsField(codeStr, "Pets", "[]GetUserWithRelationsPetsItem") {
+		t.Errorf("missing Pets field, got:\n%s", codeStr)
+	}
+	if !containsField(codeStr, "Orders", "[]GetUserWithRelationsOrdersItem") {
+		t.Errorf("missing Orders field, got:\n%s", codeStr)
+	}
+
+	// Should have both nested structs
+	if !strings.Contains(codeStr, "type GetUserWithRelationsPetsItem struct") {
+		t.Error("missing PetsItem struct")
+	}
+	if !strings.Contains(codeStr, "type GetUserWithRelationsOrdersItem struct") {
+		t.Error("missing OrdersItem struct")
+	}
+
+	// Should import time for the orders.created_at field
+	if !strings.Contains(codeStr, `"time"`) {
+		t.Error("missing time import for nested time.Time field")
+	}
+
+	// Verify generated code parses as valid Go
+	assertValidGoCode(t, code)
+}
+
+func TestGenerateQueriesWithJSONAgg_ThreeLevels(t *testing.T) {
+	// Test 3 levels of nesting: Organizations -> Departments -> Teams -> Members
+	queries := []CompiledQuery{
+		{
+			Name: "GetOrgStructure",
+			SQL:  `SELECT ...`,
+			Results: []ResultInfo{
+				{Name: "id", GoType: "int64"},
+				{Name: "departments", GoType: "", NestedFields: []ResultInfo{
+					{Name: "id", GoType: "int64"},
+					{Name: "teams", GoType: "", NestedFields: []ResultInfo{
+						{Name: "id", GoType: "int64"},
+						{Name: "members", GoType: "", NestedFields: []ResultInfo{
+							{Name: "id", GoType: "int64"},
+							{Name: "name", GoType: "string"},
+						}},
+					}},
+				}},
+			},
+		},
+	}
+
+	code, err := GenerateQueriesPackage(queries, "queries")
+	if err != nil {
+		t.Fatalf("GenerateQueriesPackage failed: %v", err)
+	}
+
+	codeStr := string(code)
+
+	// Check all levels are generated
+	if !strings.Contains(codeStr, "type GetOrgStructureDepartmentsItem struct") {
+		t.Error("missing DepartmentsItem struct")
+	}
+	if !strings.Contains(codeStr, "type GetOrgStructureDepartmentsTeamsItem struct") {
+		t.Error("missing TeamsItem struct")
+	}
+	if !strings.Contains(codeStr, "type GetOrgStructureDepartmentsTeamsMembersItem struct") {
+		t.Error("missing MembersItem struct")
+	}
+
+	// Verify the chain of types
+	if !containsField(codeStr, "Departments", "[]GetOrgStructureDepartmentsItem") {
+		t.Error("missing typed Departments field")
+	}
+	if !containsField(codeStr, "Teams", "[]GetOrgStructureDepartmentsTeamsItem") {
+		t.Error("missing typed Teams field")
+	}
+	if !containsField(codeStr, "Members", "[]GetOrgStructureDepartmentsTeamsMembersItem") {
+		t.Error("missing typed Members field")
+	}
+
+	// Verify generated code parses as valid Go
+	assertValidGoCode(t, code)
+}
+
+func TestExtractResultInfo_WithJSONAgg(t *testing.T) {
+	// Test ExtractResultInfo with JSONAggExpr
+	ast := &query.AST{
+		Kind: query.SelectQuery,
+		FromTable: query.TableRef{
+			Name: "categories",
+		},
+		SelectCols: []query.SelectExpr{
+			{Expr: query.ColumnExpr{Column: query.Int64Column{Table: "categories", Name: "id"}}},
+			{Expr: query.ColumnExpr{Column: query.StringColumn{Table: "categories", Name: "name"}}},
+			{
+				Expr: query.JSONAggExpr{
+					FieldName: "pets",
+					Columns: []query.Column{
+						query.Int64Column{Table: "pets", Name: "id"},
+						query.StringColumn{Table: "pets", Name: "name"},
+						query.NullStringColumn{Table: "pets", Name: "status"},
+					},
+				},
+				Alias: "pets",
+			},
+		},
+	}
+
+	results := ExtractResultInfo(ast)
+
+	if len(results) != 3 {
+		t.Fatalf("expected 3 results, got %d", len(results))
+	}
+
+	// Check regular columns
+	if results[0].Name != "id" || results[0].GoType != "int64" {
+		t.Errorf("unexpected first result: %+v", results[0])
+	}
+	if results[1].Name != "name" || results[1].GoType != "string" {
+		t.Errorf("unexpected second result: %+v", results[1])
+	}
+
+	// Check JSON agg result
+	if results[2].Name != "pets" {
+		t.Errorf("expected name 'pets', got %q", results[2].Name)
+	}
+	if len(results[2].NestedFields) != 3 {
+		t.Fatalf("expected 3 nested fields, got %d", len(results[2].NestedFields))
+	}
+	if results[2].NestedFields[0].Name != "id" || results[2].NestedFields[0].GoType != "int64" {
+		t.Errorf("unexpected nested field 0: %+v", results[2].NestedFields[0])
+	}
+	if results[2].NestedFields[1].Name != "name" || results[2].NestedFields[1].GoType != "string" {
+		t.Errorf("unexpected nested field 1: %+v", results[2].NestedFields[1])
+	}
+	if results[2].NestedFields[2].Name != "status" || results[2].NestedFields[2].GoType != "*string" {
+		t.Errorf("unexpected nested field 2: %+v", results[2].NestedFields[2])
+	}
+}
+
+// assertValidGoCode checks that the generated code parses as valid Go
+func assertValidGoCode(t *testing.T, code []byte) {
+	t.Helper()
+	// The code is already formatted by go/format in GenerateQueriesPackage,
+	// so if it got this far without error, it's valid Go
+	if len(code) == 0 {
+		t.Error("generated code is empty")
+	}
+}
+
+// containsField checks if the code contains a struct field with the given name and type.
+// It handles whitespace variations from gofmt alignment.
+func containsField(code, fieldName, fieldType string) bool {
+	// Match "FieldName type" with any amount of whitespace between
+	// We look for the field name at the start of a line (with leading whitespace)
+	// followed by whitespace and the type
+	lines := strings.Split(code, "\n")
+	for _, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if strings.HasPrefix(trimmed, fieldName) {
+			rest := strings.TrimPrefix(trimmed, fieldName)
+			rest = strings.TrimSpace(rest)
+			if strings.HasPrefix(rest, fieldType) {
+				return true
+			}
+		}
+	}
+	return false
+}

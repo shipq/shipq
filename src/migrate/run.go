@@ -15,27 +15,27 @@ func Run(ctx context.Context, db *sql.DB, plan *MigrationPlan, dialect string) e
 		return fmt.Errorf("failed to create tracking table: %w", err)
 	}
 
-	// Get already applied migrations
+	// Get already applied migrations (returns full names)
 	applied, err := GetAppliedMigrations(ctx, db)
 	if err != nil {
 		return fmt.Errorf("failed to get applied migrations: %w", err)
 	}
 
-	// Create a set of applied versions for fast lookup
+	// Create a set of applied names for fast lookup
 	appliedSet := make(map[string]bool)
-	for _, v := range applied {
-		appliedSet[v] = true
+	for _, name := range applied {
+		appliedSet[name] = true
 	}
 
-	// Group migrations by their version (extracted from name)
-	// For now, we execute all migrations in the plan that haven't been applied
-	// The "version" in the tracking table corresponds to the migration name
+	// Execute all migrations in the plan that haven't been applied
+	// The migration name is used as the unique key
 	for i, migration := range plan.Migrations {
-		// Use the migration index as a simple version for now
-		// In practice, migrations from files will have timestamp versions
+		// Use the migration name as the unique identifier
+		// Generate a version from the index for ordering
 		version := fmt.Sprintf("%014d", i)
+		name := fmt.Sprintf("%s_%s", version, migration.Name)
 
-		if appliedSet[version] {
+		if appliedSet[name] {
 			continue
 		}
 
@@ -57,8 +57,8 @@ func Run(ctx context.Context, db *sql.DB, plan *MigrationPlan, dialect string) e
 			return fmt.Errorf("failed to execute migration %s: %w", migration.Name, err)
 		}
 
-		// Record the migration
-		if err := RecordMigration(ctx, db, dialect, version, migration.Name); err != nil {
+		// Record the migration using the full name as unique key
+		if err := RecordMigration(ctx, db, dialect, version, name); err != nil {
 			return err
 		}
 	}
@@ -74,26 +74,30 @@ func RunWithVersions(ctx context.Context, db *sql.DB, migrations []VersionedMigr
 		return fmt.Errorf("failed to create tracking table: %w", err)
 	}
 
-	// Get already applied migrations
+	// Get already applied migrations (returns full names)
 	applied, err := GetAppliedMigrations(ctx, db)
 	if err != nil {
 		return fmt.Errorf("failed to get applied migrations: %w", err)
 	}
 
-	// Create a set of applied versions for fast lookup
+	// Create a set of applied names for fast lookup
 	appliedSet := make(map[string]bool)
-	for _, v := range applied {
-		appliedSet[v] = true
+	for _, name := range applied {
+		appliedSet[name] = true
 	}
 
-	// Sort migrations by version
+	// Sort migrations by version then name for deterministic ordering
 	sort.Slice(migrations, func(i, j int) bool {
-		return migrations[i].Version < migrations[j].Version
+		if migrations[i].Version != migrations[j].Version {
+			return migrations[i].Version < migrations[j].Version
+		}
+		return migrations[i].Name < migrations[j].Name
 	})
 
 	// Execute each unapplied migration
 	for _, m := range migrations {
-		if appliedSet[m.Version] {
+		// Check against the full name (which is the primary key)
+		if appliedSet[m.Name] {
 			continue
 		}
 
@@ -115,7 +119,7 @@ func RunWithVersions(ctx context.Context, db *sql.DB, migrations []VersionedMigr
 			return fmt.Errorf("failed to execute migration %s: %w", m.Name, err)
 		}
 
-		// Record the migration
+		// Record the migration using name as the unique identifier
 		if err := RecordMigration(ctx, db, dialect, m.Version, m.Name); err != nil {
 			return err
 		}
