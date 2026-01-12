@@ -1,0 +1,624 @@
+= Code Generation Refactor
+:toc:
+:toc-placement: preamble
+
+This document describes the planned refactoring of portsql's code generation system from a single multi-dialect QueryRunner to dialect-specific subpackages.
+
+== Motivation
+
+=== The JSON Scanning Problem
+
+SQLite returns JSON columns as `string` (TEXT type), while Postgres and MySQL return JSON as `[]byte`. The standard `json.RawMessage` type only implements `sql.Scanner` for `[]byte`, causing this error on SQLite:
+
+[source]
+----
+sql: Scan error on column index 4, name "photo_urls": unsupported Scan,
+storing driver.Value type string into type *json.RawMessage
+----
+
+=== Why Not Runtime Switching?
+
+The current architecture stores SQL for all three dialects and switches at runtime:
+
+[source,go]
+----
+func NewQueryRunner(db Querier, dialect Dialect) *QueryRunner {
+    switch dialect {
+    case Postgres:
+        r.getPetByIdSQL = "SELECT ... $1"
+    case MySQL:
+        r.getPetByIdSQL = "SELECT ... ?"
+    case SQLite:
+        r.getPetByIdSQL = "SELECT ... ?"
+    }
+}
+----
+
+To fix JSON scanning with this architecture, we would need to add runtime type switches in every generated method:
+
+[source,go]
+----
+func (r *QueryRunner) GetPetById(...) {
+    var photoUrlsRaw any
+    row.Scan(&result.Id, &photoUrlsRaw)
+    
+    // Runtime type switch - inefficient and ugly
+    switch v := photoUrlsRaw.(type) {
+    case []byte:
+        result.PhotoUrls = v
+    case string:
+        result.PhotoUrls = []byte(v)
+    }
+}
+----
+
+=== The Better Solution
+
+At `portsql compile` time, we *know* which dialect(s) we're generating for (from `portsql.ini`). We should generate dialect-specific code that's correct for each database, with no runtime switching.
+
+== Current Architecture
+
+=== Generated Files
+
+Currently, `portsql compile` generates:
+
+[source]
+----
+queries/
+├── queries.go      # SQL constants + param/result types
+├── runner.go       # QueryRunner with ALL dialect SQL embedded
+└── crud_types.go   # CRUD param/result types (if AddTable tables exist)
+----
+
+=== QueryRunner Structure
+
+[source,go]
+----
+type Dialect int
+
+const (
+    Postgres Dialect = iota
+    MySQL
+    SQLite
+)
+
+type QueryRunner struct {
+    dialect Dialect
+    db      Querier
+    
+    // SQL for user-defined queries
+    getPetByIdSQL string
+    // ... more SQL fields
+    
+    // SQL for CRUD operations
+    getUserSQL    string
+    listUsersSQL  string
+    // ... more CRUD SQL
+}
+
+func NewQueryRunner(db Querier, dialect Dialect) *QueryRunner {
+    r := &QueryRunner{dialect: dialect, db: db}
+    switch dialect {
+    case Postgres:
+        r.getPetByIdSQL = `SELECT ... $1`
+        r.getUserSQL = `SELECT ... $1`
+    case MySQL:
+        r.getPetByIdSQL = "SELECT ... ?"
+        r.getUserSQL = "SELECT ... ?"
+    case SQLite:
+        r.getPetByIdSQL = `SELECT ... ?`
+        r.getUserSQL = `SELECT ... ?`
+    }
+    return r
+}
+----
+
+=== Problems
+
+1. **Runtime overhead**: Every `NewQueryRunner` call does dialect switching
+2. **JSON scanning broken**: Can't generate dialect-specific scan code
+3. **Bloated code**: All three dialects' SQL is in every binary
+4. **Unused code**: Most apps only use one database
+
+== New Architecture
+
+=== Generated Files
+
+[source]
+----
+queries/
+├── types.go           # Shared: param structs, result structs
+├── sqlite/
+│   └── runner.go      # SQLite-specific QueryRunner
+├── postgres/
+│   └── runner.go      # Postgres-specific QueryRunner
+└── mysql/
+    └── runner.go      # MySQL-specific QueryRunner
+----
+
+Only the configured dialect(s) are generated.
+
+=== Shared Types (`queries/types.go`)
+
+Contains param and result structs that are identical across all dialects:
+
+[source,go]
+----
+package queries
+
+import (
+    "encoding/json"
+    "time"
+)
+
+// ========== User-Defined Query Types ==========
+
+type GetPetByIdParams struct {
+    Id int64
+}
+
+type GetPetByIdResult struct {
+    Id         int64
+    Name       string
+    CategoryId int64
+    Status     *string
+    PhotoUrls  json.RawMessage
+}
+
+type FindPetsByStatusParams struct {
+    Status string
+}
+
+type FindPetsByStatusResult struct {
+    Id         int64
+    Name       string
+    CategoryId int64
+    Status     *string
+}
+
+// ========== CRUD Types ==========
+
+type GetUserParams struct {
+    PublicID string
+}
+
+type GetUserResult struct {
+    PublicID  string
+    CreatedAt time.Time
+    UpdatedAt time.Time
+    Username  string
+    // ... other fields
+}
+
+// ... more CRUD types
+----
+
+=== Dialect-Specific Runner (`queries/sqlite/runner.go`)
+
+Each dialect gets its own package with a QueryRunner optimized for that database:
+
+[source,go]
+----
+package sqlite
+
+import (
+    "context"
+    "database/sql"
+    
+    "myapp/queries"
+    "github.com/portsql/nanoid"
+)
+
+// Querier interface for database operations
+type Querier interface {
+    ExecContext(ctx context.Context, query string, args ...any) (sql.Result, error)
+    QueryContext(ctx context.Context, query string, args ...any) (*sql.Rows, error)
+    QueryRowContext(ctx context.Context, query string, args ...any) *sql.Row
+}
+
+// QueryRunner for SQLite
+type QueryRunner struct {
+    db Querier
+    
+    // User-defined query SQL
+    getPetByIdSQL        string
+    findPetsByStatusSQL  string
+    
+    // CRUD SQL
+    getUserSQL       string
+    listUsersSQL     string
+    insertUserSQL    string
+    updateUserSQL    string
+    deleteUserSQL    string
+    hardDeleteUserSQL string
+}
+
+// NewQueryRunner creates a SQLite query runner
+func NewQueryRunner(db Querier) *QueryRunner {
+    return &QueryRunner{
+        db: db,
+        
+        // User-defined queries - SQLite syntax
+        getPetByIdSQL: `SELECT "pets"."id", "pets"."name", "pets"."category_id", "pets"."status", "pets"."photo_urls" FROM "pets" WHERE ("pets"."id" = ?)`,
+        findPetsByStatusSQL: `SELECT "pets"."id", "pets"."name", "pets"."category_id", "pets"."status" FROM "pets" WHERE ("pets"."status" = ?)`,
+        
+        // CRUD - SQLite syntax
+        getUserSQL: `SELECT "public_id", "created_at", "updated_at", "username" FROM "users" WHERE "public_id" = ? AND "deleted_at" IS NULL`,
+        listUsersSQL: `SELECT "public_id", "created_at", "username" FROM "users" WHERE "deleted_at" IS NULL ORDER BY "created_at" DESC LIMIT ? OFFSET ?`,
+        insertUserSQL: `INSERT INTO "users" ("public_id", "username", "created_at", "updated_at") VALUES (?, ?, datetime('now'), datetime('now')) RETURNING "public_id"`,
+        updateUserSQL: `UPDATE "users" SET "username" = ?, "updated_at" = datetime('now') WHERE "public_id" = ? AND "deleted_at" IS NULL`,
+        deleteUserSQL: `UPDATE "users" SET "deleted_at" = datetime('now') WHERE "public_id" = ? AND "deleted_at" IS NULL`,
+        hardDeleteUserSQL: `DELETE FROM "users" WHERE "public_id" = ?`,
+    }
+}
+
+// WithTx returns a new QueryRunner using the given transaction
+func (r *QueryRunner) WithTx(tx *sql.Tx) *QueryRunner {
+    return &QueryRunner{
+        db:                   tx,
+        getPetByIdSQL:        r.getPetByIdSQL,
+        findPetsByStatusSQL:  r.findPetsByStatusSQL,
+        getUserSQL:           r.getUserSQL,
+        listUsersSQL:         r.listUsersSQL,
+        insertUserSQL:        r.insertUserSQL,
+        updateUserSQL:        r.updateUserSQL,
+        deleteUserSQL:        r.deleteUserSQL,
+        hardDeleteUserSQL:    r.hardDeleteUserSQL,
+    }
+}
+----
+
+=== SQLite-Specific JSON Scanning
+
+The key difference: SQLite's runner scans JSON columns to `string` first, then converts:
+
+[source,go]
+----
+// GetPetById - SQLite version with proper JSON handling
+func (r *QueryRunner) GetPetById(ctx context.Context, params queries.GetPetByIdParams) (*queries.GetPetByIdResult, error) {
+    row := r.db.QueryRowContext(ctx, r.getPetByIdSQL, params.Id)
+    
+    var result queries.GetPetByIdResult
+    var photoUrlsStr string  // SQLite returns JSON as string
+    
+    err := row.Scan(
+        &result.Id,
+        &result.Name,
+        &result.CategoryId,
+        &result.Status,
+        &photoUrlsStr,  // Scan to string
+    )
+    if err == sql.ErrNoRows {
+        return nil, nil
+    }
+    if err != nil {
+        return nil, err
+    }
+    
+    result.PhotoUrls = []byte(photoUrlsStr)  // Convert to []byte
+    return &result, nil
+}
+----
+
+=== Postgres/MySQL JSON Scanning
+
+Postgres and MySQL can scan JSON directly to `[]byte`:
+
+[source,go]
+----
+// GetPetById - Postgres version (direct scan works)
+func (r *QueryRunner) GetPetById(ctx context.Context, params queries.GetPetByIdParams) (*queries.GetPetByIdResult, error) {
+    row := r.db.QueryRowContext(ctx, r.getPetByIdSQL, params.Id)
+    
+    var result queries.GetPetByIdResult
+    err := row.Scan(
+        &result.Id,
+        &result.Name,
+        &result.CategoryId,
+        &result.Status,
+        &result.PhotoUrls,  // Direct scan to json.RawMessage works
+    )
+    if err == sql.ErrNoRows {
+        return nil, nil
+    }
+    if err != nil {
+        return nil, err
+    }
+    return &result, nil
+}
+----
+
+== Configuration Changes
+
+=== Current Config
+
+[source,ini]
+----
+[database]
+url = sqlite:./petstore.db
+
+[paths]
+migrations = migrations
+queries_in = querydef
+queries_out = queries
+----
+
+The dialect is inferred from the URL, and only one dialect is supported.
+
+=== New Config
+
+[source,ini]
+----
+[database]
+url = sqlite:./petstore.db
+
+# NEW: Explicit dialect list (optional, defaults to URL dialect)
+dialects = sqlite
+
+# OR generate multiple dialects for a multi-database app
+# dialects = sqlite,postgres
+
+[paths]
+migrations = migrations
+queries_in = querydef
+queries_out = queries
+----
+
+=== Backward Compatibility
+
+If `dialects` is not specified, fall back to inferring from `url`:
+
+[source,go]
+----
+func (c *Config) GetDialects() []string {
+    if len(c.Database.Dialects) > 0 {
+        return c.Database.Dialects
+    }
+    // Fall back to URL-inferred dialect
+    return []string{ParseDialect(c.Database.URL)}
+}
+----
+
+== Code Generation Changes
+
+=== File: `src/cli/compile.go`
+
+[source,go]
+----
+func Compile(ctx context.Context, config *Config) error {
+    // ... extract queries, load schema ...
+    
+    // Generate shared types (always)
+    typesCode, err := codegen.GenerateSharedTypes(compiledQueries, crudPlan, "queries")
+    typesPath := filepath.Join(config.Paths.QueriesOut, "types.go")
+    os.WriteFile(typesPath, typesCode, 0644)
+    
+    // Generate dialect-specific runners
+    for _, dialect := range config.GetDialects() {
+        subpkgPath := filepath.Join(config.Paths.QueriesOut, dialect)
+        os.MkdirAll(subpkgPath, 0755)
+        
+        runnerCode, err := codegen.GenerateDialectRunner(
+            compiledQueries,
+            crudPlan,
+            dialect,      // "sqlite", "postgres", or "mysql"
+            tableOpts,
+        )
+        
+        runnerPath := filepath.Join(subpkgPath, "runner.go")
+        os.WriteFile(runnerPath, runnerCode, 0644)
+    }
+}
+----
+
+=== File: `src/codegen/queries_gen.go`
+
+New function to generate shared types:
+
+[source,go]
+----
+// GenerateSharedTypes generates the types.go file with shared param/result structs
+func GenerateSharedTypes(queries []CompiledQuery, crudPlan *migrate.MigrationPlan, packageName string) ([]byte, error) {
+    var buf bytes.Buffer
+    
+    buf.WriteString("// Code generated by portsql. DO NOT EDIT.\n")
+    buf.WriteString(fmt.Sprintf("package %s\n\n", packageName))
+    
+    // Collect and write imports
+    // ...
+    
+    // Generate user-defined query types
+    for _, q := range queries {
+        writeParamsStruct(&buf, q)
+        writeResultStruct(&buf, q)
+    }
+    
+    // Generate CRUD types (reuse existing logic from crud_gen.go)
+    for _, table := range crudPlan.Schema.Tables {
+        writeCRUDTypes(&buf, table)
+    }
+    
+    return format.Source(buf.Bytes())
+}
+----
+
+New function to generate dialect-specific runner:
+
+[source,go]
+----
+// GenerateDialectRunner generates a runner.go for a specific dialect
+func GenerateDialectRunner(
+    queries []CompiledQueryWithDialects,
+    crudPlan *migrate.MigrationPlan,
+    dialect string,  // "sqlite", "postgres", "mysql"
+    tableOpts map[string]CRUDOptions,
+) ([]byte, error) {
+    var buf bytes.Buffer
+    
+    buf.WriteString("// Code generated by portsql. DO NOT EDIT.\n")
+    buf.WriteString(fmt.Sprintf("package %s\n\n", dialect))
+    
+    // Imports - note the parent package import for types
+    writeDialectImports(&buf, queries, crudPlan)
+    
+    // Querier interface
+    writeQuerierInterface(&buf)
+    
+    // QueryRunner struct (no Dialect field needed!)
+    writeQueryRunnerStruct(&buf, queries, crudPlan)
+    
+    // NewQueryRunner (no dialect parameter!)
+    writeNewQueryRunner(&buf, queries, crudPlan, dialect, tableOpts)
+    
+    // WithTx method
+    writeWithTxMethod(&buf, queries, crudPlan)
+    
+    // Generate methods with dialect-specific scanning
+    for _, q := range queries {
+        generateDialectMethod(&buf, q, dialect)
+    }
+    
+    // Generate CRUD methods
+    for _, table := range crudPlan.Schema.Tables {
+        generateDialectCRUDMethods(&buf, table, tableOpts[table.Name], dialect)
+    }
+    
+    return format.Source(buf.Bytes())
+}
+
+// generateDialectMethod generates a query method with dialect-specific scanning
+func generateDialectMethod(buf *bytes.Buffer, q CompiledQueryWithDialects, dialect string) {
+    // Identify JSON columns
+    jsonColumns := []ResultInfo{}
+    for _, r := range q.Results {
+        if r.GoType == "json.RawMessage" {
+            jsonColumns = append(jsonColumns, r)
+        }
+    }
+    
+    // For SQLite with JSON columns: scan to string temp vars
+    // For Postgres/MySQL: scan directly
+    if dialect == "sqlite" && len(jsonColumns) > 0 {
+        generateSQLiteMethodWithJSONConversion(buf, q, jsonColumns)
+    } else {
+        generateDirectScanMethod(buf, q)
+    }
+}
+----
+
+== Usage Changes
+
+=== Before (Current)
+
+[source,go]
+----
+import "myapp/queries"
+
+func main() {
+    db, _ := sql.Open("sqlite", "petstore.db")
+    runner := queries.NewQueryRunner(db, queries.SQLite)
+    
+    result, err := runner.GetPetById(ctx, queries.GetPetByIdParams{Id: 1})
+}
+----
+
+=== After (New)
+
+[source,go]
+----
+import (
+    "myapp/queries"         // For shared types
+    "myapp/queries/sqlite"  // For SQLite runner
+)
+
+func main() {
+    db, _ := sql.Open("sqlite", "petstore.db")
+    runner := sqlite.NewQueryRunner(db)  // No dialect parameter!
+    
+    result, err := runner.GetPetById(ctx, queries.GetPetByIdParams{Id: 1})
+}
+----
+
+== Migration Path
+
+=== Step 1: Update Config Parsing
+
+1. Add `Dialects []string` to `DatabaseConfig` struct
+2. Add `GetDialects()` method with fallback logic
+3. Add config parsing for `dialects = sqlite,postgres` format
+
+=== Step 2: Create Shared Types Generator
+
+1. Extract type generation from `GenerateQueriesPackage`
+2. Create `GenerateSharedTypes` function
+3. Include both user-defined query types and CRUD types
+
+=== Step 3: Create Dialect Runner Generator
+
+1. Create `GenerateDialectRunner` function
+2. Implement dialect-specific SQL selection
+3. Implement dialect-specific JSON scanning for SQLite
+
+=== Step 4: Update Compile Command
+
+1. Generate `types.go` in queries directory
+2. Generate `runner.go` in each dialect subdirectory
+3. Remove old single-file generation
+
+=== Step 5: Update Demo
+
+1. Update `demo/portsql.ini` if needed
+2. Update `demo/demo_test.go` to use new import paths
+3. Verify JSON scanning works on SQLite
+
+=== Step 6: Cleanup
+
+1. Remove old `Dialect` enum from generated code
+2. Remove `GenerateCombinedRunner` function
+3. Update documentation
+
+== Testing Strategy
+
+=== Unit Tests
+
+1. **Config parsing**: Test `dialects` list parsing and fallback
+2. **Type generation**: Verify shared types are correct
+3. **Runner generation**: Verify each dialect generates correct code
+4. **JSON scanning**: Verify SQLite generates string-to-[]byte conversion
+
+=== Integration Tests
+
+1. **SQLite JSON**: Test JSON column scanning on SQLite
+2. **Postgres JSON**: Test JSON column scanning on Postgres
+3. **MySQL JSON**: Test JSON column scanning on MySQL
+4. **Cross-dialect types**: Verify same types work with all runners
+
+=== Property Tests
+
+1. **Generated code compiles**: Random schemas produce valid Go
+2. **JSON round-trip**: JSON data survives insert/select cycle
+
+== Benefits Summary
+
+[cols="1,1"]
+|===
+| Before | After
+
+| Runtime dialect switching
+| Compile-time dialect selection
+
+| All SQL in every binary
+| Only needed dialect's SQL
+
+| JSON scanning broken on SQLite
+| JSON scanning correct per dialect
+
+| `NewQueryRunner(db, dialect)`
+| `NewQueryRunner(db)` - simpler API
+
+| Single package
+| Clear separation by database
+
+| Runtime type assertions for JSON
+| No runtime overhead
+|===

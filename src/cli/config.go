@@ -16,7 +16,23 @@ type Config struct {
 
 // DatabaseConfig holds database connection settings.
 type DatabaseConfig struct {
-	URL string
+	URL      string
+	Dialects []string // Explicit list of dialects to generate (e.g., ["sqlite", "postgres"])
+}
+
+// GetDialects returns the list of dialects to generate code for.
+// If Dialects is explicitly set, returns that.
+// Otherwise, infers from the database URL.
+func (c *DatabaseConfig) GetDialects() []string {
+	if len(c.Dialects) > 0 {
+		return c.Dialects
+	}
+	// Fall back to URL-inferred dialect
+	dialect := ParseDialect(c.URL)
+	if dialect != "" {
+		return []string{dialect}
+	}
+	return nil
 }
 
 // PathsConfig holds file path settings.
@@ -135,6 +151,13 @@ func LoadConfig(configPath string) (*Config, error) {
 			switch key {
 			case "url":
 				cfg.Database.URL = value
+			case "dialects":
+				// Parse comma-separated dialect list: "sqlite,postgres"
+				dialects := strings.Split(value, ",")
+				for i, d := range dialects {
+					dialects[i] = strings.TrimSpace(d)
+				}
+				cfg.Database.Dialects = dialects
 			}
 		case section == "paths":
 			switch key {

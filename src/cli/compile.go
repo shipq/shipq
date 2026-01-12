@@ -22,11 +22,13 @@ func Compile(ctx context.Context, config *Config) error {
 		return fmt.Errorf("database URL not configured (set DATABASE_URL or add to portsql.ini)")
 	}
 
-	// Parse dialect
-	dialect := ParseDialect(config.Database.URL)
-	if dialect == "" {
-		return fmt.Errorf("unsupported database URL scheme: %s", config.Database.URL)
+	// Get dialects to generate
+	dialects := config.Database.GetDialects()
+	if len(dialects) == 0 {
+		return fmt.Errorf("no dialects configured (set dialects in portsql.ini or check database URL)")
 	}
+
+	fmt.Printf("Generating for dialects: %v\n", dialects)
 
 	// Check if queries_in directory exists
 	if _, err := os.Stat(config.Paths.QueriesIn); os.IsNotExist(err) {
@@ -65,15 +67,9 @@ func Compile(ctx context.Context, config *Config) error {
 			return fmt.Errorf("failed to compile query %s for sqlite: %w", name, err)
 		}
 
-		// Get SQL for the current dialect (for backward-compatible queries.go)
-		sql, _, err := compileQuery(rq.AST, dialect)
-		if err != nil {
-			return fmt.Errorf("failed to compile query %s: %w", name, err)
-		}
-
 		cq := codegen.CompiledQuery{
 			Name:       name,
-			SQL:        sql,
+			SQL:        postgresSQL, // Use Postgres as default for shared types (doesn't matter for types)
 			Params:     codegen.ExtractParamInfo(rq.AST),
 			Results:    codegen.ExtractResultInfo(rq.AST),
 			ReturnType: string(rq.ReturnType),
@@ -90,112 +86,120 @@ func Compile(ctx context.Context, config *Config) error {
 		})
 	}
 
-	// Generate queries package
+	// Generate queries output directory
 	if err := os.MkdirAll(config.Paths.QueriesOut, 0755); err != nil {
 		return fmt.Errorf("failed to create queries output directory: %w", err)
 	}
 
-	// Generate types file (queries.go)
-	code, err := codegen.GenerateQueriesPackage(compiledQueries, "queries")
-	if err != nil {
-		return fmt.Errorf("failed to generate queries package: %w", err)
-	}
-
-	outputPath := filepath.Join(config.Paths.QueriesOut, "queries.go")
-	if err := os.WriteFile(outputPath, code, 0644); err != nil {
-		return fmt.Errorf("failed to write queries.go: %w", err)
-	}
-	fmt.Printf("Generated: %s\n", outputPath)
-
-	// Generate runner file (runner.go)
-	runnerCode, err := codegen.GenerateQueryRunner(compiledWithDialects, "queries")
-	if err != nil {
-		return fmt.Errorf("failed to generate query runner: %w", err)
-	}
-
-	runnerPath := filepath.Join(config.Paths.QueriesOut, "runner.go")
-	if err := os.WriteFile(runnerPath, runnerCode, 0644); err != nil {
-		return fmt.Errorf("failed to write runner.go: %w", err)
-	}
-	fmt.Printf("Generated: %s\n", runnerPath)
-
-	fmt.Printf("\nSuccessfully compiled %d queries.\n", len(compiledQueries))
-
-	// --- CRUD Generation for AddTable tables ---
-
-	// Load schema
-	plan, err := loadSchema(config.Paths.Migrations)
-	if err != nil {
-		// Schema not found is not fatal - just skip CRUD generation
-		fmt.Printf("\nNote: %v\nSkipping CRUD generation.\n", err)
-		return nil
-	}
-
-	// Get tables that qualify for CRUD (created with AddTable)
-	crudTables := getCRUDTables(plan)
-	if len(crudTables) == 0 {
-		fmt.Printf("\nNo tables found that qualify for CRUD generation.\n")
-		fmt.Printf("Use plan.AddTable() to create tables with standard columns (id, public_id, created_at, updated_at, deleted_at).\n")
-		return nil
-	}
-
-	fmt.Printf("\nGenerating CRUD for %d tables:\n", len(crudTables))
-
-	// Build table options with scope configuration
+	// --- Load schema for CRUD generation ---
+	var crudPlan *migrate.MigrationPlan
 	tableOpts := make(map[string]codegen.CRUDOptions)
-	for _, table := range crudTables {
-		scope := config.CRUD.GetScopeForTable(table.Name)
-		opts := codegen.CRUDOptions{
-			ScopeColumn: scope,
+
+	plan, err := loadSchema(config.Paths.Migrations)
+	if err == nil {
+		// Get tables that qualify for CRUD (created with AddTable)
+		crudTables := getCRUDTables(plan)
+		if len(crudTables) > 0 {
+			fmt.Printf("\nFound %d CRUD tables:\n", len(crudTables))
+
+			// Build table options with scope configuration
+			for _, table := range crudTables {
+				scope := config.CRUD.GetScopeForTable(table.Name)
+				opts := codegen.CRUDOptions{
+					ScopeColumn: scope,
+				}
+				tableOpts[table.Name] = opts
+
+				if scope != "" {
+					fmt.Printf("  %s (scope: %s)\n", table.Name, scope)
+				} else {
+					fmt.Printf("  %s\n", table.Name)
+				}
+			}
+
+			// Create a filtered plan with only CRUD-eligible tables
+			crudPlan = &migrate.MigrationPlan{
+				Schema: migrate.Schema{
+					Tables: make(map[string]ddl.Table),
+				},
+			}
+			for _, table := range crudTables {
+				crudPlan.Schema.Tables[table.Name] = table
+			}
 		}
-		tableOpts[table.Name] = opts
-
-		if scope != "" {
-			fmt.Printf("  %s (scope: %s)\n", table.Name, scope)
-		} else {
-			fmt.Printf("  %s\n", table.Name)
-		}
 	}
 
-	// Create a filtered plan with only CRUD-eligible tables
-	crudPlan := &migrate.MigrationPlan{
-		Schema: migrate.Schema{
-			Tables: make(map[string]ddl.Table),
-		},
-	}
-	for _, table := range crudTables {
-		crudPlan.Schema.Tables[table.Name] = table
-	}
-
-	// Generate CRUD types
-	crudTypesCode, err := codegen.GenerateCRUDPackageWithOptions(crudPlan, "queries", tableOpts)
+	// --- Generate shared types (types.go) ---
+	typesCode, err := codegen.GenerateSharedTypes(compiledQueries, crudPlan, "queries", tableOpts)
 	if err != nil {
-		return fmt.Errorf("failed to generate CRUD types: %w", err)
+		return fmt.Errorf("failed to generate shared types: %w", err)
 	}
 
-	crudTypesPath := filepath.Join(config.Paths.QueriesOut, "crud_types.go")
-	if err := os.WriteFile(crudTypesPath, crudTypesCode, 0644); err != nil {
-		return fmt.Errorf("failed to write crud_types.go: %w", err)
+	typesPath := filepath.Join(config.Paths.QueriesOut, "types.go")
+	if err := os.WriteFile(typesPath, typesCode, 0644); err != nil {
+		return fmt.Errorf("failed to write types.go: %w", err)
 	}
-	fmt.Printf("Generated: %s\n", crudTypesPath)
+	fmt.Printf("Generated: %s\n", typesPath)
 
-	// Generate combined runner with both user-defined queries and CRUD methods
-	combinedRunnerCode, err := codegen.GenerateCombinedRunner(compiledWithDialects, crudPlan, "queries", tableOpts)
-	if err != nil {
-		return fmt.Errorf("failed to generate combined runner: %w", err)
-	}
-
-	// Remove old runner.go if it exists (will be replaced by combined runner)
+	// --- Remove old files from previous architecture ---
+	os.Remove(filepath.Join(config.Paths.QueriesOut, "queries.go"))
 	os.Remove(filepath.Join(config.Paths.QueriesOut, "runner.go"))
+	os.Remove(filepath.Join(config.Paths.QueriesOut, "crud_types.go"))
 	os.Remove(filepath.Join(config.Paths.QueriesOut, "crud_runner.go"))
 
-	combinedRunnerPath := filepath.Join(config.Paths.QueriesOut, "runner.go")
-	if err := os.WriteFile(combinedRunnerPath, combinedRunnerCode, 0644); err != nil {
-		return fmt.Errorf("failed to write runner.go: %w", err)
-	}
-	fmt.Printf("Generated: %s\n", combinedRunnerPath)
+	// --- Generate dialect-specific runners ---
 
-	fmt.Printf("\nSuccessfully generated CRUD for %d tables.\n", len(crudTables))
+	// Get module path for types import
+	modulePath, err := getModulePath()
+	if err != nil {
+		return fmt.Errorf("failed to get module path: %w", err)
+	}
+
+	// Get the relative path of queries output from the module root
+	cwd, err := os.Getwd()
+	if err != nil {
+		return fmt.Errorf("failed to get working directory: %w", err)
+	}
+	absQueriesOut, err := filepath.Abs(config.Paths.QueriesOut)
+	if err != nil {
+		return fmt.Errorf("failed to get absolute path: %w", err)
+	}
+	relQueriesOut, err := filepath.Rel(cwd, absQueriesOut)
+	if err != nil {
+		return fmt.Errorf("failed to get relative path: %w", err)
+	}
+	typesImportPath := modulePath + "/" + filepath.ToSlash(relQueriesOut)
+
+	for _, dialect := range dialects {
+		// Create dialect subdirectory
+		dialectPath := filepath.Join(config.Paths.QueriesOut, dialect)
+		if err := os.MkdirAll(dialectPath, 0755); err != nil {
+			return fmt.Errorf("failed to create %s directory: %w", dialect, err)
+		}
+
+		// Generate dialect-specific runner
+		runnerCode, err := codegen.GenerateDialectRunner(
+			compiledWithDialects,
+			crudPlan,
+			dialect,
+			typesImportPath,
+			tableOpts,
+		)
+		if err != nil {
+			return fmt.Errorf("failed to generate %s runner: %w", dialect, err)
+		}
+
+		runnerPath := filepath.Join(dialectPath, "runner.go")
+		if err := os.WriteFile(runnerPath, runnerCode, 0644); err != nil {
+			return fmt.Errorf("failed to write %s/runner.go: %w", dialect, err)
+		}
+		fmt.Printf("Generated: %s\n", runnerPath)
+	}
+
+	fmt.Printf("\nSuccessfully compiled %d queries for %d dialect(s).\n", len(compiledQueries), len(dialects))
+	if crudPlan != nil {
+		fmt.Printf("Generated CRUD for %d tables.\n", len(crudPlan.Schema.Tables))
+	}
 
 	return nil
 }

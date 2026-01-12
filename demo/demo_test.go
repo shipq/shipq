@@ -3,6 +3,7 @@ package demo_test
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -11,6 +12,7 @@ import (
 	_ "modernc.org/sqlite"
 
 	"github.com/portsql/portsql/demo/queries"
+	"github.com/portsql/portsql/demo/queries/sqlite"
 )
 
 // TestDemoWorkflow validates the CLI-driven workflow produces working code.
@@ -67,43 +69,34 @@ func TestDemoWorkflow(t *testing.T) {
 		}
 	})
 
-	// Test 3: Verify generated SQL queries are valid
-	t.Run("GeneratedQueriesAreValid", func(t *testing.T) {
-		// Test GetPetById query compiles
-		_, err := db.PrepareContext(ctx, queries.GetPetByIdSQL)
+	// Test 3: Verify QueryRunner works (methods are generated correctly)
+	t.Run("QueryRunnerMethodsWork", func(t *testing.T) {
+		runner := sqlite.NewQueryRunner(db)
+
+		// Test FindPetsByStatus (returns nil slice for no matching data, which is fine)
+		results, err := runner.FindPetsByStatus(ctx, queries.FindPetsByStatusParams{Status: "nonexistent"})
 		if err != nil {
-			t.Errorf("GetPetByIdSQL is invalid: %v", err)
+			t.Errorf("FindPetsByStatus failed: %v", err)
+		}
+		// Nil slice is fine for no results (common Go pattern)
+		if len(results) != 0 {
+			t.Errorf("expected no results for nonexistent status, got %d", len(results))
 		}
 
-		// Test FindPetsByStatus query compiles
-		_, err = db.PrepareContext(ctx, queries.FindPetsByStatusSQL)
+		// Test GetPetById (returns nil for missing pet)
+		result, err := runner.GetPetById(ctx, queries.GetPetByIdParams{Id: 99999})
 		if err != nil {
-			t.Errorf("FindPetsByStatusSQL is invalid: %v", err)
+			t.Errorf("GetPetById failed: %v", err)
 		}
-
-		// Test GetUserByUsername query compiles
-		_, err = db.PrepareContext(ctx, queries.GetUserByUsernameSQL)
-		if err != nil {
-			t.Errorf("GetUserByUsernameSQL is invalid: %v", err)
-		}
-
-		// Test GetOrderById query compiles
-		_, err = db.PrepareContext(ctx, queries.GetOrderByIdSQL)
-		if err != nil {
-			t.Errorf("GetOrderByIdSQL is invalid: %v", err)
-		}
-
-		// Test ListPetsWithCategory query compiles
-		_, err = db.PrepareContext(ctx, queries.ListPetsWithCategorySQL)
-		if err != nil {
-			t.Errorf("ListPetsWithCategorySQL is invalid: %v", err)
+		if result != nil {
+			t.Errorf("expected nil for non-existent pet, got %+v", result)
 		}
 	})
 
 	// Test 4: Insert and query data using QueryRunner methods
 	t.Run("InsertAndQueryDataWithRunner", func(t *testing.T) {
-		// Create QueryRunner for SQLite
-		runner := queries.NewQueryRunner(db, queries.SQLite)
+		// Create QueryRunner for SQLite (new simplified API - no dialect parameter!)
+		runner := sqlite.NewQueryRunner(db)
 
 		// Insert a category
 		_, err := db.ExecContext(ctx,
@@ -113,7 +106,7 @@ func TestDemoWorkflow(t *testing.T) {
 			t.Fatalf("failed to insert category: %v", err)
 		}
 
-		// Insert a pet
+		// Insert a pet with JSON photo_urls
 		_, err = db.ExecContext(ctx,
 			`INSERT OR IGNORE INTO pets (id, category_id, name, photo_urls, status) VALUES (1, 1, 'Buddy', '["http://example.com/buddy.jpg"]', 'available')`,
 		)
@@ -121,7 +114,7 @@ func TestDemoWorkflow(t *testing.T) {
 			t.Fatalf("failed to insert pet: %v", err)
 		}
 
-		// Query using DefineMany query (FindPetsByStatus doesn't include photo_urls which has JSON scanning issues)
+		// Query using DefineMany query
 		results, err := runner.FindPetsByStatus(ctx, queries.FindPetsByStatusParams{Status: "available"})
 		if err != nil {
 			t.Fatalf("FindPetsByStatus query failed: %v", err)
@@ -143,23 +136,37 @@ func TestDemoWorkflow(t *testing.T) {
 		}
 	})
 
-	// Test 5: Test DefineOne returns nil for non-existent row
-	t.Run("OneReturnsNilForMissing", func(t *testing.T) {
-		runner := queries.NewQueryRunner(db, queries.SQLite)
+	// Test 5: Test GetPetById with JSON columns works on SQLite
+	t.Run("JSONColumnScanningWorks", func(t *testing.T) {
+		runner := sqlite.NewQueryRunner(db)
 
-		// Query for a pet that doesn't exist
-		result, err := runner.GetPetById(ctx, queries.GetPetByIdParams{Id: 99999})
+		// Query for a pet with JSON photo_urls - this was previously broken on SQLite!
+		result, err := runner.GetPetById(ctx, queries.GetPetByIdParams{Id: 1})
 		if err != nil {
-			t.Fatalf("unexpected error: %v", err)
+			t.Fatalf("GetPetById failed: %v", err)
 		}
-		if result != nil {
-			t.Errorf("expected nil for non-existent pet, got %+v", result)
+		if result == nil {
+			t.Fatal("expected result for pet ID 1, got nil")
+		}
+
+		// Verify JSON photo_urls was scanned correctly
+		if len(result.PhotoUrls) == 0 {
+			t.Error("expected photo_urls to be non-empty JSON")
+		}
+
+		// Verify it's valid JSON
+		var urls []string
+		if err := json.Unmarshal(result.PhotoUrls, &urls); err != nil {
+			t.Errorf("photo_urls is not valid JSON: %v", err)
+		}
+		if len(urls) == 0 || urls[0] != "http://example.com/buddy.jpg" {
+			t.Errorf("unexpected photo_urls content: %v", urls)
 		}
 	})
 
 	// Test 6: Test DefineMany returns slice
 	t.Run("ManyReturnsSlice", func(t *testing.T) {
-		runner := queries.NewQueryRunner(db, queries.SQLite)
+		runner := sqlite.NewQueryRunner(db)
 
 		// Insert another pet
 		_, err := db.ExecContext(ctx,
@@ -182,7 +189,7 @@ func TestDemoWorkflow(t *testing.T) {
 
 	// Test 7: Test QueryRunner with JOIN query
 	t.Run("JoinQueryWithRunner", func(t *testing.T) {
-		runner := queries.NewQueryRunner(db, queries.SQLite)
+		runner := sqlite.NewQueryRunner(db)
 
 		// Query pets with their category names
 		results, err := runner.ListPetsWithCategory(ctx)

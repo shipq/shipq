@@ -6,8 +6,7 @@ import (
 	"time"
 )
 
-// FindPetsByStatusSQL contains the compiled SQL for FindPetsByStatus.
-const FindPetsByStatusSQL = `SELECT "pets"."id", "pets"."name", "pets"."category_id", "pets"."status" FROM "pets" WHERE ("pets"."status" = ?)`
+// ========== User-Defined Query Types ==========
 
 // FindPetsByStatusParams contains the parameters for FindPetsByStatus.
 type FindPetsByStatusParams struct {
@@ -21,9 +20,6 @@ type FindPetsByStatusResult struct {
 	CategoryId int64
 	Status     *string
 }
-
-// GetOrderByIdSQL contains the compiled SQL for GetOrderById.
-const GetOrderByIdSQL = `SELECT "orders"."id", "orders"."pet_id", "orders"."quantity", "orders"."ship_date", "orders"."status", "orders"."complete" FROM "orders" WHERE ("orders"."id" = ?)`
 
 // GetOrderByIdParams contains the parameters for GetOrderById.
 type GetOrderByIdParams struct {
@@ -40,9 +36,6 @@ type GetOrderByIdResult struct {
 	Complete bool
 }
 
-// GetPetByIdSQL contains the compiled SQL for GetPetById.
-const GetPetByIdSQL = `SELECT "pets"."id", "pets"."name", "pets"."category_id", "pets"."status", "pets"."photo_urls" FROM "pets" WHERE ("pets"."id" = ?)`
-
 // GetPetByIdParams contains the parameters for GetPetById.
 type GetPetByIdParams struct {
 	Id int64
@@ -57,9 +50,6 @@ type GetPetByIdResult struct {
 	PhotoUrls  json.RawMessage
 }
 
-// GetPetWithPhotosSQL contains the compiled SQL for GetPetWithPhotos.
-const GetPetWithPhotosSQL = `SELECT "pets"."id", "pets"."name", "pets"."photo_urls", "pets"."status", "categories"."name" AS "category_name" FROM "pets" INNER JOIN "categories" ON ("pets"."category_id" = "categories"."id") WHERE ("pets"."id" = ?)`
-
 // GetPetWithPhotosParams contains the parameters for GetPetWithPhotos.
 type GetPetWithPhotosParams struct {
 	Id int64
@@ -73,9 +63,6 @@ type GetPetWithPhotosResult struct {
 	Status       *string
 	CategoryName string
 }
-
-// GetUserByUsernameSQL contains the compiled SQL for GetUserByUsername.
-const GetUserByUsernameSQL = `SELECT "users"."id", "users"."public_id", "users"."username", "users"."first_name", "users"."last_name", "users"."email", "users"."created_at" FROM "users" WHERE ("users"."username" = ?)`
 
 // GetUserByUsernameParams contains the parameters for GetUserByUsername.
 type GetUserByUsernameParams struct {
@@ -93,9 +80,6 @@ type GetUserByUsernameResult struct {
 	CreatedAt time.Time
 }
 
-// ListCategoriesWithPetsSQL contains the compiled SQL for ListCategoriesWithPets.
-const ListCategoriesWithPetsSQL = `SELECT "categories"."id", "categories"."name", COALESCE(JSON_GROUP_ARRAY(JSON_OBJECT('id', "pets"."id", 'name', "pets"."name", 'status', "pets"."status")), '[]') AS "pets" FROM "categories" LEFT JOIN "pets" ON ("categories"."id" = "pets"."category_id") GROUP BY "categories"."id", "categories"."name"`
-
 // ListCategoriesWithPetsResult contains a single result row for ListCategoriesWithPets.
 type ListCategoriesWithPetsResult struct {
 	Id   int64
@@ -110,13 +94,95 @@ type ListCategoriesWithPetsPetsItem struct {
 	Status *string
 }
 
-// ListPetsWithCategorySQL contains the compiled SQL for ListPetsWithCategory.
-const ListPetsWithCategorySQL = `SELECT "pets"."id", "pets"."name", "pets"."status", "categories"."name" AS "category_name" FROM "pets" INNER JOIN "categories" ON ("pets"."category_id" = "categories"."id")`
-
 // ListPetsWithCategoryResult contains a single result row for ListPetsWithCategory.
 type ListPetsWithCategoryResult struct {
 	Id           int64
 	Name         string
 	Status       *string
 	CategoryName string
+}
+
+// ========== Users CRUD Types ==========
+
+// --- Get ---
+
+// GetUserParams contains parameters for fetching a single user.
+type GetUserParams struct {
+	PublicID string
+}
+
+// GetUserResult contains the result of fetching a single user.
+type GetUserResult struct {
+	PublicId   string
+	CreatedAt  time.Time
+	UpdatedAt  time.Time
+	Username   string
+	FirstName  string
+	LastName   string
+	Email      string
+	Password   string
+	Phone      *string
+	UserStatus int32
+}
+
+// --- List ---
+
+// ListUsersParams contains parameters for listing users.
+type ListUsersParams struct {
+	Limit  int
+	Offset int
+}
+
+// ListUsersResult contains a single item from a list of users.
+type ListUsersResult struct {
+	PublicId   string
+	CreatedAt  time.Time
+	Username   string
+	FirstName  string
+	LastName   string
+	Email      string
+	Password   string
+	Phone      *string
+	UserStatus int32
+}
+
+// --- Insert ---
+
+// InsertUserParams contains parameters for inserting a new user.
+type InsertUserParams struct {
+	Username   string
+	FirstName  string
+	LastName   string
+	Email      string
+	Password   string
+	Phone      *string
+	UserStatus int32
+}
+
+// --- Update ---
+
+// UpdateUserParams contains parameters for updating a user.
+type UpdateUserParams struct {
+	PublicID   string
+	Username   string
+	FirstName  string
+	LastName   string
+	Email      string
+	Password   string
+	Phone      *string
+	UserStatus int32
+}
+
+// --- Delete ---
+
+// DeleteUserParams contains parameters for deleting a user.
+type DeleteUserParams struct {
+	PublicID string
+}
+
+// --- HardDelete ---
+
+// HardDeleteUserParams contains parameters for permanently deleting a user.
+type HardDeleteUserParams struct {
+	PublicID string
 }

@@ -8,3 +8,6 @@ start-cursor:  # Launch a Terminal on MacOS and open cursor.
 
 start-dbs:  # Start all databases (MySQL, PostgreSQL, SQLite)
     cd databases && goreman start
+
+test-all:  # Run all tests
+    go test -v ./... -tags=integration
