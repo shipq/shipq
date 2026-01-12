@@ -630,10 +630,10 @@ func TestProperty_GeneratedMethodsCompile(t *testing.T) {
 			queries[i] = q
 		}
 
-		// Generate runner code
-		code, err := GenerateQueryRunner(queries, "queries")
+		// Generate dialect-specific runner code (test with sqlite)
+		code, err := GenerateDialectRunner(queries, nil, "sqlite", "myapp/queries", make(map[string]CRUDOptions))
 		if err != nil {
-			t.Logf("GenerateQueryRunner failed: %v", err)
+			t.Logf("GenerateDialectRunner failed: %v", err)
 			return false
 		}
 
@@ -668,24 +668,24 @@ func TestProperty_ReturnTypeMatchesSignature(t *testing.T) {
 			},
 		}
 
-		code, err := GenerateQueryRunner([]CompiledQueryWithDialects{query}, "queries")
+		code, err := GenerateDialectRunner([]CompiledQueryWithDialects{query}, nil, "sqlite", "myapp/queries", make(map[string]CRUDOptions))
 		if err != nil {
-			t.Logf("GenerateQueryRunner failed: %v", err)
+			t.Logf("GenerateDialectRunner failed: %v", err)
 			return false
 		}
 
 		codeStr := string(code)
 
-		// Check signature based on return type
+		// Check signature based on return type (note: types come from parent package)
 		switch returnType {
 		case "one":
-			expected := "(*" + queryName + "Result, error)"
+			expected := "(*queries." + queryName + "Result, error)"
 			if !strings.Contains(codeStr, expected) {
 				t.Logf("ONE query should return %s", expected)
 				return false
 			}
 		case "many":
-			expected := "([]" + queryName + "Result, error)"
+			expected := "([]queries." + queryName + "Result, error)"
 			if !strings.Contains(codeStr, expected) {
 				t.Logf("MANY query should return %s", expected)
 				return false
@@ -732,9 +732,9 @@ func TestProperty_ScanFieldCountMatchesResultStruct(t *testing.T) {
 			},
 		}
 
-		code, err := GenerateQueryRunner([]CompiledQueryWithDialects{query}, "queries")
+		code, err := GenerateDialectRunner([]CompiledQueryWithDialects{query}, nil, "sqlite", "myapp/queries", make(map[string]CRUDOptions))
 		if err != nil {
-			t.Logf("GenerateQueryRunner failed: %v", err)
+			t.Logf("GenerateDialectRunner failed: %v", err)
 			return false
 		}
 
@@ -782,9 +782,9 @@ func TestProperty_ParamOrderMatchesSQLPlaceholders(t *testing.T) {
 			},
 		}
 
-		code, err := GenerateQueryRunner([]CompiledQueryWithDialects{query}, "queries")
+		code, err := GenerateDialectRunner([]CompiledQueryWithDialects{query}, nil, "sqlite", "myapp/queries", make(map[string]CRUDOptions))
 		if err != nil {
-			t.Logf("GenerateQueryRunner failed: %v", err)
+			t.Logf("GenerateDialectRunner failed: %v", err)
 			return false
 		}
 
