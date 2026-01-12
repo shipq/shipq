@@ -138,94 +138,151 @@ func (PostsTable) PublishedAt() query.NullTimeColumn { return query.NullTimeColu
 
 === Step 2: Define Your Queries
 
-Using the generated schema, define type-safe queries:
+Using the generated schema, define type-safe queries with explicit return types:
 
 [source,go]
 ----
-package queries
+package querydef
 
 import (
-    "myapp/schema"
+    "myapp/schematypes"
     "github.com/portsql/portsql/src/query"
 )
 
-// GetUserByEmail retrieves a user by email.
-var GetUserByEmail = query.From(schema.Users).
-    Select(
-        schema.Users.Id(),
-        schema.Users.Name(),
-        schema.Users.Email(),
-    ).
-    Where(schema.Users.Email().Eq(query.Param("email"))).
-    Build()
+func init() {
+    // DefineOne - returns 0 or 1 row (nil if not found)
+    query.DefineOne("GetUserByEmail",
+        query.From(schematypes.Users).
+            Select(
+                schematypes.Users.Id(),
+                schematypes.Users.Name(),
+                schematypes.Users.Email(),
+            ).
+            Where(schematypes.Users.Email().Eq(query.Param("email"))).
+            Build(),
+    )
 
-// GetUserWithPosts retrieves a user with their posts as nested JSON.
-var GetUserWithPosts = query.From(schema.Users).
-    LeftJoin(schema.Posts).On(schema.Users.Id().Eq(schema.Posts.AuthorId())).
-    Select(
-        schema.Users.Id(),
-        schema.Users.Name(),
-    ).
-    SelectJSONAgg("posts",
-        schema.Posts.Id(),
-        schema.Posts.Title(),
-        schema.Posts.PublishedAt(),
-    ).
-    Where(schema.Users.Id().Eq(query.Param("user_id"))).
-    GroupBy(schema.Users.Id(), schema.Users.Name()).
-    Build()
+    // DefineOne with JSON aggregation - user with their posts
+    query.DefineOne("GetUserWithPosts",
+        query.From(schematypes.Users).
+            LeftJoin(schematypes.Posts).On(schematypes.Users.Id().Eq(schematypes.Posts.AuthorId())).
+            Select(
+                schematypes.Users.Id(),
+                schematypes.Users.Name(),
+            ).
+            SelectJSONAgg("posts",
+                schematypes.Posts.Id(),
+                schematypes.Posts.Title(),
+                schematypes.Posts.PublishedAt(),
+            ).
+            Where(schematypes.Users.Id().Eq(query.Param("user_id"))).
+            GroupBy(schematypes.Users.Id(), schematypes.Users.Name()).
+            Build(),
+    )
 
-// ListRecentPosts retrieves recent published posts with pagination.
-var ListRecentPosts = query.From(schema.Posts).
-    Select(
-        schema.Posts.Id(),
-        schema.Posts.Title(),
-        schema.Posts.AuthorId(),
-        schema.Posts.PublishedAt(),
-    ).
-    Where(schema.Posts.PublishedAt().IsNotNull()).
-    OrderBy(schema.Posts.PublishedAt().Desc()).
-    Limit(query.Param("limit")).
-    Offset(query.Param("offset")).
-    Build()
-----
+    // DefineMany - returns 0 to N rows
+    query.DefineMany("ListRecentPosts",
+        query.From(schematypes.Posts).
+            Select(
+                schematypes.Posts.Id(),
+                schematypes.Posts.Title(),
+                schematypes.Posts.AuthorId(),
+                schematypes.Posts.PublishedAt(),
+            ).
+            Where(schematypes.Posts.PublishedAt().IsNotNull()).
+            OrderBy(schematypes.Posts.PublishedAt().Desc()).
+            Limit(query.Param("limit")).
+            Offset(query.Param("offset")).
+            Build(),
+    )
 
-=== Step 3: Use Generated SQL in Your Application
-
-**Run Phase 2 codegen** → Generates raw SQL strings for each database:
-
-[source,go]
-----
-// Generated SQL - you can see exactly what runs!
-// Postgres:
-// SELECT "users"."id", "users"."name", "users"."email"
-// FROM "users" WHERE "users"."email" = $1
-
-// MySQL:
-// SELECT `users`.`id`, `users`.`name`, `users`.`email`
-// FROM `users` WHERE `users`.`email` = ?
-
-// SQLite:
-// SELECT "users"."id", "users"."name", "users"."email"
-// FROM "users" WHERE "users"."email" = ?
-----
-
-Use the generated code in your application:
-
-[source,go]
-----
-func (s *Server) GetUser(ctx context.Context, email string) (*User, error) {
-    // SQL is pre-compiled - no runtime query building
-    row := s.db.QueryRowContext(ctx, queries.GetUserByEmailSQL, email)
-    
-    var user User
-    err := row.Scan(&user.ID, &user.Name, &user.Email)
-    if err == sql.ErrNoRows {
-        return nil, nil
-    }
-    return &user, err
+    // DefineExec - for INSERT/UPDATE/DELETE (returns sql.Result)
+    query.DefineExec("DeleteExpiredSessions",
+        query.Delete(schematypes.Sessions).
+            Where(schematypes.Sessions.ExpiresAt().Lt(query.Now())).
+            Build(),
+    )
 }
 ----
+
+=== Step 3: Use Generated Code in Your Application
+
+**Run `portsql compile`** → Generates dialect-specific packages:
+
+[source]
+----
+queries/
+├── types.go           # Shared param/result structs
+├── sqlite/
+│   └── runner.go      # SQLite-specific QueryRunner
+├── postgres/
+│   └── runner.go      # PostgreSQL-specific QueryRunner
+└── mysql/
+    └── runner.go      # MySQL-specific QueryRunner
+----
+
+**Generated types** (`queries/types.go`):
+
+[source,go]
+----
+// Code generated by portsql. DO NOT EDIT.
+package queries
+
+type GetUserByEmailParams struct {
+    Email string
+}
+
+type GetUserByEmailResult struct {
+    Id    int64
+    Name  string
+    Email string
+}
+
+type ListRecentPostsParams struct {
+    Limit  int
+    Offset int
+}
+
+type ListRecentPostsResult struct {
+    Id          int64
+    Title       string
+    AuthorId    int64
+    PublishedAt *time.Time
+}
+----
+
+**Use the QueryRunner in your application**:
+
+[source,go]
+----
+import (
+    "myapp/queries"
+    "myapp/queries/sqlite"  // Import dialect-specific runner
+)
+
+func (s *Server) GetUser(ctx context.Context, email string) (*queries.GetUserByEmailResult, error) {
+    runner := sqlite.NewQueryRunner(s.db)  // No dialect parameter needed!
+    
+    // Type-safe method with automatic scanning
+    return runner.GetUserByEmail(ctx, queries.GetUserByEmailParams{Email: email})
+}
+
+func (s *Server) ListPosts(ctx context.Context, limit, offset int) ([]queries.ListRecentPostsResult, error) {
+    runner := sqlite.NewQueryRunner(s.db)
+    
+    return runner.ListRecentPosts(ctx, queries.ListRecentPostsParams{
+        Limit:  limit,
+        Offset: offset,
+    })
+}
+----
+
+**Benefits of dialect-specific packages**:
+
+- **Simpler API**: No dialect parameter - import the package you need
+- **Optimized SQL**: Each dialect gets exactly the SQL it needs
+- **Correct JSON handling**: SQLite returns JSON as strings; the SQLite runner handles conversion automatically
+- **Smaller binaries**: Only include the dialect(s) you use
 
 == Features
 
@@ -288,16 +345,18 @@ Fetch related data as nested JSON in a single query:
 
 [source,go]
 ----
-query.From(schema.Authors).
-    LeftJoin(schema.Books).On(schema.Authors.Id().Eq(schema.Books.AuthorId())).
-    Select(schema.Authors.Id(), schema.Authors.Name()).
+query.From(schematypes.Authors).
+    LeftJoin(schematypes.Books).On(schematypes.Authors.Id().Eq(schematypes.Books.AuthorId())).
+    Select(schematypes.Authors.Id(), schematypes.Authors.Name()).
     SelectJSONAgg("books",
-        schema.Books.Id(),
-        schema.Books.Title(),
-        schema.Books.Price(),
+        schematypes.Books.Id(),
+        schematypes.Books.Title(),
+        schematypes.Books.Price(),
     ).
-    GroupBy(schema.Authors.Id(), schema.Authors.Name())
+    GroupBy(schematypes.Authors.Id(), schematypes.Authors.Name())
 ----
+
+**Note on JSON columns**: SQLite returns JSON as `string`, while PostgreSQL and MySQL return `[]byte`. PortSQL's dialect-specific runners handle this automatically - your code uses `json.RawMessage` and it just works.
 
 Generates database-specific JSON functions:
 
@@ -337,44 +396,61 @@ When you run `portsql compile`, CRUD is generated for eligible tables:
 [source,bash]
 ----
 $ portsql compile
+Generating for dialects: [sqlite]
 Found 3 registered queries
-  Compiling: GetUserByEmail
-  Compiling: ListPosts
+  Compiling: GetUserByEmail (one)
+  Compiling: ListPosts (many)
   ...
-Generated: queries/queries.go
 
-Generating CRUD for 2 tables:
+Found 2 CRUD tables:
   users
   orders
-Generated: queries/crud_types.go
-Generated: queries/crud_runner.go
+Generated: queries/types.go
+Generated: queries/sqlite/runner.go
 
-Successfully generated CRUD for 2 tables.
+Successfully compiled 3 queries for 1 dialect(s).
+Generated CRUD for 2 tables.
 ----
 
 === Generated CRUD Methods
 
-For each table, you get:
+For each table, you get methods on the dialect-specific `QueryRunner`:
 
 [source,go]
 ----
-// GetUser - fetch by public_id
-runner.GetUser(ctx, GetUserParams{PublicID: "abc123"})
+import (
+    "myapp/queries"
+    "myapp/queries/sqlite"
+)
 
-// ListUsers - paginated list
-runner.ListUsers(ctx, ListUsersParams{Limit: 10, Offset: 0})
+func main() {
+    db, _ := sql.Open("sqlite", "app.db")
+    runner := sqlite.NewQueryRunner(db)
 
-// InsertUser - create new record (auto-generates public_id)
-publicID, _ := runner.InsertUser(ctx, InsertUserParams{Name: "Alice", Email: "alice@example.com"})
+    // GetUser - fetch by public_id
+    user, _ := runner.GetUser(ctx, queries.GetUserParams{PublicID: "abc123"})
 
-// UpdateUser - update existing record
-runner.UpdateUser(ctx, UpdateUserParams{PublicID: "abc123", Name: "Alice Updated"})
+    // ListUsers - paginated list
+    users, _ := runner.ListUsers(ctx, queries.ListUsersParams{Limit: 10, Offset: 0})
 
-// DeleteUser - soft delete (sets deleted_at)
-runner.DeleteUser(ctx, DeleteUserParams{PublicID: "abc123"})
+    // InsertUser - create new record (auto-generates public_id via nanoid)
+    publicID, _ := runner.InsertUser(ctx, queries.InsertUserParams{
+        Name:  "Alice",
+        Email: "alice@example.com",
+    })
 
-// HardDeleteUser - permanent delete
-runner.HardDeleteUser(ctx, HardDeleteUserParams{PublicID: "abc123"})
+    // UpdateUser - update existing record
+    runner.UpdateUser(ctx, queries.UpdateUserParams{
+        PublicID: "abc123",
+        Name:     "Alice Updated",
+    })
+
+    // DeleteUser - soft delete (sets deleted_at)
+    runner.DeleteUser(ctx, queries.DeleteUserParams{PublicID: "abc123"})
+
+    // HardDeleteUser - permanent delete
+    runner.HardDeleteUser(ctx, queries.HardDeleteUserParams{PublicID: "abc123"})
+}
 ----
 
 === Scope Configuration
@@ -463,12 +539,58 @@ SELECT ... FROM users WHERE public_id = ? AND deleted_at IS NULL
 SELECT ... FROM users WHERE deleted_at IS NULL ORDER BY created_at DESC LIMIT ? OFFSET ?
 ----
 
+== Configuration
+
+PortSQL is configured via `portsql.ini` in your project root:
+
+[source,ini]
+----
+[database]
+url = sqlite:./app.db
+
+# Optional: Generate for multiple dialects
+# dialects = sqlite,postgres
+
+[paths]
+migrations = migrations
+schematypes = schematypes
+queries_in = querydef
+queries_out = queries
+
+[crud]
+# Optional: Global scope for tenant isolation
+# scope = org_id
+----
+
+=== Multi-Dialect Generation
+
+By default, PortSQL generates code for the dialect inferred from your database URL. To generate for multiple databases (e.g., for testing or migration):
+
+[source,ini]
+----
+[database]
+url = sqlite:./app.db
+dialects = sqlite,postgres
+----
+
+This generates:
+
+[source]
+----
+queries/
+├── types.go           # Shared types (used by all dialects)
+├── sqlite/
+│   └── runner.go      # SQLite runner
+└── postgres/
+    └── runner.go      # PostgreSQL runner
+----
+
 == Project Structure
 
 [source]
 ----
 portsql/
-├── orm/
+├── src/
 │   ├── ddl/              # Table/column definition builders
 │   │   ├── types.go      # Column types, Table, Index definitions
 │   │   ├── table_builder.go    # Fluent API for CREATE TABLE
@@ -482,9 +604,7 @@ portsql/
 │   │
 │   ├── query/            # Query builder and AST
 │   │   ├── builder.go    # SELECT query builder
-│   │   ├── builder_insert.go   # INSERT query builder
-│   │   ├── builder_update.go   # UPDATE query builder
-│   │   ├── builder_delete.go   # DELETE query builder
+│   │   ├── registry.go   # DefineOne/DefineMany/DefineExec registration
 │   │   ├── columns.go    # Typed column definitions
 │   │   ├── expr.go       # Expression types (conditions, operators)
 │   │   ├── ast.go        # Query AST structure
@@ -493,9 +613,15 @@ portsql/
 │   │       ├── mysql.go
 │   │       └── sqlite.go
 │   │
-│   └── codegen/          # Code generators
-│       ├── schema_gen.go # Phase 1: Schema → Table structs
-│       └── crud_gen.go   # CRUD query generation
+│   ├── codegen/          # Code generators
+│   │   ├── schema_gen.go     # Phase 1: Schema → Table structs
+│   │   ├── queries_gen.go    # Phase 2: Queries → Types + Runners
+│   │   └── crud_gen.go       # CRUD query generation
+│   │
+│   └── cli/              # CLI commands
+│       ├── compile.go    # portsql compile
+│       ├── migrate_up.go # portsql migrate up
+│       └── config.go     # Configuration loading
 │
 └── proptest/             # Property-based testing utilities
 ----
@@ -532,7 +658,7 @@ Type errors should be caught at compile time, not runtime:
 go test ./...
 
 # Run integration tests (requires databases)
-just start-dbs        # Start Postgres, MySQL, SQLite via Docker
+just start-dbs        # Start Postgres, MySQL, SQLite via Nix
 go test ./... -tags=integration
 
 # Run property tests for cross-database correctness

@@ -248,8 +248,8 @@ func TestDuplicateColumnNamesError(t *testing.T) {
 			Name: "ListPetsWithCategory",
 			SQL:  `SELECT "pets"."name", "categories"."name" FROM "pets" JOIN "categories"`,
 			Results: []ResultInfo{
-				{Name: "name", GoType: "string"},  // pets.name
-				{Name: "name", GoType: "string"},  // categories.name - DUPLICATE!
+				{Name: "name", GoType: "string"}, // pets.name
+				{Name: "name", GoType: "string"}, // categories.name - DUPLICATE!
 			},
 		},
 	}
