@@ -258,11 +258,11 @@ func GenerateSharedTypes(queries []CompiledQuery, crudPlan *migrate.MigrationPla
 			writeUpdateTypes(&buf, table, analysis, singularPascal, opts)
 
 			// --- Delete ---
-			writeDeleteTypes(&buf, table, analysis, singularPascal)
+			writeDeleteTypes(&buf, table, analysis, singularPascal, opts)
 
 			// --- HardDelete (only if table has deleted_at) ---
 			if analysis.HasDeletedAt {
-				writeHardDeleteTypes(&buf, table, analysis, singularPascal)
+				writeHardDeleteTypes(&buf, table, analysis, singularPascal, opts)
 			}
 		}
 	}
@@ -632,10 +632,22 @@ type DialectSQL struct {
 	SQLite   string
 }
 
+// DialectParamOrder holds the parameter occurrence order for each dialect.
+// This includes duplicates - if a param is used twice, it appears twice.
+type DialectParamOrder struct {
+	Postgres []string
+	MySQL    []string
+	SQLite   []string
+}
+
 // CompiledQueryWithDialects extends CompiledQuery with per-dialect SQL.
 type CompiledQueryWithDialects struct {
 	CompiledQuery
 	SQL DialectSQL
+	// ParamOrder holds the parameter names in occurrence order (with duplicates).
+	// This is needed because the SQL placeholders ($1, $2 or ?, ?) are per-occurrence,
+	// so we need to build args in the same order.
+	ParamOrder DialectParamOrder
 }
 
 // GenerateQueryRunner generates the runner.go file with QueryRunner methods for user-defined queries.
@@ -789,6 +801,9 @@ func generateOneMethod(buf *bytes.Buffer, q CompiledQueryWithDialects, sqlField 
 	resultType := q.Name + "Result"
 	paramsType := q.Name + "Params"
 
+	// Use Postgres param order as canonical (all dialects should have same param names in same order)
+	paramOrder := q.ParamOrder.Postgres
+
 	buf.WriteString(fmt.Sprintf("// %s executes the query and returns at most one result.\n", q.Name))
 
 	// Method signature
@@ -800,11 +815,11 @@ func generateOneMethod(buf *bytes.Buffer, q CompiledQueryWithDialects, sqlField 
 			q.Name, resultType))
 	}
 
-	// Build args
-	if len(q.Params) > 0 {
+	// Build args using param occurrence order (handles duplicates correctly)
+	if len(paramOrder) > 0 {
 		buf.WriteString("\targs := []any{\n")
-		for _, p := range q.Params {
-			buf.WriteString(fmt.Sprintf("\t\tparams.%s,\n", toPascalCase(p.Name)))
+		for _, paramName := range paramOrder {
+			buf.WriteString(fmt.Sprintf("\t\tparams.%s,\n", toPascalCase(paramName)))
 		}
 		buf.WriteString("\t}\n\n")
 		buf.WriteString(fmt.Sprintf("\trow := r.db.QueryRowContext(ctx, r.%s, args...)\n", sqlField))
@@ -835,6 +850,9 @@ func generateManyMethod(buf *bytes.Buffer, q CompiledQueryWithDialects, sqlField
 	resultType := q.Name + "Result"
 	paramsType := q.Name + "Params"
 
+	// Use Postgres param order as canonical (all dialects should have same param names in same order)
+	paramOrder := q.ParamOrder.Postgres
+
 	buf.WriteString(fmt.Sprintf("// %s executes the query and returns all results.\n", q.Name))
 
 	// Method signature
@@ -846,11 +864,11 @@ func generateManyMethod(buf *bytes.Buffer, q CompiledQueryWithDialects, sqlField
 			q.Name, resultType))
 	}
 
-	// Build args and execute query
-	if len(q.Params) > 0 {
+	// Build args using param occurrence order (handles duplicates correctly)
+	if len(paramOrder) > 0 {
 		buf.WriteString("\targs := []any{\n")
-		for _, p := range q.Params {
-			buf.WriteString(fmt.Sprintf("\t\tparams.%s,\n", toPascalCase(p.Name)))
+		for _, paramName := range paramOrder {
+			buf.WriteString(fmt.Sprintf("\t\tparams.%s,\n", toPascalCase(paramName)))
 		}
 		buf.WriteString("\t}\n\n")
 		buf.WriteString(fmt.Sprintf("\trows, err := r.db.QueryContext(ctx, r.%s, args...)\n", sqlField))
@@ -890,6 +908,9 @@ func generateManyMethod(buf *bytes.Buffer, q CompiledQueryWithDialects, sqlField
 func generateExecMethod(buf *bytes.Buffer, q CompiledQueryWithDialects, sqlField string) {
 	paramsType := q.Name + "Params"
 
+	// Use Postgres param order as canonical (all dialects should have same param names in same order)
+	paramOrder := q.ParamOrder.Postgres
+
 	buf.WriteString(fmt.Sprintf("// %s executes the query and returns the result.\n", q.Name))
 
 	// Method signature
@@ -901,11 +922,11 @@ func generateExecMethod(buf *bytes.Buffer, q CompiledQueryWithDialects, sqlField
 			q.Name))
 	}
 
-	// Build args and execute
-	if len(q.Params) > 0 {
+	// Build args using param occurrence order (handles duplicates correctly)
+	if len(paramOrder) > 0 {
 		buf.WriteString("\targs := []any{\n")
-		for _, p := range q.Params {
-			buf.WriteString(fmt.Sprintf("\t\tparams.%s,\n", toPascalCase(p.Name)))
+		for _, paramName := range paramOrder {
+			buf.WriteString(fmt.Sprintf("\t\tparams.%s,\n", toPascalCase(paramName)))
 		}
 		buf.WriteString("\t}\n\n")
 		buf.WriteString(fmt.Sprintf("\treturn r.db.ExecContext(ctx, r.%s, args...)\n", sqlField))
@@ -1411,6 +1432,9 @@ func generateDialectOneMethod(buf *bytes.Buffer, q CompiledQueryWithDialects, sq
 	resultType := fmt.Sprintf("%s.%sResult", typesPkg, q.Name)
 	paramsType := fmt.Sprintf("%s.%sParams", typesPkg, q.Name)
 
+	// Get param order for this dialect (includes duplicates)
+	paramOrder := getParamOrderForDialect(q, dialect)
+
 	buf.WriteString(fmt.Sprintf("// %s executes the query and returns at most one result.\n", q.Name))
 
 	// Method signature
@@ -1422,11 +1446,11 @@ func generateDialectOneMethod(buf *bytes.Buffer, q CompiledQueryWithDialects, sq
 			q.Name, resultType))
 	}
 
-	// Build args
-	if len(q.Params) > 0 {
+	// Build args using param occurrence order (handles duplicates correctly)
+	if len(paramOrder) > 0 {
 		buf.WriteString("\targs := []any{\n")
-		for _, p := range q.Params {
-			buf.WriteString(fmt.Sprintf("\t\tparams.%s,\n", toPascalCase(p.Name)))
+		for _, paramName := range paramOrder {
+			buf.WriteString(fmt.Sprintf("\t\tparams.%s,\n", toPascalCase(paramName)))
 		}
 		buf.WriteString("\t}\n\n")
 		buf.WriteString(fmt.Sprintf("\trow := r.db.QueryRowContext(ctx, r.%s, args...)\n", sqlField))
@@ -1437,12 +1461,12 @@ func generateDialectOneMethod(buf *bytes.Buffer, q CompiledQueryWithDialects, sq
 	// Declare result and temp variables for JSON columns
 	buf.WriteString(fmt.Sprintf("\n\tvar result %s\n", resultType))
 
-	// For SQLite with JSON columns, we need temp string variables
+	// For SQLite with JSON columns, we need sql.NullString to handle NULLs
 	if dialect == "sqlite" && len(jsonColumns) > 0 {
 		for _, res := range q.Results {
 			fieldName := toPascalCase(res.Name)
 			if jsonColumns[fieldName] {
-				buf.WriteString(fmt.Sprintf("\tvar %sStr string\n", toLowerCamelCase(res.Name)))
+				buf.WriteString(fmt.Sprintf("\tvar %sNull sql.NullString\n", toLowerCamelCase(res.Name)))
 			}
 		}
 	}
@@ -1452,8 +1476,8 @@ func generateDialectOneMethod(buf *bytes.Buffer, q CompiledQueryWithDialects, sq
 	for _, res := range q.Results {
 		fieldName := toPascalCase(res.Name)
 		if dialect == "sqlite" && jsonColumns[fieldName] {
-			// SQLite: scan JSON to string temp var
-			buf.WriteString(fmt.Sprintf("\t\t&%sStr,\n", toLowerCamelCase(res.Name)))
+			// SQLite: scan JSON to sql.NullString temp var
+			buf.WriteString(fmt.Sprintf("\t\t&%sNull,\n", toLowerCamelCase(res.Name)))
 		} else {
 			buf.WriteString(fmt.Sprintf("\t\t&result.%s,\n", fieldName))
 		}
@@ -1466,12 +1490,14 @@ func generateDialectOneMethod(buf *bytes.Buffer, q CompiledQueryWithDialects, sq
 	buf.WriteString("\t\treturn nil, err\n")
 	buf.WriteString("\t}\n")
 
-	// For SQLite, convert JSON string to []byte
+	// For SQLite, convert JSON sql.NullString to []byte (nil if NULL)
 	if dialect == "sqlite" && len(jsonColumns) > 0 {
 		for _, res := range q.Results {
 			fieldName := toPascalCase(res.Name)
 			if jsonColumns[fieldName] {
-				buf.WriteString(fmt.Sprintf("\tresult.%s = []byte(%sStr)\n", fieldName, toLowerCamelCase(res.Name)))
+				buf.WriteString(fmt.Sprintf("\tif %sNull.Valid {\n", toLowerCamelCase(res.Name)))
+				buf.WriteString(fmt.Sprintf("\t\tresult.%s = []byte(%sNull.String)\n", fieldName, toLowerCamelCase(res.Name)))
+				buf.WriteString("\t}\n")
 			}
 		}
 	}
@@ -1485,6 +1511,9 @@ func generateDialectManyMethod(buf *bytes.Buffer, q CompiledQueryWithDialects, s
 	resultType := fmt.Sprintf("%s.%sResult", typesPkg, q.Name)
 	paramsType := fmt.Sprintf("%s.%sParams", typesPkg, q.Name)
 
+	// Get param order for this dialect (includes duplicates)
+	paramOrder := getParamOrderForDialect(q, dialect)
+
 	buf.WriteString(fmt.Sprintf("// %s executes the query and returns all results.\n", q.Name))
 
 	// Method signature
@@ -1496,11 +1525,11 @@ func generateDialectManyMethod(buf *bytes.Buffer, q CompiledQueryWithDialects, s
 			q.Name, resultType))
 	}
 
-	// Build args and execute query
-	if len(q.Params) > 0 {
+	// Build args using param occurrence order (handles duplicates correctly)
+	if len(paramOrder) > 0 {
 		buf.WriteString("\targs := []any{\n")
-		for _, p := range q.Params {
-			buf.WriteString(fmt.Sprintf("\t\tparams.%s,\n", toPascalCase(p.Name)))
+		for _, paramName := range paramOrder {
+			buf.WriteString(fmt.Sprintf("\t\tparams.%s,\n", toPascalCase(paramName)))
 		}
 		buf.WriteString("\t}\n\n")
 		buf.WriteString(fmt.Sprintf("\trows, err := r.db.QueryContext(ctx, r.%s, args...)\n", sqlField))
@@ -1518,12 +1547,12 @@ func generateDialectManyMethod(buf *bytes.Buffer, q CompiledQueryWithDialects, s
 	buf.WriteString("\tfor rows.Next() {\n")
 	buf.WriteString(fmt.Sprintf("\t\tvar item %s\n", resultType))
 
-	// For SQLite with JSON columns, we need temp string variables
+	// For SQLite with JSON columns, we need sql.NullString to handle NULLs
 	if dialect == "sqlite" && len(jsonColumns) > 0 {
 		for _, res := range q.Results {
 			fieldName := toPascalCase(res.Name)
 			if jsonColumns[fieldName] {
-				buf.WriteString(fmt.Sprintf("\t\tvar %sStr string\n", toLowerCamelCase(res.Name)))
+				buf.WriteString(fmt.Sprintf("\t\tvar %sNull sql.NullString\n", toLowerCamelCase(res.Name)))
 			}
 		}
 	}
@@ -1532,8 +1561,8 @@ func generateDialectManyMethod(buf *bytes.Buffer, q CompiledQueryWithDialects, s
 	for _, res := range q.Results {
 		fieldName := toPascalCase(res.Name)
 		if dialect == "sqlite" && jsonColumns[fieldName] {
-			// SQLite: scan JSON to string temp var
-			buf.WriteString(fmt.Sprintf("\t\t\t&%sStr,\n", toLowerCamelCase(res.Name)))
+			// SQLite: scan JSON to sql.NullString temp var
+			buf.WriteString(fmt.Sprintf("\t\t\t&%sNull,\n", toLowerCamelCase(res.Name)))
 		} else {
 			buf.WriteString(fmt.Sprintf("\t\t\t&item.%s,\n", fieldName))
 		}
@@ -1543,12 +1572,14 @@ func generateDialectManyMethod(buf *bytes.Buffer, q CompiledQueryWithDialects, s
 	buf.WriteString("\t\t\treturn nil, err\n")
 	buf.WriteString("\t\t}\n")
 
-	// For SQLite, convert JSON string to []byte
+	// For SQLite, convert JSON sql.NullString to []byte (nil if NULL)
 	if dialect == "sqlite" && len(jsonColumns) > 0 {
 		for _, res := range q.Results {
 			fieldName := toPascalCase(res.Name)
 			if jsonColumns[fieldName] {
-				buf.WriteString(fmt.Sprintf("\t\titem.%s = []byte(%sStr)\n", fieldName, toLowerCamelCase(res.Name)))
+				buf.WriteString(fmt.Sprintf("\t\tif %sNull.Valid {\n", toLowerCamelCase(res.Name)))
+				buf.WriteString(fmt.Sprintf("\t\t\titem.%s = []byte(%sNull.String)\n", fieldName, toLowerCamelCase(res.Name)))
+				buf.WriteString("\t\t}\n")
 			}
 		}
 	}
@@ -1567,6 +1598,9 @@ func generateDialectManyMethod(buf *bytes.Buffer, q CompiledQueryWithDialects, s
 func generateDialectExecMethod(buf *bytes.Buffer, q CompiledQueryWithDialects, sqlField, dialect, typesPkg string) {
 	paramsType := fmt.Sprintf("%s.%sParams", typesPkg, q.Name)
 
+	// Get param order for this dialect (includes duplicates)
+	paramOrder := getParamOrderForDialect(q, dialect)
+
 	buf.WriteString(fmt.Sprintf("// %s executes the query and returns the result.\n", q.Name))
 
 	// Method signature
@@ -1578,11 +1612,11 @@ func generateDialectExecMethod(buf *bytes.Buffer, q CompiledQueryWithDialects, s
 			q.Name))
 	}
 
-	// Build args and execute
-	if len(q.Params) > 0 {
+	// Build args using param occurrence order (handles duplicates correctly)
+	if len(paramOrder) > 0 {
 		buf.WriteString("\targs := []any{\n")
-		for _, p := range q.Params {
-			buf.WriteString(fmt.Sprintf("\t\tparams.%s,\n", toPascalCase(p.Name)))
+		for _, paramName := range paramOrder {
+			buf.WriteString(fmt.Sprintf("\t\tparams.%s,\n", toPascalCase(paramName)))
 		}
 		buf.WriteString("\t}\n\n")
 		buf.WriteString(fmt.Sprintf("\treturn r.db.ExecContext(ctx, r.%s, args...)\n", sqlField))
@@ -1591,6 +1625,21 @@ func generateDialectExecMethod(buf *bytes.Buffer, q CompiledQueryWithDialects, s
 	}
 
 	buf.WriteString("}\n\n")
+}
+
+// getParamOrderForDialect returns the parameter occurrence order for a specific dialect.
+func getParamOrderForDialect(q CompiledQueryWithDialects, dialect string) []string {
+	switch dialect {
+	case "postgres":
+		return q.ParamOrder.Postgres
+	case "mysql":
+		return q.ParamOrder.MySQL
+	case "sqlite":
+		return q.ParamOrder.SQLite
+	default:
+		// Fallback to postgres order
+		return q.ParamOrder.Postgres
+	}
 }
 
 // generateDialectCRUDMethods generates CRUD methods for a table with dialect-specific scanning.
@@ -1622,11 +1671,11 @@ func generateDialectCRUDMethods(buf *bytes.Buffer, table ddl.Table, opts CRUDOpt
 	generateDialectUpdateMethod(buf, table, analysis, singularPascal, opts, dialect, typesPkg)
 
 	// --- Delete ---
-	generateDialectDeleteMethod(buf, table, analysis, singularPascal, dialect, typesPkg)
+	generateDialectDeleteMethod(buf, table, analysis, singularPascal, opts, dialect, typesPkg)
 
 	// --- HardDelete ---
 	if analysis.HasDeletedAt {
-		generateDialectHardDeleteMethod(buf, table, analysis, singularPascal, dialect, typesPkg)
+		generateDialectHardDeleteMethod(buf, table, analysis, singularPascal, opts, dialect, typesPkg)
 	}
 }
 
@@ -1652,12 +1701,12 @@ func generateDialectGetMethod(buf *bytes.Buffer, table ddl.Table, analysis Table
 	buf.WriteString(fmt.Sprintf("\n\trow := r.db.QueryRowContext(ctx, r.get%sSQL, args...)\n", singularPascal))
 	buf.WriteString(fmt.Sprintf("\n\tvar result %s\n", resultType))
 
-	// For SQLite with JSON columns, declare temp string variables
+	// For SQLite with JSON columns, use sql.NullString to handle NULLs
 	if dialect == "sqlite" && len(jsonColumns) > 0 {
 		for _, col := range analysis.ResultColumns {
 			fieldName := toPascalCase(col.Name)
 			if jsonColumns[fieldName] {
-				buf.WriteString(fmt.Sprintf("\tvar %sStr string\n", toLowerCamelCase(col.Name)))
+				buf.WriteString(fmt.Sprintf("\tvar %sNull sql.NullString\n", toLowerCamelCase(col.Name)))
 			}
 		}
 	}
@@ -1668,7 +1717,7 @@ func generateDialectGetMethod(buf *bytes.Buffer, table ddl.Table, analysis Table
 	for _, col := range analysis.ResultColumns {
 		fieldName := toPascalCase(col.Name)
 		if dialect == "sqlite" && jsonColumns[fieldName] {
-			buf.WriteString(fmt.Sprintf("\t\t&%sStr,\n", toLowerCamelCase(col.Name)))
+			buf.WriteString(fmt.Sprintf("\t\t&%sNull,\n", toLowerCamelCase(col.Name)))
 		} else {
 			buf.WriteString(fmt.Sprintf("\t\t&result.%s,\n", fieldName))
 		}
@@ -1681,12 +1730,14 @@ func generateDialectGetMethod(buf *bytes.Buffer, table ddl.Table, analysis Table
 	buf.WriteString("\t\treturn nil, err\n")
 	buf.WriteString("\t}\n")
 
-	// For SQLite, convert JSON string to []byte
+	// For SQLite, convert JSON sql.NullString to []byte (nil if NULL)
 	if dialect == "sqlite" && len(jsonColumns) > 0 {
 		for _, col := range analysis.ResultColumns {
 			fieldName := toPascalCase(col.Name)
 			if jsonColumns[fieldName] {
-				buf.WriteString(fmt.Sprintf("\tresult.%s = []byte(%sStr)\n", fieldName, toLowerCamelCase(col.Name)))
+				buf.WriteString(fmt.Sprintf("\tif %sNull.Valid {\n", toLowerCamelCase(col.Name)))
+				buf.WriteString(fmt.Sprintf("\t\tresult.%s = []byte(%sNull.String)\n", fieldName, toLowerCamelCase(col.Name)))
+				buf.WriteString("\t}\n")
 			}
 		}
 	}
@@ -1720,7 +1771,7 @@ func generateDialectListMethod(buf *bytes.Buffer, table ddl.Table, analysis Tabl
 	buf.WriteString("\tfor rows.Next() {\n")
 	buf.WriteString(fmt.Sprintf("\t\tvar item %s\n", resultType))
 
-	// For SQLite with JSON columns, declare temp string variables
+	// For SQLite with JSON columns, use sql.NullString to handle NULLs
 	if dialect == "sqlite" && len(jsonColumns) > 0 {
 		for _, col := range analysis.ResultColumns {
 			if col.Name == "updated_at" {
@@ -1728,7 +1779,7 @@ func generateDialectListMethod(buf *bytes.Buffer, table ddl.Table, analysis Tabl
 			}
 			fieldName := toPascalCase(col.Name)
 			if jsonColumns[fieldName] {
-				buf.WriteString(fmt.Sprintf("\t\tvar %sStr string\n", toLowerCamelCase(col.Name)))
+				buf.WriteString(fmt.Sprintf("\t\tvar %sNull sql.NullString\n", toLowerCamelCase(col.Name)))
 			}
 		}
 	}
@@ -1742,7 +1793,7 @@ func generateDialectListMethod(buf *bytes.Buffer, table ddl.Table, analysis Tabl
 		}
 		fieldName := toPascalCase(col.Name)
 		if dialect == "sqlite" && jsonColumns[fieldName] {
-			buf.WriteString(fmt.Sprintf("\t\t\t&%sStr,\n", toLowerCamelCase(col.Name)))
+			buf.WriteString(fmt.Sprintf("\t\t\t&%sNull,\n", toLowerCamelCase(col.Name)))
 		} else {
 			buf.WriteString(fmt.Sprintf("\t\t\t&item.%s,\n", fieldName))
 		}
@@ -1752,7 +1803,7 @@ func generateDialectListMethod(buf *bytes.Buffer, table ddl.Table, analysis Tabl
 	buf.WriteString("\t\t\treturn nil, err\n")
 	buf.WriteString("\t\t}\n")
 
-	// For SQLite, convert JSON string to []byte
+	// For SQLite, convert JSON sql.NullString to []byte (nil if NULL)
 	if dialect == "sqlite" && len(jsonColumns) > 0 {
 		for _, col := range analysis.ResultColumns {
 			if col.Name == "updated_at" {
@@ -1760,7 +1811,9 @@ func generateDialectListMethod(buf *bytes.Buffer, table ddl.Table, analysis Tabl
 			}
 			fieldName := toPascalCase(col.Name)
 			if jsonColumns[fieldName] {
-				buf.WriteString(fmt.Sprintf("\t\titem.%s = []byte(%sStr)\n", fieldName, toLowerCamelCase(col.Name)))
+				buf.WriteString(fmt.Sprintf("\t\tif %sNull.Valid {\n", toLowerCamelCase(col.Name)))
+				buf.WriteString(fmt.Sprintf("\t\t\titem.%s = []byte(%sNull.String)\n", fieldName, toLowerCamelCase(col.Name)))
+				buf.WriteString("\t\t}\n")
 			}
 		}
 	}
@@ -1868,34 +1921,48 @@ func generateDialectUpdateMethod(buf *bytes.Buffer, table ddl.Table, analysis Ta
 	buf.WriteString("}\n\n")
 }
 
-func generateDialectDeleteMethod(buf *bytes.Buffer, table ddl.Table, analysis TableAnalysis, singularPascal, dialect, typesPkg string) {
+func generateDialectDeleteMethod(buf *bytes.Buffer, table ddl.Table, analysis TableAnalysis, singularPascal string, opts CRUDOptions, dialect, typesPkg string) {
 	paramsType := fmt.Sprintf("%s.Delete%sParams", typesPkg, singularPascal)
 
 	buf.WriteString(fmt.Sprintf("// Delete%s soft-deletes a %s (or hard-deletes if no deleted_at column).\n", singularPascal, toSingular(table.Name)))
 	buf.WriteString(fmt.Sprintf("func (r *QueryRunner) Delete%s(ctx context.Context, params %s) error {\n",
 		singularPascal, paramsType))
 
+	// Build args list
+	buf.WriteString("\tvar args []any\n")
 	if analysis.HasPublicID {
-		buf.WriteString(fmt.Sprintf("\t_, err := r.db.ExecContext(ctx, r.delete%sSQL, params.PublicID)\n", singularPascal))
+		buf.WriteString("\targs = append(args, params.PublicID)\n")
 	} else {
-		buf.WriteString(fmt.Sprintf("\t_, err := r.db.ExecContext(ctx, r.delete%sSQL, params.ID)\n", singularPascal))
+		buf.WriteString("\targs = append(args, params.ID)\n")
 	}
+	if opts.ScopeColumn != "" {
+		buf.WriteString(fmt.Sprintf("\targs = append(args, params.%s)\n", toPascalCase(opts.ScopeColumn)))
+	}
+
+	buf.WriteString(fmt.Sprintf("\n\t_, err := r.db.ExecContext(ctx, r.delete%sSQL, args...)\n", singularPascal))
 	buf.WriteString("\treturn err\n")
 	buf.WriteString("}\n\n")
 }
 
-func generateDialectHardDeleteMethod(buf *bytes.Buffer, table ddl.Table, analysis TableAnalysis, singularPascal, dialect, typesPkg string) {
+func generateDialectHardDeleteMethod(buf *bytes.Buffer, table ddl.Table, analysis TableAnalysis, singularPascal string, opts CRUDOptions, dialect, typesPkg string) {
 	paramsType := fmt.Sprintf("%s.HardDelete%sParams", typesPkg, singularPascal)
 
 	buf.WriteString(fmt.Sprintf("// HardDelete%s permanently deletes a %s.\n", singularPascal, toSingular(table.Name)))
 	buf.WriteString(fmt.Sprintf("func (r *QueryRunner) HardDelete%s(ctx context.Context, params %s) error {\n",
 		singularPascal, paramsType))
 
+	// Build args list
+	buf.WriteString("\tvar args []any\n")
 	if analysis.HasPublicID {
-		buf.WriteString(fmt.Sprintf("\t_, err := r.db.ExecContext(ctx, r.hardDelete%sSQL, params.PublicID)\n", singularPascal))
+		buf.WriteString("\targs = append(args, params.PublicID)\n")
 	} else {
-		buf.WriteString(fmt.Sprintf("\t_, err := r.db.ExecContext(ctx, r.hardDelete%sSQL, params.ID)\n", singularPascal))
+		buf.WriteString("\targs = append(args, params.ID)\n")
 	}
+	if opts.ScopeColumn != "" {
+		buf.WriteString(fmt.Sprintf("\targs = append(args, params.%s)\n", toPascalCase(opts.ScopeColumn)))
+	}
+
+	buf.WriteString(fmt.Sprintf("\n\t_, err := r.db.ExecContext(ctx, r.hardDelete%sSQL, args...)\n", singularPascal))
 	buf.WriteString("\treturn err\n")
 	buf.WriteString("}\n\n")
 }

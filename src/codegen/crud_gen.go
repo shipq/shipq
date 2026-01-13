@@ -68,11 +68,11 @@ func GenerateCRUDTypesWithOptions(table ddl.Table, packageName string, opts CRUD
 	writeUpdateTypes(&buf, table, analysis, singularPascal, opts)
 
 	// --- Delete ---
-	writeDeleteTypes(&buf, table, analysis, singularPascal)
+	writeDeleteTypes(&buf, table, analysis, singularPascal, opts)
 
 	// --- HardDelete (only if table has deleted_at) ---
 	if analysis.HasDeletedAt {
-		writeHardDeleteTypes(&buf, table, analysis, singularPascal)
+		writeHardDeleteTypes(&buf, table, analysis, singularPascal, opts)
 	}
 
 	// Format the code
@@ -215,7 +215,7 @@ func writeUpdateTypes(buf *bytes.Buffer, table ddl.Table, analysis TableAnalysis
 }
 
 // writeDeleteTypes writes the Delete param type
-func writeDeleteTypes(buf *bytes.Buffer, table ddl.Table, analysis TableAnalysis, singularPascal string) {
+func writeDeleteTypes(buf *bytes.Buffer, table ddl.Table, analysis TableAnalysis, singularPascal string, opts CRUDOptions) {
 	buf.WriteString(fmt.Sprintf("// --- Delete ---\n\n"))
 	buf.WriteString(fmt.Sprintf("// Delete%sParams contains parameters for deleting a %s.\n", singularPascal, toSingular(table.Name)))
 	buf.WriteString(fmt.Sprintf("type Delete%sParams struct {\n", singularPascal))
@@ -224,11 +224,19 @@ func writeDeleteTypes(buf *bytes.Buffer, table ddl.Table, analysis TableAnalysis
 	} else {
 		buf.WriteString("\tID int64\n")
 	}
+	// Add scope column if configured
+	if opts.ScopeColumn != "" {
+		scopeCol := findColumn(table, opts.ScopeColumn)
+		if scopeCol != nil {
+			mapping := MapColumnType(*scopeCol)
+			buf.WriteString(fmt.Sprintf("\t%s %s\n", toPascalCase(opts.ScopeColumn), mapping.GoType))
+		}
+	}
 	buf.WriteString("}\n\n")
 }
 
 // writeHardDeleteTypes writes the HardDelete param type
-func writeHardDeleteTypes(buf *bytes.Buffer, table ddl.Table, analysis TableAnalysis, singularPascal string) {
+func writeHardDeleteTypes(buf *bytes.Buffer, table ddl.Table, analysis TableAnalysis, singularPascal string, opts CRUDOptions) {
 	buf.WriteString(fmt.Sprintf("// --- HardDelete ---\n\n"))
 	buf.WriteString(fmt.Sprintf("// HardDelete%sParams contains parameters for permanently deleting a %s.\n", singularPascal, toSingular(table.Name)))
 	buf.WriteString(fmt.Sprintf("type HardDelete%sParams struct {\n", singularPascal))
@@ -236,6 +244,14 @@ func writeHardDeleteTypes(buf *bytes.Buffer, table ddl.Table, analysis TableAnal
 		buf.WriteString("\tPublicID string\n")
 	} else {
 		buf.WriteString("\tID int64\n")
+	}
+	// Add scope column if configured
+	if opts.ScopeColumn != "" {
+		scopeCol := findColumn(table, opts.ScopeColumn)
+		if scopeCol != nil {
+			mapping := MapColumnType(*scopeCol)
+			buf.WriteString(fmt.Sprintf("\t%s %s\n", toPascalCase(opts.ScopeColumn), mapping.GoType))
+		}
 	}
 	buf.WriteString("}\n\n")
 }
@@ -305,9 +321,9 @@ func GenerateCRUDPackageWithOptions(plan *migrate.MigrationPlan, packageName str
 		writeListTypes(&buf, table, analysis, singularPascal, opts)
 		writeInsertTypes(&buf, table, analysis, singularPascal, opts)
 		writeUpdateTypes(&buf, table, analysis, singularPascal, opts)
-		writeDeleteTypes(&buf, table, analysis, singularPascal)
+		writeDeleteTypes(&buf, table, analysis, singularPascal, opts)
 		if analysis.HasDeletedAt {
-			writeHardDeleteTypes(&buf, table, analysis, singularPascal)
+			writeHardDeleteTypes(&buf, table, analysis, singularPascal, opts)
 		}
 	}
 

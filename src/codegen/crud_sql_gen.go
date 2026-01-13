@@ -52,9 +52,9 @@ func GenerateCRUDSQL(table ddl.Table, dialect Dialect, opts CRUDOptions) CRUDSQL
 	set.ListSQL = generateListSQL(table, analysis, dialect, opts)
 	set.InsertSQL = generateInsertSQL(table, analysis, dialect, opts)
 	set.UpdateSQL = generateUpdateSQL(table, analysis, dialect, opts)
-	set.DeleteSQL = generateDeleteSQL(table, analysis, dialect)
+	set.DeleteSQL = generateDeleteSQL(table, analysis, dialect, opts)
 	if analysis.HasDeletedAt {
-		set.HardDeleteSQL = generateHardDeleteSQL(table, analysis, dialect)
+		set.HardDeleteSQL = generateHardDeleteSQL(table, analysis, dialect, opts)
 	}
 
 	return set
@@ -336,8 +336,9 @@ func generateUpdateSQL(table ddl.Table, analysis TableAnalysis, dialect Dialect,
 }
 
 // generateDeleteSQL generates soft delete (UPDATE ... SET deleted_at = NOW()).
-func generateDeleteSQL(table ddl.Table, analysis TableAnalysis, dialect Dialect) string {
+func generateDeleteSQL(table ddl.Table, analysis TableAnalysis, dialect Dialect, opts CRUDOptions) string {
 	var b strings.Builder
+	paramIdx := 1
 
 	if analysis.HasDeletedAt {
 		// Soft delete: UPDATE ... SET deleted_at = NOW()
@@ -352,11 +353,22 @@ func generateDeleteSQL(table ddl.Table, analysis TableAnalysis, dialect Dialect)
 		if analysis.HasPublicID {
 			b.WriteString(quoteIdentifier("public_id", dialect))
 			b.WriteString(" = ")
-			b.WriteString(placeholder(1, dialect))
+			b.WriteString(placeholder(paramIdx, dialect))
+			paramIdx++
 		} else {
 			b.WriteString(quoteIdentifier("id", dialect))
 			b.WriteString(" = ")
-			b.WriteString(placeholder(1, dialect))
+			b.WriteString(placeholder(paramIdx, dialect))
+			paramIdx++
+		}
+
+		// Add scope column if configured
+		if opts.ScopeColumn != "" {
+			b.WriteString(" AND ")
+			b.WriteString(quoteIdentifier(opts.ScopeColumn, dialect))
+			b.WriteString(" = ")
+			b.WriteString(placeholder(paramIdx, dialect))
+			paramIdx++
 		}
 
 		// Only soft-delete if not already deleted
@@ -372,11 +384,22 @@ func generateDeleteSQL(table ddl.Table, analysis TableAnalysis, dialect Dialect)
 		if analysis.HasPublicID {
 			b.WriteString(quoteIdentifier("public_id", dialect))
 			b.WriteString(" = ")
-			b.WriteString(placeholder(1, dialect))
+			b.WriteString(placeholder(paramIdx, dialect))
+			paramIdx++
 		} else {
 			b.WriteString(quoteIdentifier("id", dialect))
 			b.WriteString(" = ")
-			b.WriteString(placeholder(1, dialect))
+			b.WriteString(placeholder(paramIdx, dialect))
+			paramIdx++
+		}
+
+		// Add scope column if configured
+		if opts.ScopeColumn != "" {
+			b.WriteString(" AND ")
+			b.WriteString(quoteIdentifier(opts.ScopeColumn, dialect))
+			b.WriteString(" = ")
+			b.WriteString(placeholder(paramIdx, dialect))
+			paramIdx++
 		}
 	}
 
@@ -384,8 +407,9 @@ func generateDeleteSQL(table ddl.Table, analysis TableAnalysis, dialect Dialect)
 }
 
 // generateHardDeleteSQL generates actual DELETE statement.
-func generateHardDeleteSQL(table ddl.Table, analysis TableAnalysis, dialect Dialect) string {
+func generateHardDeleteSQL(table ddl.Table, analysis TableAnalysis, dialect Dialect, opts CRUDOptions) string {
 	var b strings.Builder
+	paramIdx := 1
 
 	b.WriteString("DELETE FROM ")
 	b.WriteString(quoteIdentifier(table.Name, dialect))
@@ -394,11 +418,22 @@ func generateHardDeleteSQL(table ddl.Table, analysis TableAnalysis, dialect Dial
 	if analysis.HasPublicID {
 		b.WriteString(quoteIdentifier("public_id", dialect))
 		b.WriteString(" = ")
-		b.WriteString(placeholder(1, dialect))
+		b.WriteString(placeholder(paramIdx, dialect))
+		paramIdx++
 	} else {
 		b.WriteString(quoteIdentifier("id", dialect))
 		b.WriteString(" = ")
-		b.WriteString(placeholder(1, dialect))
+		b.WriteString(placeholder(paramIdx, dialect))
+		paramIdx++
+	}
+
+	// Add scope column if configured
+	if opts.ScopeColumn != "" {
+		b.WriteString(" AND ")
+		b.WriteString(quoteIdentifier(opts.ScopeColumn, dialect))
+		b.WriteString(" = ")
+		b.WriteString(placeholder(paramIdx, dialect))
+		paramIdx++
 	}
 
 	return b.String()
@@ -603,11 +638,11 @@ func generateTableCRUDMethods(buf *bytes.Buffer, table ddl.Table, opts CRUDOptio
 	generateUpdateMethod(buf, table, analysis, singularPascal, opts)
 
 	// --- Delete ---
-	generateDeleteMethod(buf, table, analysis, singularPascal)
+	generateDeleteMethod(buf, table, analysis, singularPascal, opts)
 
 	// --- HardDelete ---
 	if analysis.HasDeletedAt {
-		generateHardDeleteMethod(buf, table, analysis, singularPascal)
+		generateHardDeleteMethod(buf, table, analysis, singularPascal, opts)
 	}
 }
 
@@ -779,30 +814,44 @@ func generateUpdateMethod(buf *bytes.Buffer, table ddl.Table, analysis TableAnal
 	buf.WriteString("}\n\n")
 }
 
-func generateDeleteMethod(buf *bytes.Buffer, table ddl.Table, analysis TableAnalysis, singularPascal string) {
+func generateDeleteMethod(buf *bytes.Buffer, table ddl.Table, analysis TableAnalysis, singularPascal string, opts CRUDOptions) {
 	buf.WriteString(fmt.Sprintf("// Delete%s soft-deletes a %s (or hard-deletes if no deleted_at column).\n", singularPascal, toSingular(table.Name)))
 	buf.WriteString(fmt.Sprintf("func (r *QueryRunner) Delete%s(ctx context.Context, params Delete%sParams) error {\n",
 		singularPascal, singularPascal))
 
+	// Build args list
+	buf.WriteString("\tvar args []any\n")
 	if analysis.HasPublicID {
-		buf.WriteString(fmt.Sprintf("\t_, err := r.db.ExecContext(ctx, r.delete%sSQL, params.PublicID)\n", singularPascal))
+		buf.WriteString("\targs = append(args, params.PublicID)\n")
 	} else {
-		buf.WriteString(fmt.Sprintf("\t_, err := r.db.ExecContext(ctx, r.delete%sSQL, params.ID)\n", singularPascal))
+		buf.WriteString("\targs = append(args, params.ID)\n")
 	}
+	if opts.ScopeColumn != "" {
+		buf.WriteString(fmt.Sprintf("\targs = append(args, params.%s)\n", toPascalCase(opts.ScopeColumn)))
+	}
+
+	buf.WriteString(fmt.Sprintf("\n\t_, err := r.db.ExecContext(ctx, r.delete%sSQL, args...)\n", singularPascal))
 	buf.WriteString("\treturn err\n")
 	buf.WriteString("}\n\n")
 }
 
-func generateHardDeleteMethod(buf *bytes.Buffer, table ddl.Table, analysis TableAnalysis, singularPascal string) {
+func generateHardDeleteMethod(buf *bytes.Buffer, table ddl.Table, analysis TableAnalysis, singularPascal string, opts CRUDOptions) {
 	buf.WriteString(fmt.Sprintf("// HardDelete%s permanently deletes a %s.\n", singularPascal, toSingular(table.Name)))
 	buf.WriteString(fmt.Sprintf("func (r *QueryRunner) HardDelete%s(ctx context.Context, params HardDelete%sParams) error {\n",
 		singularPascal, singularPascal))
 
+	// Build args list
+	buf.WriteString("\tvar args []any\n")
 	if analysis.HasPublicID {
-		buf.WriteString(fmt.Sprintf("\t_, err := r.db.ExecContext(ctx, r.hardDelete%sSQL, params.PublicID)\n", singularPascal))
+		buf.WriteString("\targs = append(args, params.PublicID)\n")
 	} else {
-		buf.WriteString(fmt.Sprintf("\t_, err := r.db.ExecContext(ctx, r.hardDelete%sSQL, params.ID)\n", singularPascal))
+		buf.WriteString("\targs = append(args, params.ID)\n")
 	}
+	if opts.ScopeColumn != "" {
+		buf.WriteString(fmt.Sprintf("\targs = append(args, params.%s)\n", toPascalCase(opts.ScopeColumn)))
+	}
+
+	buf.WriteString(fmt.Sprintf("\n\t_, err := r.db.ExecContext(ctx, r.hardDelete%sSQL, args...)\n", singularPascal))
 	buf.WriteString("\treturn err\n")
 	buf.WriteString("}\n\n")
 }

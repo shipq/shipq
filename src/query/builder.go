@@ -65,7 +65,11 @@ func (b *SelectBuilder) SelectExprAs(expr Expr, alias string) *SelectBuilder {
 }
 
 // SelectJSONAgg adds a JSON aggregation to the SELECT clause.
+// Panics if no columns are provided, as JSON aggregation requires at least one column.
 func (b *SelectBuilder) SelectJSONAgg(fieldName string, cols ...Column) *SelectBuilder {
+	if len(cols) == 0 {
+		panic("SelectJSONAgg requires at least one column")
+	}
 	b.ast.SelectCols = append(b.ast.SelectCols, SelectExpr{
 		Expr: JSONAggExpr{
 			FieldName: fieldName,

@@ -1,6 +1,9 @@
 package query
 
-import "time"
+import (
+	"encoding/json"
+	"time"
+)
 
 // Param creates a typed parameter reference.
 // The type parameter T is used to infer the Go type for codegen.
@@ -80,6 +83,7 @@ func toExpr(v any) Expr {
 // Used for parameter type tracking in codegen.
 func typeNameOf(v any) string {
 	switch v.(type) {
+	// Primitive types
 	case int:
 		return "int"
 	case int8:
@@ -110,22 +114,45 @@ func typeNameOf(v any) string {
 		return "bool"
 	case []byte:
 		return "[]byte"
+	// Time types
 	case time.Time:
 		return "time.Time"
+	// JSON types
+	case json.RawMessage:
+		return "json.RawMessage"
+	// Pointer types
 	case *int:
 		return "*int"
-	case *int64:
-		return "*int64"
+	case *int8:
+		return "*int8"
+	case *int16:
+		return "*int16"
 	case *int32:
 		return "*int32"
+	case *int64:
+		return "*int64"
+	case *uint:
+		return "*uint"
+	case *uint8:
+		return "*uint8"
+	case *uint16:
+		return "*uint16"
+	case *uint32:
+		return "*uint32"
+	case *uint64:
+		return "*uint64"
+	case *float32:
+		return "*float32"
+	case *float64:
+		return "*float64"
 	case *string:
 		return "*string"
 	case *bool:
 		return "*bool"
-	case *float64:
-		return "*float64"
 	case *time.Time:
 		return "*time.Time"
+	case *[]byte:
+		return "*[]byte"
 	default:
 		return "any"
 	}

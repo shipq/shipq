@@ -1,0 +1,287 @@
+= Refactor Strategy (Sanity Check + Next Steps)
+
+This file is a read-only audit of the current codebase with a concrete “what to do next” plan.
+
+Scope requested:
+
+- **A) Clear correctness issues**
+- **B) Architecture for maintenance**
+- **C) Benchmarking + performance**
+
+The project’s overall direction is solid: SQL-first, generated code is simple, and cross-dialect behavior is actively tested.
+The main issues are a small number of correctness traps (some are “will break at runtime” cases), plus some duplication/legacy generator paths that will slow future changes.
+
+=== Executive summary (highest priority)
+
+- **Fix parameter ordering / duplication semantics**: today codegen collects *unique* params, but the SQL compilers emit placeholders for *every occurrence*. This can produce queries that compile but fail at runtime.
+- **Make CRUD scoping consistent**: `scope` is applied to Get/List/Insert/Update, but not Delete/HardDelete. This breaks tenant isolation semantics.
+- **Validate JSON aggregation inputs**: `SelectJSONAgg(..., cols...)` has no guard for `cols == 0`, but SQL compilers assume at least one column and can panic.
+- **Normalize “single source of truth” for generation paths**: there are multiple runners/generators with overlapping responsibilities and mismatched headers (“orm codegen” vs “portsql”).
+
+'''
+
+== A) Correctness: clear issues + suggested fixes
+
+=== A1. Runtime-breaking: params collected uniquely, but placeholders are per-occurrence
+
+**What happens today**
+
+- Query compilation (dialect compilers) appends a param name every time a `query.ParamExpr` is encountered:
+  - Postgres increments `$1, $2, ...` per occurrence (`src/query/compile/postgres.go`).
+  - MySQL/SQLite write a `?` per occurrence (`src/query/compile/mysql.go`, `src/query/compile/sqlite.go`).
+- But the CLI uses `codegen.ExtractParamInfo(rq.AST)` which **deduplicates by name** (`seen` map) and returns a single field per unique name (`src/codegen/queries_gen.go`, `ExtractParamInfo`).
+- Generated runner builds the `args` list by iterating `q.Params` (the deduped list), so repeated params yield **too few arguments** for the SQL.
+
+**Concrete failing example**
+
+- Query: `WHERE (a = Param("x")) OR (b = Param("x"))`
+- Postgres compiler emits: `... WHERE (a = $1) OR (b = $2)` with param order `["x","x"]`
+- Generated params struct has one field `X`, args becomes `[]any{params.X}` → runtime error (bind count mismatch).
+
+**Fix strategy**
+
+- Decide on one invariant and enforce it end-to-end:
+  - **Preferred**: store *param occurrence order* (with duplicates) in compiled query metadata, and generate args by iterating that list (repeating `params.X` as needed). Keep params struct fields unique.
+  - Alternative (harder): change compilers to reuse placeholders for the same param name across the whole query (works for Postgres, but not for MySQL/SQLite with `database/sql` positional args).
+
+**Action items**
+
+- In `cli.Compile`: stop using `ExtractParamInfo` for argument order. Instead, use the compiler’s `paramOrder` output.
+- In codegen: generate params struct fields from the *unique* set, but generate `args := []any{ ... }` from the *occurrence list*.
+- Add a unit test specifically for repeated params (this is not currently covered by property tests).
+
+=== A2. CRUD “scope” is not applied consistently (Delete/HardDelete missing scope)
+
+**What happens today**
+
+- `CRUDOptions.ScopeColumn` influences SQL generation for Get/List/Insert/Update (`src/codegen/crud_sql_gen.go`).
+- But `generateDeleteSQL` / `generateHardDeleteSQL` **do not include the scope column**, and the generated runner methods only pass `PublicID`/`ID`.
+
+**Why it matters**
+
+- With tenant scoping enabled, Delete/HardDelete must also constrain by the scope column, otherwise a caller can delete across tenants.
+
+**Action items**
+
+- Update CRUD SQL generation and CRUD param structs so Delete/HardDelete accept and apply the scope param when configured.
+- Add tests ensuring scoped CRUD methods always include scope in WHERE.
+
+=== A3. JSON aggregation can panic / generate invalid SQL when called with zero columns
+
+**What happens today**
+
+- Builder `SelectJSONAgg(fieldName string, cols ...Column)` does not validate `len(cols) > 0` (`src/query/builder.go`).
+- Compilers assume at least one column:
+  - Postgres: uses `j.Columns[0]` for null filtering (`src/query/compile/postgres.go`).
+  - Others build JSON_OBJECT/JSON_GROUP_ARRAY over columns.
+
+**Action items**
+
+- Validate `cols` length at builder time (panic is fine here since these are developer-authored query defs) or at compile time (return error).
+- Add tests for the error path.
+
+=== A4. Identifier quoting does not escape/validate identifier content
+
+**What happens today**
+
+- Compilers quote identifiers via `fmt.Fprintf(b, "\"%s\"", name)` (or backticks for MySQL) with no escaping/validation.
+- If a table/column/alias includes quotes/backticks or malicious content, the emitted SQL can break or inject.
+
+**Realistic risk**
+
+- Generated schema/table names should be safe in normal use, but aliases are user-provided strings and should be validated.
+
+**Action items**
+
+- Enforce an identifier validation rule (e.g., `^[a-zA-Z_][a-zA-Z0-9_]*$`) for generated/accepted identifiers.
+- Fail fast (compile error) if invalid.
+
+=== A5. Literal formatting is under-specified for non-primitive types
+
+**What happens today**
+
+- `LiteralExpr` prints non-string/bool/nil using `%v` (e.g., time.Time would render as `2026-...` which is not valid SQL).
+
+**Action items**
+
+- Either constrain `Literal` usage to a small set of SQL-safe primitive types (and error otherwise), or implement proper type-specific SQL literal formatting (time, decimals, bytes).
+- Add tests documenting the allowed literal set.
+
+=== A6. `Param[T]` type inference falls back to `"any"` for many useful types
+
+**What happens today**
+
+- `typeNameOf` in `src/query/helpers.go` is a manual switch; unknown types become `"any"`.
+- This can silently degrade codegen typing (params become `any`) and also breaks import inference.
+
+**Action items**
+
+- Replace manual mapping with reflection-based type stringification (or expand the mapping to cover `json.RawMessage` and more pointer cases).
+- Add tests verifying that common types (including `json.RawMessage`) round-trip into codegen correctly.
+
+=== A7. SQLite JSON scanning path doesn’t handle NULL safely
+
+**What happens today**
+
+- Dialect-specific runner code scans SQLite JSON columns into `string` temp vars and converts to `[]byte`.
+- If the SQL can return NULL for a JSON column (non-COALESCE case), scanning into `string` can fail.
+
+**Action items**
+
+- Use `sql.NullString` or scan into `[]byte`/`sql.RawBytes` depending on driver behavior.
+- Ensure JSONAgg always COALESCEs to `'[]'`/`'{}'` where appropriate, but don’t rely on that for general JSON columns.
+
+'''
+
+== B) Architecture / maintenance improvements
+
+=== B1. Establish “single source of truth” for query compilation metadata
+
+Right now, we have:
+
+- Compilers that compute `paramOrder` but it is mostly ignored by CLI/codegen.
+- Codegen that recomputes params by walking the AST (and deduping).
+
+**Action**
+
+- Define a canonical `CompiledQuery` shape that includes:
+  - SQL per dialect
+  - **Param occurrences in order** (names, and resolved Go types)
+  - Unique param set for struct fields
+  - Result metadata (including JSONAgg nested shapes)
+
+This prevents drift and removes the current “compiler says one thing, generator assumes another” class of bugs.
+
+=== B2. Consolidate runner generators and remove legacy / redundant paths
+
+There are multiple runner generation entry points and some legacy headers:
+
+- `GenerateDialectRunner` (newer, dialect-specific packages)
+- `GenerateCombinedRunner` (one package with a runtime dialect switch)
+- `GenerateQueryRunner` / `GenerateCRUDRunner` (older style, some still say “orm codegen”)
+
+**Action**
+
+- Pick one architecture as the supported path (the README strongly suggests dialect-specific runners).
+- Deprecate/remove the others to reduce maintenance surface area.
+- Normalize generated headers to consistently say `portsql`.
+
+### B3. Reduce dialect compiler duplication via a shared “base compiler”
+
+`compile/postgres.go`, `compile/mysql.go`, `compile/sqlite.go` share large amounts of logic and differ mainly by:
+
+- identifier quoting
+- parameter placeholder formatting
+- boolean literals
+- NOW() function
+- JSON aggregation functions and edge-case semantics (FILTER vs COALESCE variants)
+- MySQL ORDER BY collation behavior
+
+**Action**
+
+- Factor a shared traversal/writer that delegates these differences to a small dialect interface.
+- Keep strict, dialect-specific tests (they’re a big asset here).
+
+### B4. Clarify package boundaries (query/compile/codegen/cli)
+
+The boundaries are close to ideal, but a few improvements will keep it healthy:
+
+- `query` should define AST + builder + “semantic validation” rules.
+- `compile` should only turn a valid AST into SQL + param occurrence order.
+- `codegen` should only turn compiled metadata into Go code.
+- `cli` should orchestrate and own the “extract init-time registered queries” mechanism.
+
+**Action**
+
+- Add small “invariants” docs per package (what inputs are valid, what outputs guarantee).
+- Prefer returning errors from validation/compile over panicking, except for truly programmer-error builder calls.
+
+### B5. Improve scoping and naming consistency
+
+There are multiple distinct `Dialect` type definitions:
+
+- `src/query/runner.go` defines a `Dialect` enum for runtime selection.
+- `src/codegen/crud_sql_gen.go` defines `type Dialect string` for SQL generation.
+
+**Action**
+
+- Rename/refactor so it’s clear which dialect type is for codegen vs runtime execution.
+- Avoid duplicating dialect definitions across generated and non-generated code unless intentionally isolated.
+
+'''
+
+== C) Benchmarking + performance plan (what to measure, likely hotspots)
+
+For this project, the performance we can most directly control is **compile-time performance**:
+
+- **AST → SQL compilation** (`src/query/compile/*`)
+- **`portsql compile` end-to-end latency** (load schema, extract registry, compile all queries for all dialects, generate code, write files)
+
+Runtime performance is dominated by the database and query plans; there are small runner-level micro-opts, but they’re not the main goal here.
+
+### C1. Define what “performance” means here
+
+- **Core metric**: wall-clock time for `portsql compile` for a given project (N queries, M tables, D dialects).
+- **Secondary metrics**:
+  - allocations and bytes allocated (especially per query compiled)
+  - scaling behavior: confirm we’re \(O(N)\) in number of queries and AST size (no accidental \(O(N^2)\) loops)
+  - stability: repeated runs shouldn’t have large variance
+
+### C2. Add targeted microbenchmarks
+
+Recommended benchmark targets:
+
+- **Compiler benchmarks** (`src/query/compile/...`):
+  - compile representative ASTs:
+    - simple SELECT (few columns, one WHERE)
+    - JOIN + GROUP BY + aggregates
+    - JSONAgg (and nested JSONAgg if supported)
+    - CTEs
+    - set operations (UNION/INTERSECT/EXCEPT)
+    - queries with lots of parameters (including repeated param names)
+  - record `ns/op`, `allocs/op`, `B/op` via `-benchmem`
+  - run per dialect (Postgres/MySQL/SQLite) because the writers differ
+- **End-to-end `portsql compile` benchmarks**:
+  - benchmark the CLI compile function (or a thin wrapper) against a fixed corpus:
+    - e.g. a “medium” corpus (50–200 queries) and a “large” corpus (1000+ queries)
+  - include the cost of query registry extraction (the `go run` temp program), because it can dominate total time for smaller projects
+- **Codegen benchmarks** (`src/codegen/...`):
+  - measure time and allocations to generate `types.go` and per-dialect `runner.go` for a representative query+schema set
+  - goal: prevent regressions and accidental quadratic behavior
+
+### C3. Likely compiler/codegen wins (once benchmarks confirm)
+
+- **Reduce compiler duplication**: factor shared traversal across dialect compilers; fewer code paths means fewer bugs and fewer missed micro-opts.
+- **Minimize allocations while compiling**:
+  - ensure heavy paths use `strings.Builder` consistently (already mostly true)
+  - avoid building intermediate strings when composing queries (e.g., set-op / CTE compilation)
+- **Avoid repeated AST walks**:
+  - today compilation walks the AST for SQL generation, and codegen separately walks for params/results extraction.
+  - after fixing param ordering, consider carrying compilation metadata forward so codegen doesn’t need to re-walk the AST.
+- **Registry extraction overhead**:
+  - `portsql compile` shells out to `go run` a temp program to read the registry; for small projects this can dominate.
+  - if benchmarks show it’s a bottleneck, consider a faster extraction approach (still keeping the “init() registers queries” UX).
+
+### C4. Profiling workflow (compile-time)
+
+- Document a repeatable workflow focused on compiler/CLI:
+  - `go test ./...`
+  - `go test ./... -bench=Compile -benchmem`
+  - `go test ./... -bench=Compile -cpuprofile cpu.out -memprofile mem.out`
+  - inspect via `go tool pprof` and confirm the top costs (compiler vs registry extraction vs codegen vs file I/O)
+
+### C5. (Optional) Runtime benchmarking
+
+If we ever need it, keep runtime benchmarks separate and minimal; the primary performance objective is the compiler and `portsql compile` developer experience.
+
+'''
+
+== Suggested immediate task list (next PRs)
+
+- **P0: Fix param occurrence ordering end-to-end** (compiler → metadata → args generation).
+- **P0: Apply CRUD scope to Delete/HardDelete** and add tests.
+- **P0: Validate JSONAgg requires at least one column** (builder or compiler).
+- **P1: Replace/expand `typeNameOf` so `Param[T]` doesn’t silently degrade to `any`.**
+- **P1: Consolidate runner generation path + normalize headers (“portsql”, not “orm codegen”).**
+- **P2: Add benchmark suite + a minimal perf guide in docs.**
+

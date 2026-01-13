@@ -53,16 +53,16 @@ func Compile(ctx context.Context, config *Config) error {
 	for name, rq := range queries {
 		fmt.Printf("  Compiling: %s (%s)\n", name, rq.ReturnType)
 
-		// Compile for all dialects
-		postgresSQL, _, err := compileQuery(rq.AST, "postgres")
+		// Compile for all dialects - capture paramOrder for each
+		postgresSQL, postgresParamOrder, err := compileQuery(rq.AST, "postgres")
 		if err != nil {
 			return fmt.Errorf("failed to compile query %s for postgres: %w", name, err)
 		}
-		mysqlSQL, _, err := compileQuery(rq.AST, "mysql")
+		mysqlSQL, mysqlParamOrder, err := compileQuery(rq.AST, "mysql")
 		if err != nil {
 			return fmt.Errorf("failed to compile query %s for mysql: %w", name, err)
 		}
-		sqliteSQL, _, err := compileQuery(rq.AST, "sqlite")
+		sqliteSQL, sqliteParamOrder, err := compileQuery(rq.AST, "sqlite")
 		if err != nil {
 			return fmt.Errorf("failed to compile query %s for sqlite: %w", name, err)
 		}
@@ -82,6 +82,11 @@ func Compile(ctx context.Context, config *Config) error {
 				Postgres: postgresSQL,
 				MySQL:    mysqlSQL,
 				SQLite:   sqliteSQL,
+			},
+			ParamOrder: codegen.DialectParamOrder{
+				Postgres: postgresParamOrder,
+				MySQL:    mysqlParamOrder,
+				SQLite:   sqliteParamOrder,
 			},
 		})
 	}

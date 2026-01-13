@@ -82,6 +82,9 @@ func (c *SQLiteCompiler) compileSelect(ast *query.AST) (string, error) {
 				return "", err
 			}
 			if col.Alias != "" {
+				if err := ValidateIdentifier(col.Alias); err != nil {
+					return "", fmt.Errorf("invalid column alias: %w", err)
+				}
 				b.WriteString(" AS ")
 				c.writeIdentifier(&b, col.Alias)
 			}
@@ -92,6 +95,9 @@ func (c *SQLiteCompiler) compileSelect(ast *query.AST) (string, error) {
 	b.WriteString(" FROM ")
 	c.writeIdentifier(&b, ast.FromTable.Name)
 	if ast.FromTable.Alias != "" {
+		if err := ValidateIdentifier(ast.FromTable.Alias); err != nil {
+			return "", fmt.Errorf("invalid table alias: %w", err)
+		}
 		b.WriteString(" AS ")
 		c.writeIdentifier(&b, ast.FromTable.Alias)
 	}
@@ -103,6 +109,9 @@ func (c *SQLiteCompiler) compileSelect(ast *query.AST) (string, error) {
 		b.WriteString(" JOIN ")
 		c.writeIdentifier(&b, join.Table.Name)
 		if join.Table.Alias != "" {
+			if err := ValidateIdentifier(join.Table.Alias); err != nil {
+				return "", fmt.Errorf("invalid join table alias: %w", err)
+			}
 			b.WriteString(" AS ")
 			c.writeIdentifier(&b, join.Table.Alias)
 		}
@@ -276,7 +285,9 @@ func (c *SQLiteCompiler) writeExpr(b *strings.Builder, expr query.Expr) error {
 		b.WriteString("?")
 
 	case query.LiteralExpr:
-		c.writeLiteral(b, e.Value)
+		if err := c.writeLiteral(b, e.Value); err != nil {
+			return err
+		}
 
 	case query.BinaryExpr:
 		if e.Op == query.OpIn {
@@ -411,7 +422,7 @@ func (c *SQLiteCompiler) writeColumn(b *strings.Builder, col query.Column) {
 	c.writeIdentifier(b, col.ColumnName())
 }
 
-func (c *SQLiteCompiler) writeLiteral(b *strings.Builder, val any) {
+func (c *SQLiteCompiler) writeLiteral(b *strings.Builder, val any) error {
 	switch v := val.(type) {
 	case string:
 		// Escape single quotes by doubling them
@@ -426,9 +437,34 @@ func (c *SQLiteCompiler) writeLiteral(b *strings.Builder, val any) {
 		}
 	case nil:
 		b.WriteString("NULL")
+	case int:
+		fmt.Fprintf(b, "%d", v)
+	case int8:
+		fmt.Fprintf(b, "%d", v)
+	case int16:
+		fmt.Fprintf(b, "%d", v)
+	case int32:
+		fmt.Fprintf(b, "%d", v)
+	case int64:
+		fmt.Fprintf(b, "%d", v)
+	case uint:
+		fmt.Fprintf(b, "%d", v)
+	case uint8:
+		fmt.Fprintf(b, "%d", v)
+	case uint16:
+		fmt.Fprintf(b, "%d", v)
+	case uint32:
+		fmt.Fprintf(b, "%d", v)
+	case uint64:
+		fmt.Fprintf(b, "%d", v)
+	case float32:
+		fmt.Fprintf(b, "%g", v)
+	case float64:
+		fmt.Fprintf(b, "%g", v)
 	default:
-		fmt.Fprintf(b, "%v", v)
+		return fmt.Errorf("unsupported literal type %T: only string, bool, nil, int*, uint*, and float* are allowed", val)
 	}
+	return nil
 }
 
 func (c *SQLiteCompiler) writeFunc(b *strings.Builder, f query.FuncExpr) error {
