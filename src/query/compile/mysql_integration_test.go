@@ -112,9 +112,9 @@ func TestMySQLIntegration_SelectExecutes(t *testing.T) {
 		Where(publicID.Eq(query.Param[string]("public_id"))).
 		Build()
 
-	sql, params, err := CompileMySQL(ast)
+	sql, params, err := NewCompiler(MySQL).Compile(ast)
 	if err != nil {
-		t.Fatalf("CompileMySQL failed: %v", err)
+		t.Fatalf("Compile failed: %v", err)
 	}
 
 	t.Logf("Compiled SQL: %s", sql)
@@ -175,9 +175,9 @@ func TestMySQLIntegration_SelectWithOrderByLimitOffset(t *testing.T) {
 		Offset(query.Param[int]("offset")).
 		Build()
 
-	sql, params, err := CompileMySQL(ast)
+	sql, params, err := NewCompiler(MySQL).Compile(ast)
 	if err != nil {
-		t.Fatalf("CompileMySQL failed: %v", err)
+		t.Fatalf("Compile failed: %v", err)
 	}
 
 	t.Logf("Compiled SQL: %s", sql)
@@ -241,9 +241,9 @@ func TestMySQLIntegration_InsertWithLastInsertId(t *testing.T) {
 		Values(query.Param[string]("public_id"), query.Param[string]("title")).
 		Build()
 
-	sql, params, err := CompileMySQL(ast)
+	sql, params, err := NewCompiler(MySQL).Compile(ast)
 	if err != nil {
-		t.Fatalf("CompileMySQL failed: %v", err)
+		t.Fatalf("Compile failed: %v", err)
 	}
 
 	t.Logf("Compiled SQL: %s", sql)
@@ -304,9 +304,9 @@ func TestMySQLIntegration_InsertWithNow(t *testing.T) {
 		Values(query.Param[string]("name"), query.Now()).
 		Build()
 
-	sql, params, err := CompileMySQL(ast)
+	sql, params, err := NewCompiler(MySQL).Compile(ast)
 	if err != nil {
-		t.Fatalf("CompileMySQL failed: %v", err)
+		t.Fatalf("Compile failed: %v", err)
 	}
 
 	t.Logf("Compiled SQL: %s", sql)
@@ -371,9 +371,9 @@ func TestMySQLIntegration_Update(t *testing.T) {
 		Where(publicIDCol.Eq(query.Param[string]("public_id"))).
 		Build()
 
-	sql, params, err := CompileMySQL(ast)
+	sql, params, err := NewCompiler(MySQL).Compile(ast)
 	if err != nil {
-		t.Fatalf("CompileMySQL failed: %v", err)
+		t.Fatalf("Compile failed: %v", err)
 	}
 
 	t.Logf("Compiled SQL: %s", sql)
@@ -434,9 +434,9 @@ func TestMySQLIntegration_Delete(t *testing.T) {
 		Where(publicIDCol.Eq(query.Param[string]("public_id"))).
 		Build()
 
-	sql, params, err := CompileMySQL(ast)
+	sql, params, err := NewCompiler(MySQL).Compile(ast)
 	if err != nil {
-		t.Fatalf("CompileMySQL failed: %v", err)
+		t.Fatalf("Compile failed: %v", err)
 	}
 
 	t.Logf("Compiled SQL: %s", sql)
@@ -502,9 +502,9 @@ func TestMySQLIntegration_BooleanValues(t *testing.T) {
 		Where(active.Eq(query.Literal(true))).
 		Build()
 
-	sql, _, err := CompileMySQL(ast)
+	sql, _, err := NewCompiler(MySQL).Compile(ast)
 	if err != nil {
-		t.Fatalf("CompileMySQL failed: %v", err)
+		t.Fatalf("Compile failed: %v", err)
 	}
 
 	t.Logf("Compiled SQL: %s", sql)
@@ -553,9 +553,9 @@ func TestMySQLIntegration_SelectWithIn(t *testing.T) {
 		Where(statusCol.In("pending", "processing")).
 		Build()
 
-	sql, _, err := CompileMySQL(ast)
+	sql, _, err := NewCompiler(MySQL).Compile(ast)
 	if err != nil {
-		t.Fatalf("CompileMySQL failed: %v", err)
+		t.Fatalf("Compile failed: %v", err)
 	}
 
 	t.Logf("Compiled SQL: %s", sql)
@@ -624,9 +624,9 @@ func TestMySQLIntegration_JSONAggregation(t *testing.T) {
 		GroupBy(authorName).
 		Build()
 
-	sql, _, err := CompileMySQL(ast)
+	sql, _, err := NewCompiler(MySQL).Compile(ast)
 	if err != nil {
-		t.Fatalf("CompileMySQL failed: %v", err)
+		t.Fatalf("Compile failed: %v", err)
 	}
 
 	t.Logf("Compiled SQL: %s", sql)
@@ -698,9 +698,9 @@ func TestMySQLIntegration_ILike(t *testing.T) {
 		Where(nameCol.ILike("%john%")).
 		Build()
 
-	sql, _, err := CompileMySQL(ast)
+	sql, _, err := NewCompiler(MySQL).Compile(ast)
 	if err != nil {
-		t.Fatalf("CompileMySQL failed: %v", err)
+		t.Fatalf("Compile failed: %v", err)
 	}
 
 	t.Logf("Compiled SQL: %s", sql)
@@ -767,9 +767,9 @@ func TestMySQLIntegration_CountAggregate(t *testing.T) {
 		},
 	}
 
-	sqlStr, _, err := CompileMySQL(ast)
+	sqlStr, _, err := NewCompiler(MySQL).Compile(ast)
 	if err != nil {
-		t.Fatalf("CompileMySQL failed: %v", err)
+		t.Fatalf("Compile failed: %v", err)
 	}
 	t.Logf("COUNT SQL: %s", sqlStr)
 
@@ -823,9 +823,9 @@ func TestMySQLIntegration_SelectDistinct(t *testing.T) {
 		},
 	}
 
-	sqlStr, _, err := CompileMySQL(ast)
+	sqlStr, _, err := NewCompiler(MySQL).Compile(ast)
 	if err != nil {
-		t.Fatalf("CompileMySQL failed: %v", err)
+		t.Fatalf("Compile failed: %v", err)
 	}
 	t.Logf("DISTINCT SQL: %s", sqlStr)
 
@@ -899,9 +899,9 @@ func TestMySQLIntegration_Union(t *testing.T) {
 		},
 	}
 
-	sqlStr, _, err := CompileMySQL(ast)
+	sqlStr, _, err := NewCompiler(MySQL).Compile(ast)
 	if err != nil {
-		t.Fatalf("CompileMySQL failed: %v", err)
+		t.Fatalf("Compile failed: %v", err)
 	}
 	t.Logf("UNION SQL: %s", sqlStr)
 
@@ -976,9 +976,9 @@ func TestMySQLIntegration_CTE(t *testing.T) {
 		},
 	}
 
-	sqlStr, _, err := CompileMySQL(ast)
+	sqlStr, _, err := NewCompiler(MySQL).Compile(ast)
 	if err != nil {
-		t.Fatalf("CompileMySQL failed: %v", err)
+		t.Fatalf("Compile failed: %v", err)
 	}
 	t.Logf("CTE SQL: %s", sqlStr)
 

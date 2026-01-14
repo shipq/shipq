@@ -16,9 +16,9 @@ func TestPostgres_SimpleSelect(t *testing.T) {
 		},
 	}
 
-	sql, params, err := CompilePostgres(ast)
+	sql, params, err := NewCompiler(Postgres).Compile(ast)
 	if err != nil {
-		t.Fatalf("CompilePostgres failed: %v", err)
+		t.Fatalf("Compile failed: %v", err)
 	}
 
 	expected := `SELECT "authors"."id", "authors"."name" FROM "authors"`
@@ -36,9 +36,9 @@ func TestPostgres_SelectStar(t *testing.T) {
 		FromTable: query.TableRef{Name: "authors"},
 	}
 
-	sql, _, err := CompilePostgres(ast)
+	sql, _, err := NewCompiler(Postgres).Compile(ast)
 	if err != nil {
-		t.Fatalf("CompilePostgres failed: %v", err)
+		t.Fatalf("Compile failed: %v", err)
 	}
 
 	expected := `SELECT * FROM "authors"`
@@ -63,9 +63,9 @@ func TestPostgres_SelectWithWhere(t *testing.T) {
 		},
 	}
 
-	sql, params, err := CompilePostgres(ast)
+	sql, params, err := NewCompiler(Postgres).Compile(ast)
 	if err != nil {
-		t.Fatalf("CompilePostgres failed: %v", err)
+		t.Fatalf("Compile failed: %v", err)
 	}
 
 	expected := `SELECT "authors"."id" FROM "authors" WHERE ("authors"."id" = $1)`
@@ -102,9 +102,9 @@ func TestPostgres_SelectWithMultipleParams(t *testing.T) {
 		},
 	}
 
-	sql, params, err := CompilePostgres(ast)
+	sql, params, err := NewCompiler(Postgres).Compile(ast)
 	if err != nil {
-		t.Fatalf("CompilePostgres failed: %v", err)
+		t.Fatalf("Compile failed: %v", err)
 	}
 
 	if len(params) != 2 {
@@ -144,9 +144,9 @@ func TestPostgres_SelectWithJoin(t *testing.T) {
 		},
 	}
 
-	sql, _, err := CompilePostgres(ast)
+	sql, _, err := NewCompiler(Postgres).Compile(ast)
 	if err != nil {
-		t.Fatalf("CompilePostgres failed: %v", err)
+		t.Fatalf("Compile failed: %v", err)
 	}
 
 	if !containsStr(sql, `LEFT JOIN "books" ON ("authors"."id" = "books"."author_id")`) {
@@ -178,9 +178,9 @@ func TestPostgres_SelectWithInnerJoin(t *testing.T) {
 		},
 	}
 
-	sql, _, err := CompilePostgres(ast)
+	sql, _, err := NewCompiler(Postgres).Compile(ast)
 	if err != nil {
-		t.Fatalf("CompilePostgres failed: %v", err)
+		t.Fatalf("Compile failed: %v", err)
 	}
 
 	if !containsStr(sql, `INNER JOIN "books"`) {
@@ -211,9 +211,9 @@ func TestPostgres_SelectWithJoinAlias(t *testing.T) {
 		},
 	}
 
-	sql, _, err := CompilePostgres(ast)
+	sql, _, err := NewCompiler(Postgres).Compile(ast)
 	if err != nil {
-		t.Fatalf("CompilePostgres failed: %v", err)
+		t.Fatalf("Compile failed: %v", err)
 	}
 
 	if !containsStr(sql, `LEFT JOIN "authors" AS "comment_authors"`) {
@@ -237,9 +237,9 @@ func TestPostgres_SelectWithOrderByLimitOffset(t *testing.T) {
 		Offset: query.ParamExpr{Name: "offset", GoType: "int"},
 	}
 
-	sql, params, err := CompilePostgres(ast)
+	sql, params, err := NewCompiler(Postgres).Compile(ast)
 	if err != nil {
-		t.Fatalf("CompilePostgres failed: %v", err)
+		t.Fatalf("Compile failed: %v", err)
 	}
 
 	if !containsStr(sql, `ORDER BY "authors"."created_at" DESC`) {
@@ -268,9 +268,9 @@ func TestPostgres_SelectWithGroupBy(t *testing.T) {
 		GroupBy: []query.Column{countryCol},
 	}
 
-	sql, _, err := CompilePostgres(ast)
+	sql, _, err := NewCompiler(Postgres).Compile(ast)
 	if err != nil {
-		t.Fatalf("CompilePostgres failed: %v", err)
+		t.Fatalf("Compile failed: %v", err)
 	}
 
 	if !containsStr(sql, `GROUP BY "authors"."country"`) {
@@ -289,9 +289,9 @@ func TestPostgres_SelectWithAlias(t *testing.T) {
 		},
 	}
 
-	sql, _, err := CompilePostgres(ast)
+	sql, _, err := NewCompiler(Postgres).Compile(ast)
 	if err != nil {
-		t.Fatalf("CompilePostgres failed: %v", err)
+		t.Fatalf("Compile failed: %v", err)
 	}
 
 	if !containsStr(sql, `AS "author_name"`) {
@@ -314,9 +314,9 @@ func TestPostgres_Insert(t *testing.T) {
 		Returning: []query.Column{publicID},
 	}
 
-	sql, params, err := CompilePostgres(ast)
+	sql, params, err := NewCompiler(Postgres).Compile(ast)
 	if err != nil {
-		t.Fatalf("CompilePostgres failed: %v", err)
+		t.Fatalf("Compile failed: %v", err)
 	}
 
 	expected := `INSERT INTO "authors" ("public_id", "name") VALUES ($1, $2) RETURNING "public_id"`
@@ -342,9 +342,9 @@ func TestPostgres_InsertWithNow(t *testing.T) {
 		},
 	}
 
-	sql, _, err := CompilePostgres(ast)
+	sql, _, err := NewCompiler(Postgres).Compile(ast)
 	if err != nil {
-		t.Fatalf("CompilePostgres failed: %v", err)
+		t.Fatalf("Compile failed: %v", err)
 	}
 
 	if !containsStr(sql, "NOW()") {
@@ -369,9 +369,9 @@ func TestPostgres_Update(t *testing.T) {
 		},
 	}
 
-	sql, params, err := CompilePostgres(ast)
+	sql, params, err := NewCompiler(Postgres).Compile(ast)
 	if err != nil {
-		t.Fatalf("CompilePostgres failed: %v", err)
+		t.Fatalf("Compile failed: %v", err)
 	}
 
 	expected := `UPDATE "authors" SET "name" = $1 WHERE ("authors"."public_id" = $2)`
@@ -402,9 +402,9 @@ func TestPostgres_UpdateMultipleSets(t *testing.T) {
 		},
 	}
 
-	sql, params, err := CompilePostgres(ast)
+	sql, params, err := NewCompiler(Postgres).Compile(ast)
 	if err != nil {
-		t.Fatalf("CompilePostgres failed: %v", err)
+		t.Fatalf("Compile failed: %v", err)
 	}
 
 	if !containsStr(sql, `"name" = $1`) || !containsStr(sql, `"email" = $2`) {
@@ -428,9 +428,9 @@ func TestPostgres_Delete(t *testing.T) {
 		},
 	}
 
-	sql, params, err := CompilePostgres(ast)
+	sql, params, err := NewCompiler(Postgres).Compile(ast)
 	if err != nil {
-		t.Fatalf("CompilePostgres failed: %v", err)
+		t.Fatalf("Compile failed: %v", err)
 	}
 
 	expected := `DELETE FROM "authors" WHERE ("authors"."public_id" = $1)`
@@ -455,9 +455,9 @@ func TestPostgres_BooleanLiterals(t *testing.T) {
 		},
 	}
 
-	sql, _, err := CompilePostgres(ast)
+	sql, _, err := NewCompiler(Postgres).Compile(ast)
 	if err != nil {
-		t.Fatalf("CompilePostgres failed: %v", err)
+		t.Fatalf("Compile failed: %v", err)
 	}
 
 	if !containsStr(sql, "TRUE") {
@@ -478,9 +478,9 @@ func TestPostgres_BooleanFalse(t *testing.T) {
 		},
 	}
 
-	sql, _, err := CompilePostgres(ast)
+	sql, _, err := NewCompiler(Postgres).Compile(ast)
 	if err != nil {
-		t.Fatalf("CompilePostgres failed: %v", err)
+		t.Fatalf("Compile failed: %v", err)
 	}
 
 	if !containsStr(sql, "FALSE") {
@@ -499,9 +499,9 @@ func TestPostgres_NullLiteral(t *testing.T) {
 		},
 	}
 
-	sql, _, err := CompilePostgres(ast)
+	sql, _, err := NewCompiler(Postgres).Compile(ast)
 	if err != nil {
-		t.Fatalf("CompilePostgres failed: %v", err)
+		t.Fatalf("Compile failed: %v", err)
 	}
 
 	if !containsStr(sql, "NULL") {
@@ -527,9 +527,9 @@ func TestPostgres_InClause(t *testing.T) {
 		},
 	}
 
-	sql, _, err := CompilePostgres(ast)
+	sql, _, err := NewCompiler(Postgres).Compile(ast)
 	if err != nil {
-		t.Fatalf("CompilePostgres failed: %v", err)
+		t.Fatalf("Compile failed: %v", err)
 	}
 
 	if !containsStr(sql, `IN ('pending', 'processing')`) {
@@ -555,9 +555,9 @@ func TestPostgres_InClauseWithParams(t *testing.T) {
 		},
 	}
 
-	sql, params, err := CompilePostgres(ast)
+	sql, params, err := NewCompiler(Postgres).Compile(ast)
 	if err != nil {
-		t.Fatalf("CompilePostgres failed: %v", err)
+		t.Fatalf("Compile failed: %v", err)
 	}
 
 	if !containsStr(sql, `IN ($1, $2)`) {
@@ -577,9 +577,9 @@ func TestPostgres_IsNull(t *testing.T) {
 		Where:     query.UnaryExpr{Op: query.OpIsNull, Expr: query.ColumnExpr{Column: deletedAt}},
 	}
 
-	sql, _, err := CompilePostgres(ast)
+	sql, _, err := NewCompiler(Postgres).Compile(ast)
 	if err != nil {
-		t.Fatalf("CompilePostgres failed: %v", err)
+		t.Fatalf("Compile failed: %v", err)
 	}
 
 	if !containsStr(sql, `"users"."deleted_at" IS NULL`) {
@@ -596,9 +596,9 @@ func TestPostgres_IsNotNull(t *testing.T) {
 		Where:     query.UnaryExpr{Op: query.OpNotNull, Expr: query.ColumnExpr{Column: deletedAt}},
 	}
 
-	sql, _, err := CompilePostgres(ast)
+	sql, _, err := NewCompiler(Postgres).Compile(ast)
 	if err != nil {
-		t.Fatalf("CompilePostgres failed: %v", err)
+		t.Fatalf("Compile failed: %v", err)
 	}
 
 	if !containsStr(sql, `"users"."deleted_at" IS NOT NULL`) {
@@ -621,9 +621,9 @@ func TestPostgres_ILike(t *testing.T) {
 		},
 	}
 
-	sql, _, err := CompilePostgres(ast)
+	sql, _, err := NewCompiler(Postgres).Compile(ast)
 	if err != nil {
-		t.Fatalf("CompilePostgres failed: %v", err)
+		t.Fatalf("Compile failed: %v", err)
 	}
 
 	// Postgres has native ILIKE
@@ -645,9 +645,9 @@ func TestPostgres_Like(t *testing.T) {
 		},
 	}
 
-	sql, _, err := CompilePostgres(ast)
+	sql, _, err := NewCompiler(Postgres).Compile(ast)
 	if err != nil {
-		t.Fatalf("CompilePostgres failed: %v", err)
+		t.Fatalf("Compile failed: %v", err)
 	}
 
 	if !containsStr(sql, `LIKE '%john%'`) {
@@ -673,9 +673,9 @@ func TestPostgres_JSONAgg(t *testing.T) {
 		},
 	}
 
-	sql, _, err := CompilePostgres(ast)
+	sql, _, err := NewCompiler(Postgres).Compile(ast)
 	if err != nil {
-		t.Fatalf("CompilePostgres failed: %v", err)
+		t.Fatalf("Compile failed: %v", err)
 	}
 
 	if !containsStr(sql, "COALESCE(JSON_AGG(JSON_BUILD_OBJECT(") {
@@ -708,9 +708,9 @@ func TestPostgres_StringEscaping(t *testing.T) {
 		},
 	}
 
-	sql, _, err := CompilePostgres(ast)
+	sql, _, err := NewCompiler(Postgres).Compile(ast)
 	if err != nil {
-		t.Fatalf("CompilePostgres failed: %v", err)
+		t.Fatalf("Compile failed: %v", err)
 	}
 
 	// Single quotes should be escaped by doubling
@@ -746,9 +746,9 @@ func TestPostgres_ComparisonOperators(t *testing.T) {
 				},
 			}
 
-			sql, _, err := CompilePostgres(ast)
+			sql, _, err := NewCompiler(Postgres).Compile(ast)
 			if err != nil {
-				t.Fatalf("CompilePostgres failed: %v", err)
+				t.Fatalf("Compile failed: %v", err)
 			}
 
 			if !containsStr(sql, tt.expected) {
@@ -785,9 +785,9 @@ func TestPostgres_CountStar(t *testing.T) {
 		},
 	}
 
-	sql, _, err := CompilePostgres(ast)
+	sql, _, err := NewCompiler(Postgres).Compile(ast)
 	if err != nil {
-		t.Fatalf("CompilePostgres failed: %v", err)
+		t.Fatalf("Compile failed: %v", err)
 	}
 
 	expected := `SELECT COUNT(*) FROM "users"`
@@ -807,9 +807,9 @@ func TestPostgres_CountColumn(t *testing.T) {
 		},
 	}
 
-	sql, _, err := CompilePostgres(ast)
+	sql, _, err := NewCompiler(Postgres).Compile(ast)
 	if err != nil {
-		t.Fatalf("CompilePostgres failed: %v", err)
+		t.Fatalf("Compile failed: %v", err)
 	}
 
 	if !containsStr(sql, `COUNT("users"."email")`) {
@@ -828,9 +828,9 @@ func TestPostgres_CountDistinct(t *testing.T) {
 		},
 	}
 
-	sql, _, err := CompilePostgres(ast)
+	sql, _, err := NewCompiler(Postgres).Compile(ast)
 	if err != nil {
-		t.Fatalf("CompilePostgres failed: %v", err)
+		t.Fatalf("Compile failed: %v", err)
 	}
 
 	if !containsStr(sql, "COUNT(DISTINCT") {
@@ -862,9 +862,9 @@ func TestPostgres_SumAvgMinMax(t *testing.T) {
 				},
 			}
 
-			sql, _, err := CompilePostgres(ast)
+			sql, _, err := NewCompiler(Postgres).Compile(ast)
 			if err != nil {
-				t.Fatalf("CompilePostgres failed: %v", err)
+				t.Fatalf("Compile failed: %v", err)
 			}
 
 			if !containsStr(sql, tt.expected) {
@@ -886,9 +886,9 @@ func TestPostgres_SelectDistinct(t *testing.T) {
 		},
 	}
 
-	sql, _, err := CompilePostgres(ast)
+	sql, _, err := NewCompiler(Postgres).Compile(ast)
 	if err != nil {
-		t.Fatalf("CompilePostgres failed: %v", err)
+		t.Fatalf("Compile failed: %v", err)
 	}
 
 	if !containsStr(sql, "SELECT DISTINCT") {
@@ -918,9 +918,9 @@ func TestPostgres_Subquery(t *testing.T) {
 		},
 	}
 
-	sql, _, err := CompilePostgres(ast)
+	sql, _, err := NewCompiler(Postgres).Compile(ast)
 	if err != nil {
-		t.Fatalf("CompilePostgres failed: %v", err)
+		t.Fatalf("Compile failed: %v", err)
 	}
 
 	if !containsStr(sql, "IN (SELECT") {
@@ -946,9 +946,9 @@ func TestPostgres_Exists(t *testing.T) {
 		Where:     query.ExistsExpr{Subquery: subquery, Negated: false},
 	}
 
-	sql, _, err := CompilePostgres(ast)
+	sql, _, err := NewCompiler(Postgres).Compile(ast)
 	if err != nil {
-		t.Fatalf("CompilePostgres failed: %v", err)
+		t.Fatalf("Compile failed: %v", err)
 	}
 
 	if !containsStr(sql, "EXISTS (SELECT") {
@@ -971,9 +971,9 @@ func TestPostgres_NotExists(t *testing.T) {
 		Where:     query.ExistsExpr{Subquery: subquery, Negated: true},
 	}
 
-	sql, _, err := CompilePostgres(ast)
+	sql, _, err := NewCompiler(Postgres).Compile(ast)
 	if err != nil {
-		t.Fatalf("CompilePostgres failed: %v", err)
+		t.Fatalf("Compile failed: %v", err)
 	}
 
 	if !containsStr(sql, "NOT EXISTS (SELECT") {
@@ -1006,9 +1006,9 @@ func TestPostgres_Union(t *testing.T) {
 		},
 	}
 
-	sql, _, err := CompilePostgres(ast)
+	sql, _, err := NewCompiler(Postgres).Compile(ast)
 	if err != nil {
-		t.Fatalf("CompilePostgres failed: %v", err)
+		t.Fatalf("Compile failed: %v", err)
 	}
 
 	if !containsStr(sql, "UNION") {
@@ -1041,9 +1041,9 @@ func TestPostgres_UnionAll(t *testing.T) {
 		},
 	}
 
-	sql, _, err := CompilePostgres(ast)
+	sql, _, err := NewCompiler(Postgres).Compile(ast)
 	if err != nil {
-		t.Fatalf("CompilePostgres failed: %v", err)
+		t.Fatalf("Compile failed: %v", err)
 	}
 
 	if !containsStr(sql, "UNION ALL") {
@@ -1070,9 +1070,9 @@ func TestPostgres_Intersect(t *testing.T) {
 		},
 	}
 
-	sql, _, err := CompilePostgres(ast)
+	sql, _, err := NewCompiler(Postgres).Compile(ast)
 	if err != nil {
-		t.Fatalf("CompilePostgres failed: %v", err)
+		t.Fatalf("Compile failed: %v", err)
 	}
 
 	if !containsStr(sql, "INTERSECT") {
@@ -1099,9 +1099,9 @@ func TestPostgres_Except(t *testing.T) {
 		},
 	}
 
-	sql, _, err := CompilePostgres(ast)
+	sql, _, err := NewCompiler(Postgres).Compile(ast)
 	if err != nil {
-		t.Fatalf("CompilePostgres failed: %v", err)
+		t.Fatalf("Compile failed: %v", err)
 	}
 
 	if !containsStr(sql, "EXCEPT") {
@@ -1131,9 +1131,9 @@ func TestPostgres_CTE(t *testing.T) {
 		FromTable: query.TableRef{Name: "pending_orders"},
 	}
 
-	sql, _, err := CompilePostgres(ast)
+	sql, _, err := NewCompiler(Postgres).Compile(ast)
 	if err != nil {
-		t.Fatalf("CompilePostgres failed: %v", err)
+		t.Fatalf("Compile failed: %v", err)
 	}
 
 	if !containsStr(sql, "WITH") {
@@ -1165,9 +1165,9 @@ func TestPostgres_CTEWithColumns(t *testing.T) {
 		FromTable: query.TableRef{Name: "order_summary"},
 	}
 
-	sql, _, err := CompilePostgres(ast)
+	sql, _, err := NewCompiler(Postgres).Compile(ast)
 	if err != nil {
-		t.Fatalf("CompilePostgres failed: %v", err)
+		t.Fatalf("Compile failed: %v", err)
 	}
 
 	if !containsStr(sql, `"order_id"`) {
@@ -1197,9 +1197,9 @@ func TestPostgres_MultipleCTEs(t *testing.T) {
 		FromTable: query.TableRef{Name: "recent_orders"},
 	}
 
-	sql, _, err := CompilePostgres(ast)
+	sql, _, err := NewCompiler(Postgres).Compile(ast)
 	if err != nil {
-		t.Fatalf("CompilePostgres failed: %v", err)
+		t.Fatalf("Compile failed: %v", err)
 	}
 
 	if !containsStr(sql, `"recent_orders"`) {
@@ -1242,9 +1242,9 @@ func TestPostgres_SetOpWithOrderByLimit(t *testing.T) {
 		Offset: query.LiteralExpr{Value: 5},
 	}
 
-	sql, _, err := CompilePostgres(ast)
+	sql, _, err := NewCompiler(Postgres).Compile(ast)
 	if err != nil {
-		t.Fatalf("CompilePostgres failed: %v", err)
+		t.Fatalf("Compile failed: %v", err)
 	}
 
 	if !containsStr(sql, "ORDER BY") {

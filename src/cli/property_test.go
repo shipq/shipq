@@ -125,9 +125,9 @@ func TestProperty_CRUDGenerationProducesValidGo(t *testing.T) {
 		}
 
 		// Generate CRUD types
-		code, err := codegen.GenerateCRUDPackageWithOptions(plan, "queries", tableOpts)
+		code, err := codegen.GenerateSharedTypes(nil, plan, "queries", tableOpts)
 		if err != nil {
-			t.Logf("GenerateCRUDPackageWithOptions failed: %v", err)
+			t.Logf("GenerateSharedTypes failed: %v", err)
 			return false
 		}
 

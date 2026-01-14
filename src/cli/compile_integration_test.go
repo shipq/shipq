@@ -353,9 +353,9 @@ scope = org_id
 	}
 
 	// Generate CRUD types
-	code, err := codegen.GenerateCRUDPackageWithOptions(crudPlan, "queries", tableOpts)
+	code, err := codegen.GenerateSharedTypes(nil, crudPlan, "queries", tableOpts)
 	if err != nil {
-		t.Fatalf("GenerateCRUDPackageWithOptions failed: %v", err)
+		t.Fatalf("GenerateSharedTypes failed: %v", err)
 	}
 
 	codeStr := string(code)

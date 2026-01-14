@@ -211,11 +211,11 @@ func TestProperty_QueryCompilesToValidSQL(t *testing.T) {
 
 		switch dialect {
 		case "postgres":
-			sql, _, err = compile.CompilePostgres(ast)
+			sql, _, err = compile.NewCompiler(compile.Postgres).Compile(ast)
 		case "mysql":
-			sql, _, err = compile.CompileMySQL(ast)
+			sql, _, err = compile.NewCompiler(compile.MySQL).Compile(ast)
 		case "sqlite":
-			sql, _, err = compile.CompileSQLite(ast)
+			sql, _, err = compile.NewCompiler(compile.SQLite).Compile(ast)
 		}
 
 		if err != nil {
@@ -247,9 +247,9 @@ func TestProperty_QueryParamCountConsistent(t *testing.T) {
 		ast := generateRandomSelectQuery(g)
 
 		// Compile for all dialects
-		_, pgParams, err1 := compile.CompilePostgres(ast)
-		_, myParams, err2 := compile.CompileMySQL(ast)
-		_, sqParams, err3 := compile.CompileSQLite(ast)
+		_, pgParams, err1 := compile.NewCompiler(compile.Postgres).Compile(ast)
+		_, myParams, err2 := compile.NewCompiler(compile.MySQL).Compile(ast)
+		_, sqParams, err3 := compile.NewCompiler(compile.SQLite).Compile(ast)
 
 		if err1 != nil || err2 != nil || err3 != nil {
 			// Compilation errors are tested elsewhere
@@ -307,9 +307,9 @@ func TestProperty_AllDialectsProduceSameParamNames(t *testing.T) {
 	proptest.QuickCheck(t, "all dialects same param names", func(g *proptest.Generator) bool {
 		ast := generateRandomSelectQuery(g)
 
-		_, pgParams, _ := compile.CompilePostgres(ast)
-		_, myParams, _ := compile.CompileMySQL(ast)
-		_, sqParams, _ := compile.CompileSQLite(ast)
+		_, pgParams, _ := compile.NewCompiler(compile.Postgres).Compile(ast)
+		_, myParams, _ := compile.NewCompiler(compile.MySQL).Compile(ast)
+		_, sqParams, _ := compile.NewCompiler(compile.SQLite).Compile(ast)
 
 		// All should have same length
 		if len(pgParams) != len(myParams) || len(pgParams) != len(sqParams) {

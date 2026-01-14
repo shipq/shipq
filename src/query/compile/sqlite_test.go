@@ -16,9 +16,9 @@ func TestSQLite_SimpleSelect(t *testing.T) {
 		},
 	}
 
-	sql, params, err := CompileSQLite(ast)
+	sql, params, err := NewCompiler(SQLite).Compile(ast)
 	if err != nil {
-		t.Fatalf("CompileSQLite failed: %v", err)
+		t.Fatalf("Compile failed: %v", err)
 	}
 
 	// SQLite uses double quotes (like Postgres)
@@ -37,9 +37,9 @@ func TestSQLite_SelectStar(t *testing.T) {
 		FromTable: query.TableRef{Name: "authors"},
 	}
 
-	sql, _, err := CompileSQLite(ast)
+	sql, _, err := NewCompiler(SQLite).Compile(ast)
 	if err != nil {
-		t.Fatalf("CompileSQLite failed: %v", err)
+		t.Fatalf("Compile failed: %v", err)
 	}
 
 	expected := `SELECT * FROM "authors"`
@@ -64,9 +64,9 @@ func TestSQLite_SelectWithWhere(t *testing.T) {
 		},
 	}
 
-	sql, params, err := CompileSQLite(ast)
+	sql, params, err := NewCompiler(SQLite).Compile(ast)
 	if err != nil {
-		t.Fatalf("CompileSQLite failed: %v", err)
+		t.Fatalf("Compile failed: %v", err)
 	}
 
 	// SQLite uses ? for params (like MySQL)
@@ -101,9 +101,9 @@ func TestSQLite_MultipleParams(t *testing.T) {
 		},
 	}
 
-	sql, params, err := CompileSQLite(ast)
+	sql, params, err := NewCompiler(SQLite).Compile(ast)
 	if err != nil {
-		t.Fatalf("CompileSQLite failed: %v", err)
+		t.Fatalf("Compile failed: %v", err)
 	}
 
 	// All params should be ?
@@ -143,9 +143,9 @@ func TestSQLite_SelectWithJoin(t *testing.T) {
 		},
 	}
 
-	sql, _, err := CompileSQLite(ast)
+	sql, _, err := NewCompiler(SQLite).Compile(ast)
 	if err != nil {
-		t.Fatalf("CompileSQLite failed: %v", err)
+		t.Fatalf("Compile failed: %v", err)
 	}
 
 	if !containsStr(sql, `LEFT JOIN "books" ON ("authors"."id" = "books"."author_id")`) {
@@ -169,9 +169,9 @@ func TestSQLite_SelectWithOrderByLimitOffset(t *testing.T) {
 		Offset: query.ParamExpr{Name: "offset", GoType: "int"},
 	}
 
-	sql, params, err := CompileSQLite(ast)
+	sql, params, err := NewCompiler(SQLite).Compile(ast)
 	if err != nil {
-		t.Fatalf("CompileSQLite failed: %v", err)
+		t.Fatalf("Compile failed: %v", err)
 	}
 
 	if !containsStr(sql, `ORDER BY "authors"."created_at" DESC`) {
@@ -200,9 +200,9 @@ func TestSQLite_SelectWithGroupBy(t *testing.T) {
 		GroupBy: []query.Column{countryCol},
 	}
 
-	sql, _, err := CompileSQLite(ast)
+	sql, _, err := NewCompiler(SQLite).Compile(ast)
 	if err != nil {
-		t.Fatalf("CompileSQLite failed: %v", err)
+		t.Fatalf("Compile failed: %v", err)
 	}
 
 	if !containsStr(sql, `GROUP BY "authors"."country"`) {
@@ -225,9 +225,9 @@ func TestSQLite_InsertWithReturning(t *testing.T) {
 		Returning: []query.Column{publicID},
 	}
 
-	sql, params, err := CompileSQLite(ast)
+	sql, params, err := NewCompiler(SQLite).Compile(ast)
 	if err != nil {
-		t.Fatalf("CompileSQLite failed: %v", err)
+		t.Fatalf("Compile failed: %v", err)
 	}
 
 	// SQLite supports RETURNING (3.35+)
@@ -254,9 +254,9 @@ func TestSQLite_InsertWithNow(t *testing.T) {
 		},
 	}
 
-	sql, _, err := CompileSQLite(ast)
+	sql, _, err := NewCompiler(SQLite).Compile(ast)
 	if err != nil {
-		t.Fatalf("CompileSQLite failed: %v", err)
+		t.Fatalf("Compile failed: %v", err)
 	}
 
 	// SQLite uses datetime('now')
@@ -285,9 +285,9 @@ func TestSQLite_Update(t *testing.T) {
 		},
 	}
 
-	sql, params, err := CompileSQLite(ast)
+	sql, params, err := NewCompiler(SQLite).Compile(ast)
 	if err != nil {
-		t.Fatalf("CompileSQLite failed: %v", err)
+		t.Fatalf("Compile failed: %v", err)
 	}
 
 	expected := `UPDATE "authors" SET "name" = ? WHERE ("authors"."public_id" = ?)`
@@ -312,9 +312,9 @@ func TestSQLite_Delete(t *testing.T) {
 		},
 	}
 
-	sql, params, err := CompileSQLite(ast)
+	sql, params, err := NewCompiler(SQLite).Compile(ast)
 	if err != nil {
-		t.Fatalf("CompileSQLite failed: %v", err)
+		t.Fatalf("Compile failed: %v", err)
 	}
 
 	expected := `DELETE FROM "authors" WHERE ("authors"."public_id" = ?)`
@@ -339,9 +339,9 @@ func TestSQLite_BooleanLiterals(t *testing.T) {
 		},
 	}
 
-	sql, _, err := CompileSQLite(ast)
+	sql, _, err := NewCompiler(SQLite).Compile(ast)
 	if err != nil {
-		t.Fatalf("CompileSQLite failed: %v", err)
+		t.Fatalf("Compile failed: %v", err)
 	}
 
 	// SQLite uses 1/0 for booleans
@@ -366,9 +366,9 @@ func TestSQLite_BooleanFalse(t *testing.T) {
 		},
 	}
 
-	sql, _, err := CompileSQLite(ast)
+	sql, _, err := NewCompiler(SQLite).Compile(ast)
 	if err != nil {
-		t.Fatalf("CompileSQLite failed: %v", err)
+		t.Fatalf("Compile failed: %v", err)
 	}
 
 	if !containsStr(sql, "= 0)") {
@@ -390,9 +390,9 @@ func TestSQLite_NullLiteral(t *testing.T) {
 		},
 	}
 
-	sql, _, err := CompileSQLite(ast)
+	sql, _, err := NewCompiler(SQLite).Compile(ast)
 	if err != nil {
-		t.Fatalf("CompileSQLite failed: %v", err)
+		t.Fatalf("Compile failed: %v", err)
 	}
 
 	if !containsStr(sql, "NULL") {
@@ -418,9 +418,9 @@ func TestSQLite_InClause(t *testing.T) {
 		},
 	}
 
-	sql, _, err := CompileSQLite(ast)
+	sql, _, err := NewCompiler(SQLite).Compile(ast)
 	if err != nil {
-		t.Fatalf("CompileSQLite failed: %v", err)
+		t.Fatalf("Compile failed: %v", err)
 	}
 
 	if !containsStr(sql, "IN ('pending', 'processing')") {
@@ -437,9 +437,9 @@ func TestSQLite_IsNull(t *testing.T) {
 		Where:     query.UnaryExpr{Op: query.OpIsNull, Expr: query.ColumnExpr{Column: deletedAt}},
 	}
 
-	sql, _, err := CompileSQLite(ast)
+	sql, _, err := NewCompiler(SQLite).Compile(ast)
 	if err != nil {
-		t.Fatalf("CompileSQLite failed: %v", err)
+		t.Fatalf("Compile failed: %v", err)
 	}
 
 	if !containsStr(sql, `"users"."deleted_at" IS NULL`) {
@@ -456,9 +456,9 @@ func TestSQLite_IsNotNull(t *testing.T) {
 		Where:     query.UnaryExpr{Op: query.OpNotNull, Expr: query.ColumnExpr{Column: deletedAt}},
 	}
 
-	sql, _, err := CompileSQLite(ast)
+	sql, _, err := NewCompiler(SQLite).Compile(ast)
 	if err != nil {
-		t.Fatalf("CompileSQLite failed: %v", err)
+		t.Fatalf("Compile failed: %v", err)
 	}
 
 	if !containsStr(sql, `"users"."deleted_at" IS NOT NULL`) {
@@ -481,9 +481,9 @@ func TestSQLite_ILike(t *testing.T) {
 		},
 	}
 
-	sql, _, err := CompileSQLite(ast)
+	sql, _, err := NewCompiler(SQLite).Compile(ast)
 	if err != nil {
-		t.Fatalf("CompileSQLite failed: %v", err)
+		t.Fatalf("Compile failed: %v", err)
 	}
 
 	// SQLite: ILIKE becomes LOWER() LIKE LOWER()
@@ -505,9 +505,9 @@ func TestSQLite_Like(t *testing.T) {
 		},
 	}
 
-	sql, _, err := CompileSQLite(ast)
+	sql, _, err := NewCompiler(SQLite).Compile(ast)
 	if err != nil {
-		t.Fatalf("CompileSQLite failed: %v", err)
+		t.Fatalf("Compile failed: %v", err)
 	}
 
 	if !containsStr(sql, "LIKE '%john%'") {
@@ -532,9 +532,9 @@ func TestSQLite_JSONAggregation(t *testing.T) {
 		},
 	}
 
-	sql, _, err := CompileSQLite(ast)
+	sql, _, err := NewCompiler(SQLite).Compile(ast)
 	if err != nil {
-		t.Fatalf("CompileSQLite failed: %v", err)
+		t.Fatalf("Compile failed: %v", err)
 	}
 
 	// SQLite uses JSON_GROUP_ARRAY and JSON_OBJECT
@@ -568,9 +568,9 @@ func TestSQLite_StringEscaping(t *testing.T) {
 		},
 	}
 
-	sql, _, err := CompileSQLite(ast)
+	sql, _, err := NewCompiler(SQLite).Compile(ast)
 	if err != nil {
-		t.Fatalf("CompileSQLite failed: %v", err)
+		t.Fatalf("Compile failed: %v", err)
 	}
 
 	// Single quotes should be escaped by doubling
@@ -606,9 +606,9 @@ func TestSQLite_ComparisonOperators(t *testing.T) {
 				},
 			}
 
-			sql, _, err := CompileSQLite(ast)
+			sql, _, err := NewCompiler(SQLite).Compile(ast)
 			if err != nil {
-				t.Fatalf("CompileSQLite failed: %v", err)
+				t.Fatalf("Compile failed: %v", err)
 			}
 
 			if !containsStr(sql, tt.expected) {
@@ -631,9 +631,9 @@ func TestSQLite_CountStar(t *testing.T) {
 		},
 	}
 
-	sql, _, err := CompileSQLite(ast)
+	sql, _, err := NewCompiler(SQLite).Compile(ast)
 	if err != nil {
-		t.Fatalf("CompileSQLite failed: %v", err)
+		t.Fatalf("Compile failed: %v", err)
 	}
 
 	expected := `SELECT COUNT(*) FROM "users"`
@@ -653,9 +653,9 @@ func TestSQLite_CountDistinct(t *testing.T) {
 		},
 	}
 
-	sql, _, err := CompileSQLite(ast)
+	sql, _, err := NewCompiler(SQLite).Compile(ast)
 	if err != nil {
-		t.Fatalf("CompileSQLite failed: %v", err)
+		t.Fatalf("Compile failed: %v", err)
 	}
 
 	if !containsStr(sql, "COUNT(DISTINCT") {
@@ -687,9 +687,9 @@ func TestSQLite_SumAvgMinMax(t *testing.T) {
 				},
 			}
 
-			sql, _, err := CompileSQLite(ast)
+			sql, _, err := NewCompiler(SQLite).Compile(ast)
 			if err != nil {
-				t.Fatalf("CompileSQLite failed: %v", err)
+				t.Fatalf("Compile failed: %v", err)
 			}
 
 			if !containsStr(sql, tt.expected) {
@@ -711,9 +711,9 @@ func TestSQLite_SelectDistinct(t *testing.T) {
 		},
 	}
 
-	sql, _, err := CompileSQLite(ast)
+	sql, _, err := NewCompiler(SQLite).Compile(ast)
 	if err != nil {
-		t.Fatalf("CompileSQLite failed: %v", err)
+		t.Fatalf("Compile failed: %v", err)
 	}
 
 	if !containsStr(sql, "SELECT DISTINCT") {
@@ -742,9 +742,9 @@ func TestSQLite_Subquery(t *testing.T) {
 		},
 	}
 
-	sql, _, err := CompileSQLite(ast)
+	sql, _, err := NewCompiler(SQLite).Compile(ast)
 	if err != nil {
-		t.Fatalf("CompileSQLite failed: %v", err)
+		t.Fatalf("Compile failed: %v", err)
 	}
 
 	if !containsStr(sql, "IN (SELECT") {
@@ -770,9 +770,9 @@ func TestSQLite_Exists(t *testing.T) {
 		Where:     query.ExistsExpr{Subquery: subquery, Negated: false},
 	}
 
-	sql, _, err := CompileSQLite(ast)
+	sql, _, err := NewCompiler(SQLite).Compile(ast)
 	if err != nil {
-		t.Fatalf("CompileSQLite failed: %v", err)
+		t.Fatalf("Compile failed: %v", err)
 	}
 
 	if !containsStr(sql, "EXISTS (SELECT") {
@@ -795,9 +795,9 @@ func TestSQLite_NotExists(t *testing.T) {
 		Where:     query.ExistsExpr{Subquery: subquery, Negated: true},
 	}
 
-	sql, _, err := CompileSQLite(ast)
+	sql, _, err := NewCompiler(SQLite).Compile(ast)
 	if err != nil {
-		t.Fatalf("CompileSQLite failed: %v", err)
+		t.Fatalf("Compile failed: %v", err)
 	}
 
 	if !containsStr(sql, "NOT EXISTS (SELECT") {
@@ -830,9 +830,9 @@ func TestSQLite_Union(t *testing.T) {
 		},
 	}
 
-	sql, _, err := CompileSQLite(ast)
+	sql, _, err := NewCompiler(SQLite).Compile(ast)
 	if err != nil {
-		t.Fatalf("CompileSQLite failed: %v", err)
+		t.Fatalf("Compile failed: %v", err)
 	}
 
 	if !containsStr(sql, "UNION") {
@@ -862,9 +862,9 @@ func TestSQLite_Intersect(t *testing.T) {
 		},
 	}
 
-	sql, _, err := CompileSQLite(ast)
+	sql, _, err := NewCompiler(SQLite).Compile(ast)
 	if err != nil {
-		t.Fatalf("CompileSQLite failed: %v", err)
+		t.Fatalf("Compile failed: %v", err)
 	}
 
 	if !containsStr(sql, "INTERSECT") {
@@ -894,9 +894,9 @@ func TestSQLite_CTE(t *testing.T) {
 		FromTable: query.TableRef{Name: "pending_orders"},
 	}
 
-	sql, _, err := CompileSQLite(ast)
+	sql, _, err := NewCompiler(SQLite).Compile(ast)
 	if err != nil {
-		t.Fatalf("CompileSQLite failed: %v", err)
+		t.Fatalf("Compile failed: %v", err)
 	}
 
 	if !containsStr(sql, "WITH") {

@@ -293,11 +293,11 @@ func main() {
 func compileQuery(ast *query.AST, dialect string) (string, []string, error) {
 	switch dialect {
 	case "postgres":
-		return compile.CompilePostgres(ast)
+		return compile.NewCompiler(compile.Postgres).Compile(ast)
 	case "mysql":
-		return compile.CompileMySQL(ast)
+		return compile.NewCompiler(compile.MySQL).Compile(ast)
 	case "sqlite":
-		return compile.CompileSQLite(ast)
+		return compile.NewCompiler(compile.SQLite).Compile(ast)
 	default:
 		return "", nil, fmt.Errorf("unsupported dialect: %s", dialect)
 	}

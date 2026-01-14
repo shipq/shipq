@@ -92,9 +92,9 @@ func TestPostgresIntegration_SelectExecutes(t *testing.T) {
 		Where(publicID.Eq(query.Param[string]("public_id"))).
 		Build()
 
-	sql, params, err := CompilePostgres(ast)
+	sql, params, err := NewCompiler(Postgres).Compile(ast)
 	if err != nil {
-		t.Fatalf("CompilePostgres failed: %v", err)
+		t.Fatalf("Compile failed: %v", err)
 	}
 
 	t.Logf("Compiled SQL: %s", sql)
@@ -158,9 +158,9 @@ func TestPostgresIntegration_SelectWithOrderByLimitOffset(t *testing.T) {
 		Offset(query.Param[int]("offset")).
 		Build()
 
-	sql, params, err := CompilePostgres(ast)
+	sql, params, err := NewCompiler(Postgres).Compile(ast)
 	if err != nil {
-		t.Fatalf("CompilePostgres failed: %v", err)
+		t.Fatalf("Compile failed: %v", err)
 	}
 
 	t.Logf("Compiled SQL: %s", sql)
@@ -227,9 +227,9 @@ func TestPostgresIntegration_InsertWithReturning(t *testing.T) {
 		Returning(publicID).
 		Build()
 
-	sql, params, err := CompilePostgres(ast)
+	sql, params, err := NewCompiler(Postgres).Compile(ast)
 	if err != nil {
-		t.Fatalf("CompilePostgres failed: %v", err)
+		t.Fatalf("Compile failed: %v", err)
 	}
 
 	t.Logf("Compiled SQL: %s", sql)
@@ -279,9 +279,9 @@ func TestPostgresIntegration_InsertWithNow(t *testing.T) {
 		Values(query.Param[string]("name"), query.Now()).
 		Build()
 
-	sql, params, err := CompilePostgres(ast)
+	sql, params, err := NewCompiler(Postgres).Compile(ast)
 	if err != nil {
-		t.Fatalf("CompilePostgres failed: %v", err)
+		t.Fatalf("Compile failed: %v", err)
 	}
 
 	t.Logf("Compiled SQL: %s", sql)
@@ -348,9 +348,9 @@ func TestPostgresIntegration_Update(t *testing.T) {
 		Where(publicIDCol.Eq(query.Param[string]("public_id"))).
 		Build()
 
-	sql, params, err := CompilePostgres(ast)
+	sql, params, err := NewCompiler(Postgres).Compile(ast)
 	if err != nil {
-		t.Fatalf("CompilePostgres failed: %v", err)
+		t.Fatalf("Compile failed: %v", err)
 	}
 
 	t.Logf("Compiled SQL: %s", sql)
@@ -413,9 +413,9 @@ func TestPostgresIntegration_Delete(t *testing.T) {
 		Where(publicIDCol.Eq(query.Param[string]("public_id"))).
 		Build()
 
-	sql, params, err := CompilePostgres(ast)
+	sql, params, err := NewCompiler(Postgres).Compile(ast)
 	if err != nil {
-		t.Fatalf("CompilePostgres failed: %v", err)
+		t.Fatalf("Compile failed: %v", err)
 	}
 
 	t.Logf("Compiled SQL: %s", sql)
@@ -483,9 +483,9 @@ func TestPostgresIntegration_SelectWithILike(t *testing.T) {
 		Where(nameCol.ILike("%john%")).
 		Build()
 
-	sql, params, err := CompilePostgres(ast)
+	sql, params, err := NewCompiler(Postgres).Compile(ast)
 	if err != nil {
-		t.Fatalf("CompilePostgres failed: %v", err)
+		t.Fatalf("Compile failed: %v", err)
 	}
 
 	t.Logf("Compiled SQL: %s", sql)
@@ -549,9 +549,9 @@ func TestPostgresIntegration_SelectWithIn(t *testing.T) {
 		Where(statusCol.In("pending", "processing")).
 		Build()
 
-	sql, _, err := CompilePostgres(ast)
+	sql, _, err := NewCompiler(Postgres).Compile(ast)
 	if err != nil {
-		t.Fatalf("CompilePostgres failed: %v", err)
+		t.Fatalf("Compile failed: %v", err)
 	}
 
 	t.Logf("Compiled SQL: %s", sql)
@@ -621,9 +621,9 @@ func TestPostgresIntegration_JSONAggregation(t *testing.T) {
 		GroupBy(authorName).
 		Build()
 
-	sql, _, err := CompilePostgres(ast)
+	sql, _, err := NewCompiler(Postgres).Compile(ast)
 	if err != nil {
-		t.Fatalf("CompilePostgres failed: %v", err)
+		t.Fatalf("Compile failed: %v", err)
 	}
 
 	t.Logf("Compiled SQL: %s", sql)
@@ -705,9 +705,9 @@ func TestPostgresIntegration_JSONAggregation_EmptyArray(t *testing.T) {
 		GroupBy(authorName).
 		Build()
 
-	sql, _, err := CompilePostgres(ast)
+	sql, _, err := NewCompiler(Postgres).Compile(ast)
 	if err != nil {
-		t.Fatalf("CompilePostgres failed: %v", err)
+		t.Fatalf("Compile failed: %v", err)
 	}
 
 	t.Logf("Compiled SQL: %s", sql)
@@ -800,9 +800,9 @@ func TestPostgresIntegration_ComplexQuery(t *testing.T) {
 		OrderBy(orderPublicID.Asc()).
 		Build()
 
-	sql, _, err := CompilePostgres(ast)
+	sql, _, err := NewCompiler(Postgres).Compile(ast)
 	if err != nil {
-		t.Fatalf("CompilePostgres failed: %v", err)
+		t.Fatalf("Compile failed: %v", err)
 	}
 
 	t.Logf("Compiled SQL: %s", sql)
@@ -895,9 +895,9 @@ func TestPostgresIntegration_CountAggregate(t *testing.T) {
 		},
 	}
 
-	sql, _, err := CompilePostgres(ast)
+	sql, _, err := NewCompiler(Postgres).Compile(ast)
 	if err != nil {
-		t.Fatalf("CompilePostgres failed: %v", err)
+		t.Fatalf("Compile failed: %v", err)
 	}
 	t.Logf("COUNT SQL: %s", sql)
 
@@ -954,9 +954,9 @@ func TestPostgresIntegration_SelectDistinct(t *testing.T) {
 		},
 	}
 
-	sql, _, err := CompilePostgres(ast)
+	sql, _, err := NewCompiler(Postgres).Compile(ast)
 	if err != nil {
-		t.Fatalf("CompilePostgres failed: %v", err)
+		t.Fatalf("Compile failed: %v", err)
 	}
 	t.Logf("DISTINCT SQL: %s", sql)
 
@@ -1033,9 +1033,9 @@ func TestPostgresIntegration_Union(t *testing.T) {
 		},
 	}
 
-	sql, _, err := CompilePostgres(ast)
+	sql, _, err := NewCompiler(Postgres).Compile(ast)
 	if err != nil {
-		t.Fatalf("CompilePostgres failed: %v", err)
+		t.Fatalf("Compile failed: %v", err)
 	}
 	t.Logf("UNION SQL: %s", sql)
 
@@ -1114,9 +1114,9 @@ func TestPostgresIntegration_CTE(t *testing.T) {
 		},
 	}
 
-	sql, _, err := CompilePostgres(ast)
+	sql, _, err := NewCompiler(Postgres).Compile(ast)
 	if err != nil {
-		t.Fatalf("CompilePostgres failed: %v", err)
+		t.Fatalf("Compile failed: %v", err)
 	}
 	t.Logf("CTE SQL: %s", sql)
 

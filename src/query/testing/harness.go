@@ -38,11 +38,11 @@ const (
 func CompileFor(ast *query.AST, dialect Dialect) (string, []string, error) {
 	switch dialect {
 	case DialectPostgres:
-		return compile.CompilePostgres(ast)
+		return compile.NewCompiler(compile.Postgres).Compile(ast)
 	case DialectMySQL:
-		return compile.CompileMySQL(ast)
+		return compile.NewCompiler(compile.MySQL).Compile(ast)
 	case DialectSQLite:
-		return compile.CompileSQLite(ast)
+		return compile.NewCompiler(compile.SQLite).Compile(ast)
 	default:
 		return "", nil, fmt.Errorf("unknown dialect: %s", dialect)
 	}
