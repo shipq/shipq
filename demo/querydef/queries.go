@@ -7,7 +7,7 @@ import (
 
 func init() {
 	// GetPetById - Simple SELECT with WHERE clause (returns 0 or 1 row)
-	query.DefineOne("GetPetById",
+	query.MustDefineOne("GetPetById",
 		query.From(schema.Pets).
 			Select(
 				schema.Pets.Id(),
@@ -21,7 +21,7 @@ func init() {
 	)
 
 	// FindPetsByStatus - Filter pets by status (returns multiple rows)
-	query.DefineMany("FindPetsByStatus",
+	query.MustDefineMany("FindPetsByStatus",
 		query.From(schema.Pets).
 			Select(
 				schema.Pets.Id(),
@@ -34,7 +34,7 @@ func init() {
 	)
 
 	// GetUserByUsername - Find user by username (returns 0 or 1 row)
-	query.DefineOne("GetUserByUsername",
+	query.MustDefineOne("GetUserByUsername",
 		query.From(schema.Users).
 			Select(
 				schema.Users.Id(),
@@ -50,7 +50,7 @@ func init() {
 	)
 
 	// GetOrderById - Order lookup (returns 0 or 1 row)
-	query.DefineOne("GetOrderById",
+	query.MustDefineOne("GetOrderById",
 		query.From(schema.Orders).
 			Select(
 				schema.Orders.Id(),
@@ -65,7 +65,7 @@ func init() {
 	)
 
 	// ListPetsWithCategory - JOIN example (returns multiple rows)
-	query.DefineMany("ListPetsWithCategory",
+	query.MustDefineMany("ListPetsWithCategory",
 		query.From(schema.Pets).
 			Join(schema.Categories).On(schema.Pets.CategoryId().Eq(schema.Categories.Id())).
 			Select(
@@ -80,7 +80,7 @@ func init() {
 	// GetPetWithPhotos - Example using JSON column for nested data (returns 0 or 1 row)
 	// The photo_urls column stores an array of URLs as JSON, e.g. ["http://example.com/photo1.jpg", "http://example.com/photo2.jpg"]
 	// This demonstrates how portsql handles JSON columns - the result will be json.RawMessage
-	query.DefineOne("GetPetWithPhotos",
+	query.MustDefineOne("GetPetWithPhotos",
 		query.From(schema.Pets).
 			Join(schema.Categories).On(schema.Pets.CategoryId().Eq(schema.Categories.Id())).
 			Select(
@@ -98,7 +98,7 @@ func init() {
 	// This demonstrates using JSON aggregation to return nested data:
 	// { "category": "Dogs", "pets": [{"id": 1, "name": "Buddy"}, ...] }
 	// Uses database-native JSON functions (json_group_array for SQLite, JSON_ARRAYAGG for MySQL, json_agg for Postgres)
-	query.DefineMany("ListCategoriesWithPets",
+	query.MustDefineMany("ListCategoriesWithPets",
 		query.From(schema.Categories).
 			LeftJoin(schema.Pets).On(schema.Categories.Id().Eq(schema.Pets.CategoryId())).
 			Select(

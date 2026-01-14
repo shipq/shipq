@@ -20,12 +20,14 @@ type RegisteredQuery struct {
 	ReturnType QueryReturnType
 }
 
-// registry stores all queries registered via DefineOne/DefineMany/DefineExec.
+// registry stores all queries registered via MustDefineOne/MustDefineMany/MustDefineExec.
 // Uses a sync.Map for thread-safety during init() execution across packages.
 var registry sync.Map
 
-// defineQuery is the internal registration function.
-func defineQuery(name string, ast *AST, returnType QueryReturnType) *AST {
+// mustDefineQuery is the internal registration function that panics on errors.
+// This is intentional - query registration happens at init() time, and errors
+// should cause immediate, obvious failures rather than silent runtime issues.
+func mustDefineQuery(name string, ast *AST, returnType QueryReturnType) *AST {
 	if name == "" {
 		panic("query name cannot be empty")
 	}
@@ -42,11 +44,20 @@ func defineQuery(name string, ast *AST, returnType QueryReturnType) *AST {
 	return ast
 }
 
-// DefineOne registers a query that returns 0 or 1 row.
+// MustDefineOne registers a query that returns 0 or 1 row.
 // Use this for queries like GetUserById, GetOrderByPublicId, etc.
 //
+// MustDefineOne panics if:
+//   - name is empty
+//   - ast is nil
+//   - a query with the same name is already registered
+//
+// This follows Go's convention (like regexp.MustCompile) where "Must" functions
+// panic on error. These functions are designed for use in init() where panics
+// cause clear, immediate failures.
+//
 //	func init() {
-//	    query.DefineOne("GetUserByEmail",
+//	    query.MustDefineOne("GetUserByEmail",
 //	        query.From(schema.Users).
 //	            Select(schema.Users.Id(), schema.Users.Email()).
 //	            Where(schema.Users.Email().Eq(query.Param[string]("email"))).
@@ -55,15 +66,24 @@ func defineQuery(name string, ast *AST, returnType QueryReturnType) *AST {
 //	}
 //
 // The generated method will return (*Result, error) where Result is nil if no row found.
-func DefineOne(name string, ast *AST) *AST {
-	return defineQuery(name, ast, ReturnOne)
+func MustDefineOne(name string, ast *AST) *AST {
+	return mustDefineQuery(name, ast, ReturnOne)
 }
 
-// DefineMany registers a query that returns 0 to N rows.
+// MustDefineMany registers a query that returns 0 to N rows.
 // Use this for queries like ListUsers, FindPetsByStatus, etc.
 //
+// MustDefineMany panics if:
+//   - name is empty
+//   - ast is nil
+//   - a query with the same name is already registered
+//
+// This follows Go's convention (like regexp.MustCompile) where "Must" functions
+// panic on error. These functions are designed for use in init() where panics
+// cause clear, immediate failures.
+//
 //	func init() {
-//	    query.DefineMany("FindPetsByStatus",
+//	    query.MustDefineMany("FindPetsByStatus",
 //	        query.From(schema.Pets).
 //	            Select(schema.Pets.Id(), schema.Pets.Name()).
 //	            Where(schema.Pets.Status().Eq(query.Param[string]("status"))).
@@ -72,15 +92,24 @@ func DefineOne(name string, ast *AST) *AST {
 //	}
 //
 // The generated method will return ([]Result, error).
-func DefineMany(name string, ast *AST) *AST {
-	return defineQuery(name, ast, ReturnMany)
+func MustDefineMany(name string, ast *AST) *AST {
+	return mustDefineQuery(name, ast, ReturnMany)
 }
 
-// DefineExec registers a query that executes without returning rows.
+// MustDefineExec registers a query that executes without returning rows.
 // Use this for INSERT, UPDATE, DELETE queries that don't use RETURNING.
 //
+// MustDefineExec panics if:
+//   - name is empty
+//   - ast is nil
+//   - a query with the same name is already registered
+//
+// This follows Go's convention (like regexp.MustCompile) where "Must" functions
+// panic on error. These functions are designed for use in init() where panics
+// cause clear, immediate failures.
+//
 //	func init() {
-//	    query.DefineExec("UpdateUserEmail",
+//	    query.MustDefineExec("UpdateUserEmail",
 //	        query.Update(schema.Users).
 //	            Set(schema.Users.Email(), query.Param[string]("email")).
 //	            Where(schema.Users.Id().Eq(query.Param[int64]("id"))).
@@ -89,15 +118,32 @@ func DefineMany(name string, ast *AST) *AST {
 //	}
 //
 // The generated method will return (sql.Result, error).
-func DefineExec(name string, ast *AST) *AST {
-	return defineQuery(name, ast, ReturnExec)
+func MustDefineExec(name string, ast *AST) *AST {
+	return mustDefineQuery(name, ast, ReturnExec)
 }
 
-// DefineQuery registers a query with a name and returns it.
-// Deprecated: Use DefineOne, DefineMany, or DefineExec instead for better type safety.
-// This function defaults to ReturnMany for backward compatibility.
+// DefineOne is an alias for MustDefineOne for backward compatibility.
+// Deprecated: Use MustDefineOne instead for clarity about panic behavior.
+func DefineOne(name string, ast *AST) *AST {
+	return MustDefineOne(name, ast)
+}
+
+// DefineMany is an alias for MustDefineMany for backward compatibility.
+// Deprecated: Use MustDefineMany instead for clarity about panic behavior.
+func DefineMany(name string, ast *AST) *AST {
+	return MustDefineMany(name, ast)
+}
+
+// DefineExec is an alias for MustDefineExec for backward compatibility.
+// Deprecated: Use MustDefineExec instead for clarity about panic behavior.
+func DefineExec(name string, ast *AST) *AST {
+	return MustDefineExec(name, ast)
+}
+
+// DefineQuery is an alias for MustDefineMany for backward compatibility.
+// Deprecated: Use MustDefineOne, MustDefineMany, or MustDefineExec instead.
 func DefineQuery(name string, ast *AST) *AST {
-	return defineQuery(name, ast, ReturnMany)
+	return MustDefineMany(name, ast)
 }
 
 // GetRegisteredQueries returns a copy of all registered queries.

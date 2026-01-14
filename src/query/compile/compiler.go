@@ -24,27 +24,41 @@ func NewCompiler(dialect Dialect) *Compiler {
 // Compile compiles an AST to SQL.
 // Returns the SQL string and the parameter names in order (including duplicates).
 func (c *Compiler) Compile(ast *query.AST) (sql string, paramOrder []string, err error) {
+	// Validate AST invariants early
+	if err := ValidateAST(ast); err != nil {
+		return "", nil, err
+	}
+
+	// Reset state once at the top level
 	c.state.ParamCount = 0
 	c.state.Params = nil
 
 	var b strings.Builder
+	if err := c.compileInto(ast, &b); err != nil {
+		return "", nil, err
+	}
 
+	return b.String(), c.state.Params, nil
+}
+
+// compileInto is the internal compilation method that does NOT reset state.
+// This allows nested compilation (subqueries, CTEs, set operations) to share
+// state with the parent compilation, ensuring correct parameter numbering.
+func (c *Compiler) compileInto(ast *query.AST, b *strings.Builder) error {
 	// Handle CTEs (WITH clause) first
 	if len(ast.CTEs) > 0 {
-		if err := c.writeCTEs(&b, ast.CTEs); err != nil {
-			return "", nil, err
+		if err := c.writeCTEs(b, ast.CTEs); err != nil {
+			return err
 		}
 	}
 
 	// Handle set operations
 	if ast.SetOp != nil {
-		setSQL, err := c.compileSetOp(ast)
-		if err != nil {
-			return "", nil, err
-		}
-		b.WriteString(setSQL)
-		return b.String(), c.state.Params, nil
+		return c.compileSetOpInto(ast, b)
 	}
+
+	var sql string
+	var err error
 
 	switch ast.Kind {
 	case query.SelectQuery:
@@ -60,11 +74,11 @@ func (c *Compiler) Compile(ast *query.AST) (sql string, paramOrder []string, err
 	}
 
 	if err != nil {
-		return "", nil, err
+		return err
 	}
 
 	b.WriteString(sql)
-	return b.String(), c.state.Params, nil
+	return nil
 }
 
 // =============================================================================
@@ -227,7 +241,7 @@ func (c *Compiler) compileInsert(ast *query.AST) (string, error) {
 
 	// RETURNING clause (Postgres and SQLite support this, MySQL doesn't)
 	// Note: MySQL codegen handles RETURNING differently by using result.LastInsertId()
-	if len(ast.Returning) > 0 && c.dialect.Name() != "mysql" {
+	if len(ast.Returning) > 0 && c.dialect.SupportsReturning() {
 		b.WriteString(" RETURNING ")
 		for i, col := range ast.Returning {
 			if i > 0 {
@@ -316,6 +330,8 @@ func (c *Compiler) writeExpr(b *strings.Builder, expr query.Expr) error {
 
 	case query.BinaryExpr:
 		if e.Op == query.OpIn {
+			// Wrap IN expression in parentheses for consistency with other binary operators
+			b.WriteString("(")
 			if err := c.writeExpr(b, e.Left); err != nil {
 				return err
 			}
@@ -340,6 +356,7 @@ func (c *Compiler) writeExpr(b *strings.Builder, expr query.Expr) error {
 			default:
 				return fmt.Errorf("IN operator requires ListExpr or SubqueryExpr on right side, got %T", e.Right)
 			}
+			b.WriteString(")")
 		} else {
 			b.WriteString("(")
 			if err := c.writeExpr(b, e.Left); err != nil {
@@ -371,7 +388,9 @@ func (c *Compiler) writeExpr(b *strings.Builder, expr query.Expr) error {
 		}
 
 	case query.JSONAggExpr:
-		c.writeJSONAgg(b, e)
+		if err := c.writeJSONAgg(b, e); err != nil {
+			return err
+		}
 
 	case query.ListExpr:
 		// ListExpr on its own (not inside IN)
@@ -405,38 +424,23 @@ func (c *Compiler) writeExpr(b *strings.Builder, expr query.Expr) error {
 
 	case query.SubqueryExpr:
 		// Write subquery wrapped in parentheses
+		// Use compileInto to share state with parent, ensuring correct param numbering
 		b.WriteString("(")
-		subCompiler := &Compiler{
-			dialect: c.dialect,
-			state:   &CompilerState{ParamCount: c.state.ParamCount},
-		}
-		subSQL, subParams, err := subCompiler.Compile(e.Query)
-		if err != nil {
+		if err := c.compileInto(e.Query, b); err != nil {
 			return err
 		}
-		b.WriteString(subSQL)
 		b.WriteString(")")
-		// Update param count and collect params
-		c.state.ParamCount = subCompiler.state.ParamCount
-		c.state.Params = append(c.state.Params, subParams...)
 
 	case query.ExistsExpr:
 		if e.Negated {
 			b.WriteString("NOT ")
 		}
 		b.WriteString("EXISTS (")
-		subCompiler := &Compiler{
-			dialect: c.dialect,
-			state:   &CompilerState{ParamCount: c.state.ParamCount},
-		}
-		subSQL, subParams, err := subCompiler.Compile(e.Subquery)
-		if err != nil {
+		// Use compileInto to share state with parent, ensuring correct param numbering
+		if err := c.compileInto(e.Subquery, b); err != nil {
 			return err
 		}
-		b.WriteString(subSQL)
 		b.WriteString(")")
-		c.state.ParamCount = subCompiler.state.ParamCount
-		c.state.Params = append(c.state.Params, subParams...)
 
 	default:
 		return fmt.Errorf("unknown expression type: %T", expr)
@@ -519,8 +523,8 @@ func (c *Compiler) writeFunc(b *strings.Builder, f query.FuncExpr) error {
 	return nil
 }
 
-func (c *Compiler) writeJSONAgg(b *strings.Builder, j query.JSONAggExpr) {
-	c.dialect.WriteJSONAgg(b, j.Columns, func(col query.Column) {
+func (c *Compiler) writeJSONAgg(b *strings.Builder, j query.JSONAggExpr) error {
+	return c.dialect.WriteJSONAgg(b, j.Columns, func(col query.Column) {
 		c.writeColumn(b, col)
 	})
 }
@@ -556,19 +560,11 @@ func (c *Compiler) writeCTEs(b *strings.Builder, ctes []query.CTE) error {
 			b.WriteString(")")
 		}
 		b.WriteString(" AS (")
-		// Compile CTE query
-		cteCompiler := &Compiler{
-			dialect: c.dialect,
-			state:   &CompilerState{ParamCount: c.state.ParamCount},
-		}
-		cteSQL, cteParams, err := cteCompiler.Compile(cte.Query)
-		if err != nil {
+		// Use compileInto to share state with parent, ensuring correct param numbering
+		if err := c.compileInto(cte.Query, b); err != nil {
 			return err
 		}
-		b.WriteString(cteSQL)
 		b.WriteString(")")
-		c.state.ParamCount = cteCompiler.state.ParamCount
-		c.state.Params = append(c.state.Params, cteParams...)
 	}
 	b.WriteString(" ")
 	return nil
@@ -578,53 +574,35 @@ func (c *Compiler) writeCTEs(b *strings.Builder, ctes []query.CTE) error {
 // Set Operation Compilation (UNION, INTERSECT, EXCEPT)
 // =============================================================================
 
-func (c *Compiler) compileSetOp(ast *query.AST) (string, error) {
-	var b strings.Builder
-
-	// Compile left query
-	leftCompiler := &Compiler{
-		dialect: c.dialect,
-		state:   &CompilerState{ParamCount: c.state.ParamCount},
-	}
-	leftSQL, leftParams, err := leftCompiler.Compile(ast.SetOp.Left)
-	if err != nil {
-		return "", err
-	}
-
+// compileSetOpInto compiles a set operation into the provided builder,
+// sharing state with the parent compilation for correct param numbering.
+func (c *Compiler) compileSetOpInto(ast *query.AST, b *strings.Builder) error {
+	// Compile left query using compileInto to share state
 	if c.dialect.WrapSetOpQueries() {
 		b.WriteString("(")
-		b.WriteString(leftSQL)
-		b.WriteString(")")
-	} else {
-		b.WriteString(leftSQL)
 	}
-	c.state.ParamCount = leftCompiler.state.ParamCount
-	c.state.Params = append(c.state.Params, leftParams...)
+	if err := c.compileInto(ast.SetOp.Left, b); err != nil {
+		return err
+	}
+	if c.dialect.WrapSetOpQueries() {
+		b.WriteString(")")
+	}
 
 	// Write operator
 	b.WriteString(" ")
 	b.WriteString(string(ast.SetOp.Op))
 	b.WriteString(" ")
 
-	// Compile right query
-	rightCompiler := &Compiler{
-		dialect: c.dialect,
-		state:   &CompilerState{ParamCount: c.state.ParamCount},
-	}
-	rightSQL, rightParams, err := rightCompiler.Compile(ast.SetOp.Right)
-	if err != nil {
-		return "", err
-	}
-
+	// Compile right query using compileInto to share state
 	if c.dialect.WrapSetOpQueries() {
 		b.WriteString("(")
-		b.WriteString(rightSQL)
-		b.WriteString(")")
-	} else {
-		b.WriteString(rightSQL)
 	}
-	c.state.ParamCount = rightCompiler.state.ParamCount
-	c.state.Params = append(c.state.Params, rightParams...)
+	if err := c.compileInto(ast.SetOp.Right, b); err != nil {
+		return err
+	}
+	if c.dialect.WrapSetOpQueries() {
+		b.WriteString(")")
+	}
 
 	// ORDER BY on combined result
 	if len(ast.OrderBy) > 0 {
@@ -633,8 +611,8 @@ func (c *Compiler) compileSetOp(ast *query.AST) (string, error) {
 			if i > 0 {
 				b.WriteString(", ")
 			}
-			if err := c.writeOrderByExpr(&b, ob.Expr); err != nil {
-				return "", err
+			if err := c.writeOrderByExpr(b, ob.Expr); err != nil {
+				return err
 			}
 			if ob.Desc {
 				b.WriteString(" DESC")
@@ -645,18 +623,18 @@ func (c *Compiler) compileSetOp(ast *query.AST) (string, error) {
 	// LIMIT on combined result
 	if ast.Limit != nil {
 		b.WriteString(" LIMIT ")
-		if err := c.writeExpr(&b, ast.Limit); err != nil {
-			return "", err
+		if err := c.writeExpr(b, ast.Limit); err != nil {
+			return err
 		}
 	}
 
 	// OFFSET on combined result
 	if ast.Offset != nil {
 		b.WriteString(" OFFSET ")
-		if err := c.writeExpr(&b, ast.Offset); err != nil {
-			return "", err
+		if err := c.writeExpr(b, ast.Offset); err != nil {
+			return err
 		}
 	}
 
-	return b.String(), nil
+	return nil
 }

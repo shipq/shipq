@@ -1260,3 +1260,284 @@ func TestPostgres_SetOpWithOrderByLimit(t *testing.T) {
 		t.Errorf("SQL should contain OFFSET 5: %s", sql)
 	}
 }
+
+// =============================================================================
+// Nested Parameter Numbering Tests (Postgres-specific)
+// These tests verify that parameters are correctly numbered across nested
+// compilation boundaries (subqueries, CTEs, set operations).
+// =============================================================================
+
+func TestPostgres_SubqueryWithOuterAndInnerParams(t *testing.T) {
+	// SELECT * FROM orders WHERE status = $1 AND customer_id IN (SELECT id FROM customers WHERE tier = $2)
+	// The outer query has a param, and the subquery also has a param.
+	// They should be numbered $1 and $2 respectively.
+
+	statusCol := query.StringColumn{Table: "orders", Name: "status"}
+	customerIDCol := query.Int64Column{Table: "orders", Name: "customer_id"}
+	tierCol := query.StringColumn{Table: "customers", Name: "tier"}
+	custIDCol := query.Int64Column{Table: "customers", Name: "id"}
+
+	subquery := &query.AST{
+		Kind:      query.SelectQuery,
+		FromTable: query.TableRef{Name: "customers"},
+		SelectCols: []query.SelectExpr{
+			{Expr: query.ColumnExpr{Column: custIDCol}},
+		},
+		Where: query.BinaryExpr{
+			Left:  query.ColumnExpr{Column: tierCol},
+			Op:    query.OpEq,
+			Right: query.ParamExpr{Name: "tier", GoType: "string"},
+		},
+	}
+
+	ast := &query.AST{
+		Kind:      query.SelectQuery,
+		FromTable: query.TableRef{Name: "orders"},
+		Where: query.BinaryExpr{
+			Left: query.BinaryExpr{
+				Left:  query.ColumnExpr{Column: statusCol},
+				Op:    query.OpEq,
+				Right: query.ParamExpr{Name: "status", GoType: "string"},
+			},
+			Op: query.OpAnd,
+			Right: query.BinaryExpr{
+				Left:  query.ColumnExpr{Column: customerIDCol},
+				Op:    query.OpIn,
+				Right: query.SubqueryExpr{Query: subquery},
+			},
+		},
+	}
+
+	sql, params, err := NewCompiler(Postgres).Compile(ast)
+	if err != nil {
+		t.Fatalf("Compile failed: %v", err)
+	}
+
+	// Check param order
+	if len(params) != 2 {
+		t.Fatalf("expected 2 params, got %d: %v", len(params), params)
+	}
+	if params[0] != "status" {
+		t.Errorf("expected first param to be 'status', got %q", params[0])
+	}
+	if params[1] != "tier" {
+		t.Errorf("expected second param to be 'tier', got %q", params[1])
+	}
+
+	// Check that $1 appears for outer query and $2 for subquery
+	if !containsStr(sql, "$1") {
+		t.Errorf("SQL should contain $1: %s", sql)
+	}
+	if !containsStr(sql, "$2") {
+		t.Errorf("SQL should contain $2: %s", sql)
+	}
+	// The subquery param should be $2, not $1
+	// We can verify by checking the structure of the SQL
+	// The outer WHERE should have $1, and the inner WHERE should have $2
+	if containsStr(sql, "tier = $1") {
+		t.Errorf("subquery param should be $2, not $1: %s", sql)
+	}
+}
+
+func TestPostgres_CTEWithParams(t *testing.T) {
+	// WITH filtered AS (SELECT * FROM orders WHERE status = $1)
+	// SELECT * FROM filtered WHERE amount > $2
+	// CTE has a param, main query has a param - they should be $1 and $2.
+
+	statusCol := query.StringColumn{Table: "orders", Name: "status"}
+	amountCol := query.Int64Column{Table: "filtered", Name: "amount"}
+	orderIDCol := query.Int64Column{Table: "orders", Name: "id"}
+	filteredIDCol := query.Int64Column{Table: "filtered", Name: "id"}
+
+	cteQuery := &query.AST{
+		Kind:      query.SelectQuery,
+		FromTable: query.TableRef{Name: "orders"},
+		SelectCols: []query.SelectExpr{
+			{Expr: query.ColumnExpr{Column: orderIDCol}},
+			{Expr: query.ColumnExpr{Column: amountCol}},
+		},
+		Where: query.BinaryExpr{
+			Left:  query.ColumnExpr{Column: statusCol},
+			Op:    query.OpEq,
+			Right: query.ParamExpr{Name: "status", GoType: "string"},
+		},
+	}
+
+	ast := &query.AST{
+		Kind: query.SelectQuery,
+		CTEs: []query.CTE{
+			{Name: "filtered", Query: cteQuery},
+		},
+		FromTable: query.TableRef{Name: "filtered"},
+		SelectCols: []query.SelectExpr{
+			{Expr: query.ColumnExpr{Column: filteredIDCol}},
+		},
+		Where: query.BinaryExpr{
+			Left:  query.ColumnExpr{Column: amountCol},
+			Op:    query.OpGt,
+			Right: query.ParamExpr{Name: "min_amount", GoType: "int64"},
+		},
+	}
+
+	sql, params, err := NewCompiler(Postgres).Compile(ast)
+	if err != nil {
+		t.Fatalf("Compile failed: %v", err)
+	}
+
+	// Check param order
+	if len(params) != 2 {
+		t.Fatalf("expected 2 params, got %d: %v", len(params), params)
+	}
+	if params[0] != "status" {
+		t.Errorf("expected first param to be 'status', got %q", params[0])
+	}
+	if params[1] != "min_amount" {
+		t.Errorf("expected second param to be 'min_amount', got %q", params[1])
+	}
+
+	// Check that both $1 and $2 appear
+	if !containsStr(sql, "$1") {
+		t.Errorf("SQL should contain $1: %s", sql)
+	}
+	if !containsStr(sql, "$2") {
+		t.Errorf("SQL should contain $2: %s", sql)
+	}
+	// The main query param should be $2, not $1
+	if containsStr(sql, "amount > $1") {
+		t.Errorf("main query param should be $2, not $1: %s", sql)
+	}
+}
+
+func TestPostgres_SetOpWithParams(t *testing.T) {
+	// (SELECT * FROM t1 WHERE a = $1) UNION (SELECT * FROM t2 WHERE b = $2)
+	// Left branch has a param, right branch has a param - they should be $1 and $2.
+
+	aCol := query.StringColumn{Table: "t1", Name: "a"}
+	bCol := query.StringColumn{Table: "t2", Name: "b"}
+
+	left := &query.AST{
+		Kind:      query.SelectQuery,
+		FromTable: query.TableRef{Name: "t1"},
+		SelectCols: []query.SelectExpr{
+			{Expr: query.ColumnExpr{Column: aCol}},
+		},
+		Where: query.BinaryExpr{
+			Left:  query.ColumnExpr{Column: aCol},
+			Op:    query.OpEq,
+			Right: query.ParamExpr{Name: "val_a", GoType: "string"},
+		},
+	}
+
+	right := &query.AST{
+		Kind:      query.SelectQuery,
+		FromTable: query.TableRef{Name: "t2"},
+		SelectCols: []query.SelectExpr{
+			{Expr: query.ColumnExpr{Column: bCol}},
+		},
+		Where: query.BinaryExpr{
+			Left:  query.ColumnExpr{Column: bCol},
+			Op:    query.OpEq,
+			Right: query.ParamExpr{Name: "val_b", GoType: "string"},
+		},
+	}
+
+	ast := &query.AST{
+		Kind: query.SelectQuery,
+		SetOp: &query.SetOperation{
+			Left:  left,
+			Op:    query.SetOpUnion,
+			Right: right,
+		},
+	}
+
+	sql, params, err := NewCompiler(Postgres).Compile(ast)
+	if err != nil {
+		t.Fatalf("Compile failed: %v", err)
+	}
+
+	// Check param order
+	if len(params) != 2 {
+		t.Fatalf("expected 2 params, got %d: %v", len(params), params)
+	}
+	if params[0] != "val_a" {
+		t.Errorf("expected first param to be 'val_a', got %q", params[0])
+	}
+	if params[1] != "val_b" {
+		t.Errorf("expected second param to be 'val_b', got %q", params[1])
+	}
+
+	// Check that both $1 and $2 appear
+	if !containsStr(sql, "$1") {
+		t.Errorf("SQL should contain $1: %s", sql)
+	}
+	if !containsStr(sql, "$2") {
+		t.Errorf("SQL should contain $2: %s", sql)
+	}
+	// The right branch param should be $2, not $1
+	if containsStr(sql, `"b" = $1`) {
+		t.Errorf("right branch param should be $2, not $1: %s", sql)
+	}
+}
+
+func TestPostgres_ExistsWithOuterAndInnerParams(t *testing.T) {
+	// SELECT * FROM customers WHERE tier = $1 AND EXISTS (SELECT 1 FROM orders WHERE amount > $2)
+	// Outer query has a param, EXISTS subquery has a param - they should be $1 and $2.
+
+	tierCol := query.StringColumn{Table: "customers", Name: "tier"}
+	amountCol := query.Int64Column{Table: "orders", Name: "amount"}
+
+	subquery := &query.AST{
+		Kind:      query.SelectQuery,
+		FromTable: query.TableRef{Name: "orders"},
+		SelectCols: []query.SelectExpr{
+			{Expr: query.LiteralExpr{Value: 1}},
+		},
+		Where: query.BinaryExpr{
+			Left:  query.ColumnExpr{Column: amountCol},
+			Op:    query.OpGt,
+			Right: query.ParamExpr{Name: "min_amount", GoType: "int64"},
+		},
+	}
+
+	ast := &query.AST{
+		Kind:      query.SelectQuery,
+		FromTable: query.TableRef{Name: "customers"},
+		Where: query.BinaryExpr{
+			Left: query.BinaryExpr{
+				Left:  query.ColumnExpr{Column: tierCol},
+				Op:    query.OpEq,
+				Right: query.ParamExpr{Name: "tier", GoType: "string"},
+			},
+			Op:    query.OpAnd,
+			Right: query.ExistsExpr{Subquery: subquery, Negated: false},
+		},
+	}
+
+	sql, params, err := NewCompiler(Postgres).Compile(ast)
+	if err != nil {
+		t.Fatalf("Compile failed: %v", err)
+	}
+
+	// Check param order
+	if len(params) != 2 {
+		t.Fatalf("expected 2 params, got %d: %v", len(params), params)
+	}
+	if params[0] != "tier" {
+		t.Errorf("expected first param to be 'tier', got %q", params[0])
+	}
+	if params[1] != "min_amount" {
+		t.Errorf("expected second param to be 'min_amount', got %q", params[1])
+	}
+
+	// Check that both $1 and $2 appear
+	if !containsStr(sql, "$1") {
+		t.Errorf("SQL should contain $1: %s", sql)
+	}
+	if !containsStr(sql, "$2") {
+		t.Errorf("SQL should contain $2: %s", sql)
+	}
+	// The subquery param should be $2, not $1
+	if containsStr(sql, "amount > $1") {
+		t.Errorf("EXISTS subquery param should be $2, not $1: %s", sql)
+	}
+}

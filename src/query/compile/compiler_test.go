@@ -316,6 +316,39 @@ func TestDialect_QuoteIdentifier(t *testing.T) {
 	}
 }
 
+func TestDialect_QuoteIdentifier_EscapesEmbeddedQuotes(t *testing.T) {
+	// Identifiers containing quote characters must be escaped by doubling the quote.
+	// This is critical for security and correctness.
+	tests := []struct {
+		dialect  Dialect
+		input    string
+		expected string
+	}{
+		// Postgres uses double quotes, so embedded " must become ""
+		{Postgres, `table"name`, `"table""name"`},
+		{Postgres, `a"b"c`, `"a""b""c"`},
+		{Postgres, `"already"quoted"`, `"""already""quoted"""`},
+
+		// MySQL uses backticks, so embedded ` must become ``
+		{MySQL, "table`name", "`table``name`"},
+		{MySQL, "a`b`c", "`a``b``c`"},
+		{MySQL, "`already`quoted`", "```already``quoted```"},
+
+		// SQLite uses double quotes like Postgres
+		{SQLite, `table"name`, `"table""name"`},
+		{SQLite, `a"b"c`, `"a""b""c"`},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.dialect.Name()+"_"+tt.input, func(t *testing.T) {
+			result := tt.dialect.QuoteIdentifier(tt.input)
+			if result != tt.expected {
+				t.Errorf("QuoteIdentifier(%q) = %q, want %q", tt.input, result, tt.expected)
+			}
+		})
+	}
+}
+
 func TestDialect_Placeholder(t *testing.T) {
 	tests := []struct {
 		dialect  Dialect
@@ -468,6 +501,38 @@ func TestNewCompilerAPI(t *testing.T) {
 			}
 			if sql == "" {
 				t.Error("Expected non-empty SQL")
+			}
+		})
+	}
+}
+
+func TestJSONAgg_EmptyColumns_ReturnsError(t *testing.T) {
+	// Manually construct an AST with empty JSONAggExpr.Columns.
+	// This should return a compile error, not panic.
+	// The builder's SelectJSONAgg panics on empty columns, but if someone
+	// constructs an AST manually (tests, tools), the compiler should handle it gracefully.
+
+	ast := &query.AST{
+		Kind:      query.SelectQuery,
+		FromTable: query.TableRef{Name: "authors"},
+		SelectCols: []query.SelectExpr{
+			{
+				Expr: query.JSONAggExpr{
+					FieldName: "books",
+					Columns:   []query.Column{}, // Empty columns
+				},
+				Alias: "books",
+			},
+		},
+	}
+
+	// Test all dialects - each should return an error for empty columns
+	for _, dialect := range []Dialect{Postgres, MySQL, SQLite} {
+		t.Run(dialect.Name(), func(t *testing.T) {
+			compiler := NewCompiler(dialect)
+			_, _, err := compiler.Compile(ast)
+			if err == nil {
+				t.Error("Expected error for empty JSON agg columns, but got nil")
 			}
 		})
 	}

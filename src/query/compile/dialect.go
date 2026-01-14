@@ -33,6 +33,11 @@ type Dialect interface {
 	// Postgres and MySQL require this, SQLite does not support it.
 	WrapSetOpQueries() bool
 
+	// SupportsReturning returns true if the dialect supports the RETURNING clause
+	// in INSERT/UPDATE/DELETE statements. Postgres and SQLite (3.35+) support this,
+	// MySQL does not (it uses LAST_INSERT_ID() instead).
+	SupportsReturning() bool
+
 	// WriteILIKE writes a case-insensitive LIKE expression.
 	// Postgres has native ILIKE, others need LOWER() LIKE LOWER().
 	// The writeExpr callback should be used to write the arguments.
@@ -41,16 +46,13 @@ type Dialect interface {
 	// WriteJSONAgg writes a JSON aggregation expression.
 	// Each dialect has different JSON functions.
 	// The writeColumn callback should be used to write column references.
-	WriteJSONAgg(b *strings.Builder, cols []query.Column, writeColumn func(query.Column))
+	// Returns an error if cols is empty.
+	WriteJSONAgg(b *strings.Builder, cols []query.Column, writeColumn func(query.Column)) error
 
 	// WriteOrderByExpr writes an expression for ORDER BY clause.
 	// MySQL needs special COLLATE handling for string columns.
 	// The writeExpr and writeColumn callbacks are for writing sub-expressions.
 	WriteOrderByExpr(b *strings.Builder, expr query.Expr, writeExpr func(query.Expr) error, writeColumn func(query.Column)) error
-
-	// NewCompilerState creates a fresh compiler state for subqueries/CTEs.
-	// This is needed because subqueries need their own parameter tracking.
-	NewCompilerState() *CompilerState
 }
 
 // CompilerState holds the mutable state during compilation.
@@ -58,6 +60,28 @@ type Dialect interface {
 type CompilerState struct {
 	ParamCount int
 	Params     []string
+}
+
+// =============================================================================
+// Shared Helpers
+// =============================================================================
+
+// writeILIKEWithLower is a shared helper for dialects that don't have native ILIKE.
+// It emulates ILIKE using LOWER(x) LIKE LOWER(y).
+func writeILIKEWithLower(b *strings.Builder, args []query.Expr, writeExpr func(query.Expr) error) error {
+	if len(args) != 2 {
+		return fmt.Errorf("ILIKE requires exactly 2 arguments")
+	}
+	b.WriteString("LOWER(")
+	if err := writeExpr(args[0]); err != nil {
+		return err
+	}
+	b.WriteString(") LIKE LOWER(")
+	if err := writeExpr(args[1]); err != nil {
+		return err
+	}
+	b.WriteString(")")
+	return nil
 }
 
 // =============================================================================
@@ -70,7 +94,9 @@ type PostgresDialect struct{}
 func (d *PostgresDialect) Name() string { return "postgres" }
 
 func (d *PostgresDialect) QuoteIdentifier(name string) string {
-	return `"` + name + `"`
+	// Escape embedded double quotes by doubling them
+	escaped := strings.ReplaceAll(name, `"`, `""`)
+	return `"` + escaped + `"`
 }
 
 func (d *PostgresDialect) Placeholder(index int) string {
@@ -92,6 +118,10 @@ func (d *PostgresDialect) WrapSetOpQueries() bool {
 	return true
 }
 
+func (d *PostgresDialect) SupportsReturning() bool {
+	return true
+}
+
 func (d *PostgresDialect) WriteILIKE(b *strings.Builder, args []query.Expr, writeExpr func(query.Expr) error) error {
 	// Postgres has native ILIKE
 	if len(args) != 2 {
@@ -104,7 +134,10 @@ func (d *PostgresDialect) WriteILIKE(b *strings.Builder, args []query.Expr, writ
 	return writeExpr(args[1])
 }
 
-func (d *PostgresDialect) WriteJSONAgg(b *strings.Builder, cols []query.Column, writeColumn func(query.Column)) {
+func (d *PostgresDialect) WriteJSONAgg(b *strings.Builder, cols []query.Column, writeColumn func(query.Column)) error {
+	if len(cols) == 0 {
+		return fmt.Errorf("JSON aggregation requires at least one column")
+	}
 	// COALESCE(JSON_AGG(JSON_BUILD_OBJECT(...)) FILTER (WHERE ... IS NOT NULL), '[]')
 	b.WriteString("COALESCE(JSON_AGG(JSON_BUILD_OBJECT(")
 	for i, col := range cols {
@@ -119,15 +152,12 @@ func (d *PostgresDialect) WriteJSONAgg(b *strings.Builder, cols []query.Column, 
 	// Use first column for null check
 	writeColumn(cols[0])
 	b.WriteString(" IS NOT NULL), '[]')")
+	return nil
 }
 
 func (d *PostgresDialect) WriteOrderByExpr(b *strings.Builder, expr query.Expr, writeExpr func(query.Expr) error, writeColumn func(query.Column)) error {
 	// Postgres: no special handling needed
 	return writeExpr(expr)
-}
-
-func (d *PostgresDialect) NewCompilerState() *CompilerState {
-	return &CompilerState{}
 }
 
 // =============================================================================
@@ -140,7 +170,9 @@ type MySQLDialect struct{}
 func (d *MySQLDialect) Name() string { return "mysql" }
 
 func (d *MySQLDialect) QuoteIdentifier(name string) string {
-	return "`" + name + "`"
+	// Escape embedded backticks by doubling them
+	escaped := strings.ReplaceAll(name, "`", "``")
+	return "`" + escaped + "`"
 }
 
 func (d *MySQLDialect) Placeholder(index int) string {
@@ -162,24 +194,19 @@ func (d *MySQLDialect) WrapSetOpQueries() bool {
 	return true
 }
 
-func (d *MySQLDialect) WriteILIKE(b *strings.Builder, args []query.Expr, writeExpr func(query.Expr) error) error {
-	// MySQL: ILIKE becomes LOWER() LIKE LOWER()
-	if len(args) != 2 {
-		return fmt.Errorf("ILIKE requires exactly 2 arguments")
-	}
-	b.WriteString("LOWER(")
-	if err := writeExpr(args[0]); err != nil {
-		return err
-	}
-	b.WriteString(") LIKE LOWER(")
-	if err := writeExpr(args[1]); err != nil {
-		return err
-	}
-	b.WriteString(")")
-	return nil
+func (d *MySQLDialect) SupportsReturning() bool {
+	return false // MySQL uses LAST_INSERT_ID() instead
 }
 
-func (d *MySQLDialect) WriteJSONAgg(b *strings.Builder, cols []query.Column, writeColumn func(query.Column)) {
+func (d *MySQLDialect) WriteILIKE(b *strings.Builder, args []query.Expr, writeExpr func(query.Expr) error) error {
+	// MySQL doesn't have native ILIKE, use LOWER() LIKE LOWER()
+	return writeILIKEWithLower(b, args, writeExpr)
+}
+
+func (d *MySQLDialect) WriteJSONAgg(b *strings.Builder, cols []query.Column, writeColumn func(query.Column)) error {
+	if len(cols) == 0 {
+		return fmt.Errorf("JSON aggregation requires at least one column")
+	}
 	// COALESCE(JSON_ARRAYAGG(JSON_OBJECT(...)), JSON_ARRAY())
 	b.WriteString("COALESCE(JSON_ARRAYAGG(JSON_OBJECT(")
 	for i, col := range cols {
@@ -191,6 +218,7 @@ func (d *MySQLDialect) WriteJSONAgg(b *strings.Builder, cols []query.Column, wri
 		writeColumn(col)
 	}
 	b.WriteString(")), JSON_ARRAY())")
+	return nil
 }
 
 func (d *MySQLDialect) WriteOrderByExpr(b *strings.Builder, expr query.Expr, writeExpr func(query.Expr) error, writeColumn func(query.Column)) error {
@@ -208,10 +236,6 @@ func (d *MySQLDialect) WriteOrderByExpr(b *strings.Builder, expr query.Expr, wri
 	return writeExpr(expr)
 }
 
-func (d *MySQLDialect) NewCompilerState() *CompilerState {
-	return &CompilerState{}
-}
-
 // =============================================================================
 // SQLite Dialect
 // =============================================================================
@@ -222,7 +246,9 @@ type SQLiteDialect struct{}
 func (d *SQLiteDialect) Name() string { return "sqlite" }
 
 func (d *SQLiteDialect) QuoteIdentifier(name string) string {
-	return `"` + name + `"`
+	// Escape embedded double quotes by doubling them
+	escaped := strings.ReplaceAll(name, `"`, `""`)
+	return `"` + escaped + `"`
 }
 
 func (d *SQLiteDialect) Placeholder(index int) string {
@@ -244,24 +270,19 @@ func (d *SQLiteDialect) WrapSetOpQueries() bool {
 	return false
 }
 
-func (d *SQLiteDialect) WriteILIKE(b *strings.Builder, args []query.Expr, writeExpr func(query.Expr) error) error {
-	// SQLite: ILIKE becomes LOWER() LIKE LOWER()
-	if len(args) != 2 {
-		return fmt.Errorf("ILIKE requires exactly 2 arguments")
-	}
-	b.WriteString("LOWER(")
-	if err := writeExpr(args[0]); err != nil {
-		return err
-	}
-	b.WriteString(") LIKE LOWER(")
-	if err := writeExpr(args[1]); err != nil {
-		return err
-	}
-	b.WriteString(")")
-	return nil
+func (d *SQLiteDialect) SupportsReturning() bool {
+	return true // SQLite 3.35+ supports RETURNING
 }
 
-func (d *SQLiteDialect) WriteJSONAgg(b *strings.Builder, cols []query.Column, writeColumn func(query.Column)) {
+func (d *SQLiteDialect) WriteILIKE(b *strings.Builder, args []query.Expr, writeExpr func(query.Expr) error) error {
+	// SQLite doesn't have native ILIKE, use LOWER() LIKE LOWER()
+	return writeILIKEWithLower(b, args, writeExpr)
+}
+
+func (d *SQLiteDialect) WriteJSONAgg(b *strings.Builder, cols []query.Column, writeColumn func(query.Column)) error {
+	if len(cols) == 0 {
+		return fmt.Errorf("JSON aggregation requires at least one column")
+	}
 	// COALESCE(JSON_GROUP_ARRAY(JSON_OBJECT(...)), '[]')
 	b.WriteString("COALESCE(JSON_GROUP_ARRAY(JSON_OBJECT(")
 	for i, col := range cols {
@@ -273,15 +294,12 @@ func (d *SQLiteDialect) WriteJSONAgg(b *strings.Builder, cols []query.Column, wr
 		writeColumn(col)
 	}
 	b.WriteString(")), '[]')")
+	return nil
 }
 
 func (d *SQLiteDialect) WriteOrderByExpr(b *strings.Builder, expr query.Expr, writeExpr func(query.Expr) error, writeColumn func(query.Column)) error {
 	// SQLite: no special handling needed
 	return writeExpr(expr)
-}
-
-func (d *SQLiteDialect) NewCompilerState() *CompilerState {
-	return &CompilerState{}
 }
 
 // =============================================================================
