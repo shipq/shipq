@@ -1,0 +1,300 @@
+package compile
+
+import (
+	"fmt"
+	"strings"
+
+	"github.com/portsql/portsql/src/query"
+)
+
+// Dialect defines the SQL dialect-specific behavior for compilation.
+// Each dialect (Postgres, MySQL, SQLite) implements this interface
+// to customize identifier quoting, placeholders, literals, and special functions.
+type Dialect interface {
+	// Name returns the dialect name for debugging/logging.
+	Name() string
+
+	// QuoteIdentifier quotes an identifier (table name, column name, alias).
+	QuoteIdentifier(name string) string
+
+	// Placeholder returns the parameter placeholder for the given index (1-based).
+	// Postgres uses $1, $2, etc. MySQL and SQLite use ?.
+	Placeholder(index int) string
+
+	// BoolLiteral returns the SQL literal for a boolean value.
+	// Postgres uses TRUE/FALSE, MySQL and SQLite use 1/0.
+	BoolLiteral(val bool) string
+
+	// NowFunc returns the SQL function for current timestamp.
+	// Postgres/MySQL use NOW(), SQLite uses datetime('now').
+	NowFunc() string
+
+	// WrapSetOpQueries returns true if set operation queries should be wrapped in parentheses.
+	// Postgres and MySQL require this, SQLite does not support it.
+	WrapSetOpQueries() bool
+
+	// WriteILIKE writes a case-insensitive LIKE expression.
+	// Postgres has native ILIKE, others need LOWER() LIKE LOWER().
+	// The writeExpr callback should be used to write the arguments.
+	WriteILIKE(b *strings.Builder, args []query.Expr, writeExpr func(query.Expr) error) error
+
+	// WriteJSONAgg writes a JSON aggregation expression.
+	// Each dialect has different JSON functions.
+	// The writeColumn callback should be used to write column references.
+	WriteJSONAgg(b *strings.Builder, cols []query.Column, writeColumn func(query.Column))
+
+	// WriteOrderByExpr writes an expression for ORDER BY clause.
+	// MySQL needs special COLLATE handling for string columns.
+	// The writeExpr and writeColumn callbacks are for writing sub-expressions.
+	WriteOrderByExpr(b *strings.Builder, expr query.Expr, writeExpr func(query.Expr) error, writeColumn func(query.Column)) error
+
+	// NewCompilerState creates a fresh compiler state for subqueries/CTEs.
+	// This is needed because subqueries need their own parameter tracking.
+	NewCompilerState() *CompilerState
+}
+
+// CompilerState holds the mutable state during compilation.
+// This is separate from Dialect to allow proper subquery handling.
+type CompilerState struct {
+	ParamCount int
+	Params     []string
+}
+
+// =============================================================================
+// Postgres Dialect
+// =============================================================================
+
+// PostgresDialect implements Dialect for PostgreSQL.
+type PostgresDialect struct{}
+
+func (d *PostgresDialect) Name() string { return "postgres" }
+
+func (d *PostgresDialect) QuoteIdentifier(name string) string {
+	return `"` + name + `"`
+}
+
+func (d *PostgresDialect) Placeholder(index int) string {
+	return fmt.Sprintf("$%d", index)
+}
+
+func (d *PostgresDialect) BoolLiteral(val bool) string {
+	if val {
+		return "TRUE"
+	}
+	return "FALSE"
+}
+
+func (d *PostgresDialect) NowFunc() string {
+	return "NOW()"
+}
+
+func (d *PostgresDialect) WrapSetOpQueries() bool {
+	return true
+}
+
+func (d *PostgresDialect) WriteILIKE(b *strings.Builder, args []query.Expr, writeExpr func(query.Expr) error) error {
+	// Postgres has native ILIKE
+	if len(args) != 2 {
+		return fmt.Errorf("ILIKE requires exactly 2 arguments")
+	}
+	if err := writeExpr(args[0]); err != nil {
+		return err
+	}
+	b.WriteString(" ILIKE ")
+	return writeExpr(args[1])
+}
+
+func (d *PostgresDialect) WriteJSONAgg(b *strings.Builder, cols []query.Column, writeColumn func(query.Column)) {
+	// COALESCE(JSON_AGG(JSON_BUILD_OBJECT(...)) FILTER (WHERE ... IS NOT NULL), '[]')
+	b.WriteString("COALESCE(JSON_AGG(JSON_BUILD_OBJECT(")
+	for i, col := range cols {
+		if i > 0 {
+			b.WriteString(", ")
+		}
+		// Key is column name
+		fmt.Fprintf(b, "'%s', ", col.ColumnName())
+		writeColumn(col)
+	}
+	b.WriteString(")) FILTER (WHERE ")
+	// Use first column for null check
+	writeColumn(cols[0])
+	b.WriteString(" IS NOT NULL), '[]')")
+}
+
+func (d *PostgresDialect) WriteOrderByExpr(b *strings.Builder, expr query.Expr, writeExpr func(query.Expr) error, writeColumn func(query.Column)) error {
+	// Postgres: no special handling needed
+	return writeExpr(expr)
+}
+
+func (d *PostgresDialect) NewCompilerState() *CompilerState {
+	return &CompilerState{}
+}
+
+// =============================================================================
+// MySQL Dialect
+// =============================================================================
+
+// MySQLDialect implements Dialect for MySQL.
+type MySQLDialect struct{}
+
+func (d *MySQLDialect) Name() string { return "mysql" }
+
+func (d *MySQLDialect) QuoteIdentifier(name string) string {
+	return "`" + name + "`"
+}
+
+func (d *MySQLDialect) Placeholder(index int) string {
+	return "?"
+}
+
+func (d *MySQLDialect) BoolLiteral(val bool) string {
+	if val {
+		return "1"
+	}
+	return "0"
+}
+
+func (d *MySQLDialect) NowFunc() string {
+	return "NOW()"
+}
+
+func (d *MySQLDialect) WrapSetOpQueries() bool {
+	return true
+}
+
+func (d *MySQLDialect) WriteILIKE(b *strings.Builder, args []query.Expr, writeExpr func(query.Expr) error) error {
+	// MySQL: ILIKE becomes LOWER() LIKE LOWER()
+	if len(args) != 2 {
+		return fmt.Errorf("ILIKE requires exactly 2 arguments")
+	}
+	b.WriteString("LOWER(")
+	if err := writeExpr(args[0]); err != nil {
+		return err
+	}
+	b.WriteString(") LIKE LOWER(")
+	if err := writeExpr(args[1]); err != nil {
+		return err
+	}
+	b.WriteString(")")
+	return nil
+}
+
+func (d *MySQLDialect) WriteJSONAgg(b *strings.Builder, cols []query.Column, writeColumn func(query.Column)) {
+	// COALESCE(JSON_ARRAYAGG(JSON_OBJECT(...)), JSON_ARRAY())
+	b.WriteString("COALESCE(JSON_ARRAYAGG(JSON_OBJECT(")
+	for i, col := range cols {
+		if i > 0 {
+			b.WriteString(", ")
+		}
+		// Key is column name as string literal
+		fmt.Fprintf(b, "'%s', ", col.ColumnName())
+		writeColumn(col)
+	}
+	b.WriteString(")), JSON_ARRAY())")
+}
+
+func (d *MySQLDialect) WriteOrderByExpr(b *strings.Builder, expr query.Expr, writeExpr func(query.Expr) error, writeColumn func(query.Column)) error {
+	// MySQL: Add COLLATE utf8mb4_bin to string columns for case-sensitive sorting
+	if colExpr, ok := expr.(query.ColumnExpr); ok {
+		goType := colExpr.Column.GoType()
+		// Apply binary collation to string types for case-sensitive ordering
+		if goType == "string" || goType == "*string" {
+			writeColumn(colExpr.Column)
+			b.WriteString(" COLLATE utf8mb4_bin")
+			return nil
+		}
+	}
+	// For non-string columns, use normal expression writing
+	return writeExpr(expr)
+}
+
+func (d *MySQLDialect) NewCompilerState() *CompilerState {
+	return &CompilerState{}
+}
+
+// =============================================================================
+// SQLite Dialect
+// =============================================================================
+
+// SQLiteDialect implements Dialect for SQLite.
+type SQLiteDialect struct{}
+
+func (d *SQLiteDialect) Name() string { return "sqlite" }
+
+func (d *SQLiteDialect) QuoteIdentifier(name string) string {
+	return `"` + name + `"`
+}
+
+func (d *SQLiteDialect) Placeholder(index int) string {
+	return "?"
+}
+
+func (d *SQLiteDialect) BoolLiteral(val bool) string {
+	if val {
+		return "1"
+	}
+	return "0"
+}
+
+func (d *SQLiteDialect) NowFunc() string {
+	return "datetime('now')"
+}
+
+func (d *SQLiteDialect) WrapSetOpQueries() bool {
+	return false
+}
+
+func (d *SQLiteDialect) WriteILIKE(b *strings.Builder, args []query.Expr, writeExpr func(query.Expr) error) error {
+	// SQLite: ILIKE becomes LOWER() LIKE LOWER()
+	if len(args) != 2 {
+		return fmt.Errorf("ILIKE requires exactly 2 arguments")
+	}
+	b.WriteString("LOWER(")
+	if err := writeExpr(args[0]); err != nil {
+		return err
+	}
+	b.WriteString(") LIKE LOWER(")
+	if err := writeExpr(args[1]); err != nil {
+		return err
+	}
+	b.WriteString(")")
+	return nil
+}
+
+func (d *SQLiteDialect) WriteJSONAgg(b *strings.Builder, cols []query.Column, writeColumn func(query.Column)) {
+	// COALESCE(JSON_GROUP_ARRAY(JSON_OBJECT(...)), '[]')
+	b.WriteString("COALESCE(JSON_GROUP_ARRAY(JSON_OBJECT(")
+	for i, col := range cols {
+		if i > 0 {
+			b.WriteString(", ")
+		}
+		// Key is column name as string literal
+		fmt.Fprintf(b, "'%s', ", col.ColumnName())
+		writeColumn(col)
+	}
+	b.WriteString(")), '[]')")
+}
+
+func (d *SQLiteDialect) WriteOrderByExpr(b *strings.Builder, expr query.Expr, writeExpr func(query.Expr) error, writeColumn func(query.Column)) error {
+	// SQLite: no special handling needed
+	return writeExpr(expr)
+}
+
+func (d *SQLiteDialect) NewCompilerState() *CompilerState {
+	return &CompilerState{}
+}
+
+// =============================================================================
+// Dialect Singletons
+// =============================================================================
+
+var (
+	// Postgres is the singleton PostgreSQL dialect.
+	Postgres Dialect = &PostgresDialect{}
+
+	// MySQL is the singleton MySQL dialect.
+	MySQL Dialect = &MySQLDialect{}
+
+	// SQLite is the singleton SQLite dialect.
+	SQLite Dialect = &SQLiteDialect{}
+)

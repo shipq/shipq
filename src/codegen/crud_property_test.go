@@ -19,9 +19,9 @@ func TestProperty_InsertSQL_AllDialectsConsistent(t *testing.T) {
 		table := generateTableWithStandardColumns(g)
 
 		// Generate SQL for all dialects
-		pgSQL := GenerateCRUDSQL(table, DialectPostgres, CRUDOptions{})
-		mySQL := GenerateCRUDSQL(table, DialectMySQL, CRUDOptions{})
-		sqSQL := GenerateCRUDSQL(table, DialectSQLite, CRUDOptions{})
+		pgSQL := GenerateCRUDSQL(table, SQLDialectPostgres, CRUDOptions{})
+		mySQL := GenerateCRUDSQL(table, SQLDialectMySQL, CRUDOptions{})
+		sqSQL := GenerateCRUDSQL(table, SQLDialectSQLite, CRUDOptions{})
 
 		// Property: All start with INSERT INTO
 		if !strings.HasPrefix(pgSQL.InsertSQL, "INSERT INTO") {
@@ -80,9 +80,9 @@ func TestProperty_UpdateSQL_AllDialectsConsistent(t *testing.T) {
 	proptest.QuickCheck(t, "UPDATE SQL consistency across dialects", func(g *proptest.Generator) bool {
 		table := generateTableWithStandardColumns(g)
 
-		pgSQL := GenerateCRUDSQL(table, DialectPostgres, CRUDOptions{})
-		mySQL := GenerateCRUDSQL(table, DialectMySQL, CRUDOptions{})
-		sqSQL := GenerateCRUDSQL(table, DialectSQLite, CRUDOptions{})
+		pgSQL := GenerateCRUDSQL(table, SQLDialectPostgres, CRUDOptions{})
+		mySQL := GenerateCRUDSQL(table, SQLDialectMySQL, CRUDOptions{})
+		sqSQL := GenerateCRUDSQL(table, SQLDialectSQLite, CRUDOptions{})
 
 		// Property: All start with UPDATE
 		if !strings.HasPrefix(pgSQL.UpdateSQL, "UPDATE") {
@@ -140,7 +140,7 @@ func TestProperty_SoftDelete_GeneratesUpdate(t *testing.T) {
 	proptest.QuickCheck(t, "soft delete generates UPDATE when deleted_at exists", func(g *proptest.Generator) bool {
 		table := generateTableWithDeletedAt(g)
 
-		for _, dialect := range []Dialect{DialectPostgres, DialectMySQL, DialectSQLite} {
+		for _, dialect := range []SQLDialect{SQLDialectPostgres, SQLDialectMySQL, SQLDialectSQLite} {
 			sqlSet := GenerateCRUDSQL(table, dialect, CRUDOptions{})
 
 			// Property: DeleteSQL should be UPDATE, not DELETE
@@ -171,7 +171,7 @@ func TestProperty_HardDelete_WhenNoDeletedAt(t *testing.T) {
 	proptest.QuickCheck(t, "hard delete when no deleted_at", func(g *proptest.Generator) bool {
 		table := generateTableWithoutDeletedAt(g)
 
-		for _, dialect := range []Dialect{DialectPostgres, DialectMySQL, DialectSQLite} {
+		for _, dialect := range []SQLDialect{SQLDialectPostgres, SQLDialectMySQL, SQLDialectSQLite} {
 			sqlSet := GenerateCRUDSQL(table, dialect, CRUDOptions{})
 
 			// Property: DeleteSQL should be DELETE when no deleted_at
@@ -196,9 +196,9 @@ func TestProperty_ParameterPlaceholders_CorrectPerDialect(t *testing.T) {
 	proptest.QuickCheck(t, "parameter placeholders correct per dialect", func(g *proptest.Generator) bool {
 		table := generateTableWithStandardColumns(g)
 
-		pgSQL := GenerateCRUDSQL(table, DialectPostgres, CRUDOptions{})
-		mySQL := GenerateCRUDSQL(table, DialectMySQL, CRUDOptions{})
-		sqSQL := GenerateCRUDSQL(table, DialectSQLite, CRUDOptions{})
+		pgSQL := GenerateCRUDSQL(table, SQLDialectPostgres, CRUDOptions{})
+		mySQL := GenerateCRUDSQL(table, SQLDialectMySQL, CRUDOptions{})
+		sqSQL := GenerateCRUDSQL(table, SQLDialectSQLite, CRUDOptions{})
 
 		// Property: Postgres uses $1, $2, etc.
 		if !strings.Contains(pgSQL.InsertSQL, "$") {
@@ -239,9 +239,9 @@ func TestProperty_IdentifierQuoting_CorrectPerDialect(t *testing.T) {
 	proptest.QuickCheck(t, "identifier quoting correct per dialect", func(g *proptest.Generator) bool {
 		table := generateTableWithStandardColumns(g)
 
-		pgSQL := GenerateCRUDSQL(table, DialectPostgres, CRUDOptions{})
-		mySQL := GenerateCRUDSQL(table, DialectMySQL, CRUDOptions{})
-		sqSQL := GenerateCRUDSQL(table, DialectSQLite, CRUDOptions{})
+		pgSQL := GenerateCRUDSQL(table, SQLDialectPostgres, CRUDOptions{})
+		mySQL := GenerateCRUDSQL(table, SQLDialectMySQL, CRUDOptions{})
+		sqSQL := GenerateCRUDSQL(table, SQLDialectSQLite, CRUDOptions{})
 
 		// Property: Postgres uses double quotes
 		if !strings.Contains(pgSQL.InsertSQL, `"`) {
@@ -310,7 +310,7 @@ func TestProperty_GetSQL_ExcludesSoftDeleted(t *testing.T) {
 	proptest.QuickCheck(t, "GET excludes soft deleted", func(g *proptest.Generator) bool {
 		table := generateTableWithDeletedAt(g)
 
-		for _, dialect := range []Dialect{DialectPostgres, DialectMySQL, DialectSQLite} {
+		for _, dialect := range []SQLDialect{SQLDialectPostgres, SQLDialectMySQL, SQLDialectSQLite} {
 			sqlSet := GenerateCRUDSQL(table, dialect, CRUDOptions{})
 
 			// Property: GetSQL should have deleted_at IS NULL
@@ -330,7 +330,7 @@ func TestProperty_ListSQL_ExcludesSoftDeleted(t *testing.T) {
 	proptest.QuickCheck(t, "LIST excludes soft deleted", func(g *proptest.Generator) bool {
 		table := generateTableWithDeletedAt(g)
 
-		for _, dialect := range []Dialect{DialectPostgres, DialectMySQL, DialectSQLite} {
+		for _, dialect := range []SQLDialect{SQLDialectPostgres, SQLDialectMySQL, SQLDialectSQLite} {
 			sqlSet := GenerateCRUDSQL(table, dialect, CRUDOptions{})
 
 			// Property: ListSQL should have deleted_at IS NULL

@@ -1,23 +1,19 @@
 package codegen
 
 import (
-	"bytes"
 	"fmt"
-	"go/format"
-	"sort"
 	"strings"
 
 	"github.com/portsql/portsql/src/ddl"
-	"github.com/portsql/portsql/src/migrate"
 )
 
-// Dialect represents a database dialect for SQL generation.
-type Dialect string
+// SQLDialect represents a database dialect for SQL generation.
+type SQLDialect string
 
 const (
-	DialectPostgres Dialect = "postgres"
-	DialectMySQL    Dialect = "mysql"
-	DialectSQLite   Dialect = "sqlite"
+	SQLDialectPostgres SQLDialect = "postgres"
+	SQLDialectMySQL    SQLDialect = "mysql"
+	SQLDialectSQLite   SQLDialect = "sqlite"
 )
 
 // CRUDSQLSet contains all generated SQL strings for a single table.
@@ -44,7 +40,7 @@ type CRUDSQLSet struct {
 }
 
 // GenerateCRUDSQL generates SQL strings for all CRUD operations for a table.
-func GenerateCRUDSQL(table ddl.Table, dialect Dialect, opts CRUDOptions) CRUDSQLSet {
+func GenerateCRUDSQL(table ddl.Table, dialect SQLDialect, opts CRUDOptions) CRUDSQLSet {
 	analysis := AnalyzeTable(table)
 	set := CRUDSQLSet{TableName: table.Name}
 
@@ -61,9 +57,9 @@ func GenerateCRUDSQL(table ddl.Table, dialect Dialect, opts CRUDOptions) CRUDSQL
 }
 
 // quoteIdentifier quotes an identifier based on dialect.
-func quoteIdentifier(name string, dialect Dialect) string {
+func quoteIdentifier(name string, dialect SQLDialect) string {
 	switch dialect {
-	case DialectMySQL:
+	case SQLDialectMySQL:
 		return "`" + name + "`"
 	default: // Postgres, SQLite use double quotes
 		return `"` + name + `"`
@@ -71,9 +67,9 @@ func quoteIdentifier(name string, dialect Dialect) string {
 }
 
 // placeholder returns the parameter placeholder for the given index (1-based).
-func placeholder(index int, dialect Dialect) string {
+func placeholder(index int, dialect SQLDialect) string {
 	switch dialect {
-	case DialectPostgres:
+	case SQLDialectPostgres:
 		return fmt.Sprintf("$%d", index)
 	default: // MySQL, SQLite use ?
 		return "?"
@@ -81,9 +77,9 @@ func placeholder(index int, dialect Dialect) string {
 }
 
 // nowFunc returns the NOW() function for the dialect.
-func nowFunc(dialect Dialect) string {
+func nowFunc(dialect SQLDialect) string {
 	switch dialect {
-	case DialectSQLite:
+	case SQLDialectSQLite:
 		return "datetime('now')"
 	default: // Postgres, MySQL
 		return "NOW()"
@@ -91,7 +87,7 @@ func nowFunc(dialect Dialect) string {
 }
 
 // generateGetSQL generates SELECT ... WHERE public_id = ? (or id = ?)
-func generateGetSQL(table ddl.Table, analysis TableAnalysis, dialect Dialect, opts CRUDOptions) string {
+func generateGetSQL(table ddl.Table, analysis TableAnalysis, dialect SQLDialect, opts CRUDOptions) string {
 	var b strings.Builder
 
 	b.WriteString("SELECT ")
@@ -145,7 +141,7 @@ func generateGetSQL(table ddl.Table, analysis TableAnalysis, dialect Dialect, op
 }
 
 // generateListSQL generates SELECT ... ORDER BY ... LIMIT ? OFFSET ?
-func generateListSQL(table ddl.Table, analysis TableAnalysis, dialect Dialect, opts CRUDOptions) string {
+func generateListSQL(table ddl.Table, analysis TableAnalysis, dialect SQLDialect, opts CRUDOptions) string {
 	var b strings.Builder
 
 	b.WriteString("SELECT ")
@@ -209,7 +205,7 @@ func generateListSQL(table ddl.Table, analysis TableAnalysis, dialect Dialect, o
 }
 
 // generateInsertSQL generates INSERT with auto-filled columns.
-func generateInsertSQL(table ddl.Table, analysis TableAnalysis, dialect Dialect, opts CRUDOptions) string {
+func generateInsertSQL(table ddl.Table, analysis TableAnalysis, dialect SQLDialect, opts CRUDOptions) string {
 	var b strings.Builder
 
 	b.WriteString("INSERT INTO ")
@@ -262,7 +258,7 @@ func generateInsertSQL(table ddl.Table, analysis TableAnalysis, dialect Dialect,
 	b.WriteString(")")
 
 	// RETURNING clause for Postgres and SQLite
-	if analysis.HasPublicID && (dialect == DialectPostgres || dialect == DialectSQLite) {
+	if analysis.HasPublicID && (dialect == SQLDialectPostgres || dialect == SQLDialectSQLite) {
 		b.WriteString(" RETURNING ")
 		b.WriteString(quoteIdentifier("public_id", dialect))
 	}
@@ -271,7 +267,7 @@ func generateInsertSQL(table ddl.Table, analysis TableAnalysis, dialect Dialect,
 }
 
 // generateUpdateSQL generates UPDATE with auto-filled updated_at.
-func generateUpdateSQL(table ddl.Table, analysis TableAnalysis, dialect Dialect, opts CRUDOptions) string {
+func generateUpdateSQL(table ddl.Table, analysis TableAnalysis, dialect SQLDialect, opts CRUDOptions) string {
 	var b strings.Builder
 
 	b.WriteString("UPDATE ")
@@ -336,7 +332,7 @@ func generateUpdateSQL(table ddl.Table, analysis TableAnalysis, dialect Dialect,
 }
 
 // generateDeleteSQL generates soft delete (UPDATE ... SET deleted_at = NOW()).
-func generateDeleteSQL(table ddl.Table, analysis TableAnalysis, dialect Dialect, opts CRUDOptions) string {
+func generateDeleteSQL(table ddl.Table, analysis TableAnalysis, dialect SQLDialect, opts CRUDOptions) string {
 	var b strings.Builder
 	paramIdx := 1
 
@@ -407,7 +403,7 @@ func generateDeleteSQL(table ddl.Table, analysis TableAnalysis, dialect Dialect,
 }
 
 // generateHardDeleteSQL generates actual DELETE statement.
-func generateHardDeleteSQL(table ddl.Table, analysis TableAnalysis, dialect Dialect, opts CRUDOptions) string {
+func generateHardDeleteSQL(table ddl.Table, analysis TableAnalysis, dialect SQLDialect, opts CRUDOptions) string {
 	var b strings.Builder
 	paramIdx := 1
 
@@ -437,430 +433,4 @@ func generateHardDeleteSQL(table ddl.Table, analysis TableAnalysis, dialect Dial
 	}
 
 	return b.String()
-}
-
-// =============================================================================
-// CRUD Runner Code Generation
-// =============================================================================
-
-// GenerateCRUDRunner generates the Go code for a QueryRunner with CRUD methods.
-func GenerateCRUDRunner(plan *migrate.MigrationPlan, packageName string, tableOpts map[string]CRUDOptions) ([]byte, error) {
-	var buf bytes.Buffer
-
-	// Sort tables for deterministic output
-	tableNames := make([]string, 0, len(plan.Schema.Tables))
-	for name := range plan.Schema.Tables {
-		tableNames = append(tableNames, name)
-	}
-	sort.Strings(tableNames)
-
-	// Collect imports
-	imports := []string{
-		"context",
-		"database/sql",
-		"github.com/portsql/nanoid",
-	}
-
-	// Check if we need time import
-	needsTime := false
-	for _, tableName := range tableNames {
-		table := plan.Schema.Tables[tableName]
-		for _, col := range table.Columns {
-			mapping := MapColumnType(col)
-			if mapping.NeedsImport == "time" {
-				needsTime = true
-				break
-			}
-		}
-		if needsTime {
-			break
-		}
-	}
-	if needsTime {
-		imports = append(imports, "time")
-	}
-
-	// Write package and imports
-	buf.WriteString("// Code generated by orm codegen. DO NOT EDIT.\n")
-	buf.WriteString(fmt.Sprintf("package %s\n\n", packageName))
-
-	buf.WriteString("import (\n")
-	sort.Strings(imports)
-	for _, imp := range imports {
-		buf.WriteString(fmt.Sprintf("\t%q\n", imp))
-	}
-	buf.WriteString(")\n\n")
-
-	// Write Dialect type
-	buf.WriteString("// Dialect identifies the target database.\n")
-	buf.WriteString("type Dialect int\n\n")
-	buf.WriteString("const (\n")
-	buf.WriteString("\tPostgres Dialect = iota\n")
-	buf.WriteString("\tMySQL\n")
-	buf.WriteString("\tSQLite\n")
-	buf.WriteString(")\n\n")
-
-	// Write Querier interface
-	buf.WriteString("// Querier is the interface for executing queries.\n")
-	buf.WriteString("type Querier interface {\n")
-	buf.WriteString("\tExecContext(ctx context.Context, query string, args ...any) (sql.Result, error)\n")
-	buf.WriteString("\tQueryContext(ctx context.Context, query string, args ...any) (*sql.Rows, error)\n")
-	buf.WriteString("\tQueryRowContext(ctx context.Context, query string, args ...any) *sql.Row\n")
-	buf.WriteString("}\n\n")
-
-	// Write QueryRunner struct
-	buf.WriteString("// QueryRunner holds pre-compiled SQL strings for a specific dialect.\n")
-	buf.WriteString("type QueryRunner struct {\n")
-	buf.WriteString("\tdialect Dialect\n")
-	buf.WriteString("\tdb      Querier\n\n")
-
-	// Add SQL string fields for each table
-	for _, tableName := range tableNames {
-		singular := toSingular(tableName)
-		singularCamel := toLowerCamel(singular)
-		buf.WriteString(fmt.Sprintf("\t// %s SQL strings\n", toPascalCase(tableName)))
-		buf.WriteString(fmt.Sprintf("\tget%sSQL    string\n", toPascalCase(singular)))
-		buf.WriteString(fmt.Sprintf("\tlist%sSQL   string\n", toPascalCase(tableName)))
-		buf.WriteString(fmt.Sprintf("\tinsert%sSQL string\n", toPascalCase(singular)))
-		buf.WriteString(fmt.Sprintf("\tupdate%sSQL string\n", toPascalCase(singular)))
-		buf.WriteString(fmt.Sprintf("\tdelete%sSQL string\n", toPascalCase(singular)))
-
-		table := plan.Schema.Tables[tableName]
-		analysis := AnalyzeTable(table)
-		if analysis.HasDeletedAt {
-			buf.WriteString(fmt.Sprintf("\thardDelete%sSQL string\n", toPascalCase(singular)))
-		}
-		_ = singularCamel // silence unused variable
-		buf.WriteString("\n")
-	}
-	buf.WriteString("}\n\n")
-
-	// Write NewQueryRunner constructor
-	buf.WriteString("// NewQueryRunner creates a runner for the given dialect.\n")
-	buf.WriteString("func NewQueryRunner(db Querier, dialect Dialect) *QueryRunner {\n")
-	buf.WriteString("\tr := &QueryRunner{\n")
-	buf.WriteString("\t\tdialect: dialect,\n")
-	buf.WriteString("\t\tdb:      db,\n")
-	buf.WriteString("\t}\n\n")
-
-	buf.WriteString("\tswitch dialect {\n")
-
-	// Generate SQL initialization for each dialect
-	for _, d := range []Dialect{DialectPostgres, DialectMySQL, DialectSQLite} {
-		dialectName := "Postgres"
-		if d == DialectMySQL {
-			dialectName = "MySQL"
-		} else if d == DialectSQLite {
-			dialectName = "SQLite"
-		}
-
-		buf.WriteString(fmt.Sprintf("\tcase %s:\n", dialectName))
-
-		for _, tableName := range tableNames {
-			table := plan.Schema.Tables[tableName]
-			opts := tableOpts[tableName]
-			sqlSet := GenerateCRUDSQL(table, d, opts)
-
-			singular := toSingular(tableName)
-			buf.WriteString(fmt.Sprintf("\t\tr.get%sSQL = %q\n", toPascalCase(singular), sqlSet.GetSQL))
-			buf.WriteString(fmt.Sprintf("\t\tr.list%sSQL = %q\n", toPascalCase(tableName), sqlSet.ListSQL))
-			buf.WriteString(fmt.Sprintf("\t\tr.insert%sSQL = %q\n", toPascalCase(singular), sqlSet.InsertSQL))
-			buf.WriteString(fmt.Sprintf("\t\tr.update%sSQL = %q\n", toPascalCase(singular), sqlSet.UpdateSQL))
-			buf.WriteString(fmt.Sprintf("\t\tr.delete%sSQL = %q\n", toPascalCase(singular), sqlSet.DeleteSQL))
-
-			analysis := AnalyzeTable(table)
-			if analysis.HasDeletedAt {
-				buf.WriteString(fmt.Sprintf("\t\tr.hardDelete%sSQL = %q\n", toPascalCase(singular), sqlSet.HardDeleteSQL))
-			}
-		}
-	}
-
-	buf.WriteString("\t}\n\n")
-	buf.WriteString("\treturn r\n")
-	buf.WriteString("}\n\n")
-
-	// Write WithTx method
-	buf.WriteString("// WithTx returns a new QueryRunner using the given transaction.\n")
-	buf.WriteString("func (r *QueryRunner) WithTx(tx *sql.Tx) *QueryRunner {\n")
-	buf.WriteString("\treturn &QueryRunner{\n")
-	buf.WriteString("\t\tdialect: r.dialect,\n")
-	buf.WriteString("\t\tdb:      tx,\n")
-	for _, tableName := range tableNames {
-		singular := toSingular(tableName)
-		buf.WriteString(fmt.Sprintf("\t\tget%sSQL:    r.get%sSQL,\n", toPascalCase(singular), toPascalCase(singular)))
-		buf.WriteString(fmt.Sprintf("\t\tlist%sSQL:   r.list%sSQL,\n", toPascalCase(tableName), toPascalCase(tableName)))
-		buf.WriteString(fmt.Sprintf("\t\tinsert%sSQL: r.insert%sSQL,\n", toPascalCase(singular), toPascalCase(singular)))
-		buf.WriteString(fmt.Sprintf("\t\tupdate%sSQL: r.update%sSQL,\n", toPascalCase(singular), toPascalCase(singular)))
-		buf.WriteString(fmt.Sprintf("\t\tdelete%sSQL: r.delete%sSQL,\n", toPascalCase(singular), toPascalCase(singular)))
-
-		table := plan.Schema.Tables[tableName]
-		analysis := AnalyzeTable(table)
-		if analysis.HasDeletedAt {
-			buf.WriteString(fmt.Sprintf("\t\thardDelete%sSQL: r.hardDelete%sSQL,\n", toPascalCase(singular), toPascalCase(singular)))
-		}
-	}
-	buf.WriteString("\t}\n")
-	buf.WriteString("}\n\n")
-
-	// Generate CRUD methods for each table
-	for _, tableName := range tableNames {
-		table := plan.Schema.Tables[tableName]
-		opts := tableOpts[tableName]
-		generateTableCRUDMethods(&buf, table, opts)
-	}
-
-	// Format the code
-	formatted, err := format.Source(buf.Bytes())
-	if err != nil {
-		return buf.Bytes(), fmt.Errorf("failed to format generated code: %w", err)
-	}
-
-	return formatted, nil
-}
-
-// generateTableCRUDMethods generates CRUD methods for a single table.
-func generateTableCRUDMethods(buf *bytes.Buffer, table ddl.Table, opts CRUDOptions) {
-	analysis := AnalyzeTable(table)
-	singular := toSingular(table.Name)
-	singularPascal := toPascalCase(singular)
-	pluralPascal := toPascalCase(table.Name)
-
-	// --- Get ---
-	generateGetMethod(buf, table, analysis, singularPascal, opts)
-
-	// --- List ---
-	generateListMethod(buf, table, analysis, singularPascal, pluralPascal, opts)
-
-	// --- Insert ---
-	generateInsertMethod(buf, table, analysis, singularPascal, opts)
-
-	// --- Update ---
-	generateUpdateMethod(buf, table, analysis, singularPascal, opts)
-
-	// --- Delete ---
-	generateDeleteMethod(buf, table, analysis, singularPascal, opts)
-
-	// --- HardDelete ---
-	if analysis.HasDeletedAt {
-		generateHardDeleteMethod(buf, table, analysis, singularPascal, opts)
-	}
-}
-
-func generateGetMethod(buf *bytes.Buffer, table ddl.Table, analysis TableAnalysis, singularPascal string, opts CRUDOptions) {
-	buf.WriteString(fmt.Sprintf("// Get%s fetches a single %s by its identifier.\n", singularPascal, toSingular(table.Name)))
-	buf.WriteString(fmt.Sprintf("func (r *QueryRunner) Get%s(ctx context.Context, params Get%sParams) (*Get%sResult, error) {\n",
-		singularPascal, singularPascal, singularPascal))
-
-	// Build args list
-	buf.WriteString("\tvar args []any\n")
-	if analysis.HasPublicID {
-		buf.WriteString("\targs = append(args, params.PublicID)\n")
-	} else {
-		buf.WriteString("\targs = append(args, params.ID)\n")
-	}
-	if opts.ScopeColumn != "" {
-		buf.WriteString(fmt.Sprintf("\targs = append(args, params.%s)\n", toPascalCase(opts.ScopeColumn)))
-	}
-
-	buf.WriteString(fmt.Sprintf("\n\trow := r.db.QueryRowContext(ctx, r.get%sSQL, args...)\n", singularPascal))
-	buf.WriteString(fmt.Sprintf("\n\tvar result Get%sResult\n", singularPascal))
-	buf.WriteString("\terr := row.Scan(\n")
-
-	// Scan result columns
-	for _, col := range analysis.ResultColumns {
-		buf.WriteString(fmt.Sprintf("\t\t&result.%s,\n", toPascalCase(col.Name)))
-	}
-	buf.WriteString("\t)\n")
-	buf.WriteString("\tif err == sql.ErrNoRows {\n")
-	buf.WriteString("\t\treturn nil, nil\n")
-	buf.WriteString("\t}\n")
-	buf.WriteString("\tif err != nil {\n")
-	buf.WriteString("\t\treturn nil, err\n")
-	buf.WriteString("\t}\n")
-	buf.WriteString("\treturn &result, nil\n")
-	buf.WriteString("}\n\n")
-}
-
-func generateListMethod(buf *bytes.Buffer, table ddl.Table, analysis TableAnalysis, singularPascal, pluralPascal string, opts CRUDOptions) {
-	buf.WriteString(fmt.Sprintf("// List%s fetches a paginated list of %s.\n", pluralPascal, table.Name))
-	buf.WriteString(fmt.Sprintf("func (r *QueryRunner) List%s(ctx context.Context, params List%sParams) ([]List%sResult, error) {\n",
-		pluralPascal, pluralPascal, pluralPascal))
-
-	// Build args list
-	buf.WriteString("\tvar args []any\n")
-	if opts.ScopeColumn != "" {
-		buf.WriteString(fmt.Sprintf("\targs = append(args, params.%s)\n", toPascalCase(opts.ScopeColumn)))
-	}
-	buf.WriteString("\targs = append(args, params.Limit, params.Offset)\n")
-
-	buf.WriteString(fmt.Sprintf("\n\trows, err := r.db.QueryContext(ctx, r.list%sSQL, args...)\n", pluralPascal))
-	buf.WriteString("\tif err != nil {\n")
-	buf.WriteString("\t\treturn nil, err\n")
-	buf.WriteString("\t}\n")
-	buf.WriteString("\tdefer rows.Close()\n")
-
-	buf.WriteString(fmt.Sprintf("\n\tvar results []List%sResult\n", pluralPascal))
-	buf.WriteString("\tfor rows.Next() {\n")
-	buf.WriteString(fmt.Sprintf("\t\tvar item List%sResult\n", pluralPascal))
-	buf.WriteString("\t\terr := rows.Scan(\n")
-
-	// Scan result columns (excluding updated_at)
-	for _, col := range analysis.ResultColumns {
-		if col.Name == "updated_at" {
-			continue
-		}
-		buf.WriteString(fmt.Sprintf("\t\t\t&item.%s,\n", toPascalCase(col.Name)))
-	}
-	buf.WriteString("\t\t)\n")
-	buf.WriteString("\t\tif err != nil {\n")
-	buf.WriteString("\t\t\treturn nil, err\n")
-	buf.WriteString("\t\t}\n")
-	buf.WriteString("\t\tresults = append(results, item)\n")
-	buf.WriteString("\t}\n")
-
-	buf.WriteString("\tif err := rows.Err(); err != nil {\n")
-	buf.WriteString("\t\treturn nil, err\n")
-	buf.WriteString("\t}\n")
-	buf.WriteString("\treturn results, nil\n")
-	buf.WriteString("}\n\n")
-}
-
-func generateInsertMethod(buf *bytes.Buffer, table ddl.Table, analysis TableAnalysis, singularPascal string, opts CRUDOptions) {
-	// Determine return type
-	returnType := "error"
-	if analysis.HasPublicID {
-		returnType = "(string, error)"
-	}
-
-	buf.WriteString(fmt.Sprintf("// Insert%s inserts a new %s and returns its public ID.\n", singularPascal, toSingular(table.Name)))
-	buf.WriteString(fmt.Sprintf("func (r *QueryRunner) Insert%s(ctx context.Context, params Insert%sParams) %s {\n",
-		singularPascal, singularPascal, returnType))
-
-	// Generate public_id if needed
-	if analysis.HasPublicID {
-		buf.WriteString("\tpublicID := nanoid.New()\n\n")
-	}
-
-	// Build args list
-	buf.WriteString("\tvar args []any\n")
-	if analysis.HasPublicID {
-		buf.WriteString("\targs = append(args, publicID)\n")
-	}
-	if opts.ScopeColumn != "" {
-		buf.WriteString(fmt.Sprintf("\targs = append(args, params.%s)\n", toPascalCase(opts.ScopeColumn)))
-	}
-	for _, col := range analysis.UserColumns {
-		if opts.ScopeColumn != "" && col.Name == opts.ScopeColumn {
-			continue
-		}
-		buf.WriteString(fmt.Sprintf("\targs = append(args, params.%s)\n", toPascalCase(col.Name)))
-	}
-
-	buf.WriteString("\n")
-
-	if analysis.HasPublicID {
-		// Handle dialect-specific RETURNING behavior
-		buf.WriteString("\tif r.dialect == MySQL {\n")
-		buf.WriteString(fmt.Sprintf("\t\t_, err := r.db.ExecContext(ctx, r.insert%sSQL, args...)\n", singularPascal))
-		buf.WriteString("\t\tif err != nil {\n")
-		buf.WriteString("\t\t\treturn \"\", err\n")
-		buf.WriteString("\t\t}\n")
-		buf.WriteString("\t\treturn publicID, nil\n")
-		buf.WriteString("\t}\n\n")
-
-		buf.WriteString("\t// Postgres/SQLite: Use RETURNING\n")
-		buf.WriteString("\tvar returnedID string\n")
-		buf.WriteString(fmt.Sprintf("\terr := r.db.QueryRowContext(ctx, r.insert%sSQL, args...).Scan(&returnedID)\n", singularPascal))
-		buf.WriteString("\tif err != nil {\n")
-		buf.WriteString("\t\treturn \"\", err\n")
-		buf.WriteString("\t}\n")
-		buf.WriteString("\treturn returnedID, nil\n")
-	} else {
-		buf.WriteString(fmt.Sprintf("\t_, err := r.db.ExecContext(ctx, r.insert%sSQL, args...)\n", singularPascal))
-		buf.WriteString("\treturn err\n")
-	}
-
-	buf.WriteString("}\n\n")
-}
-
-func generateUpdateMethod(buf *bytes.Buffer, table ddl.Table, analysis TableAnalysis, singularPascal string, opts CRUDOptions) {
-	buf.WriteString(fmt.Sprintf("// Update%s updates an existing %s.\n", singularPascal, toSingular(table.Name)))
-	buf.WriteString(fmt.Sprintf("func (r *QueryRunner) Update%s(ctx context.Context, params Update%sParams) error {\n",
-		singularPascal, singularPascal))
-
-	// Build args list: SET values first, then WHERE values
-	buf.WriteString("\tvar args []any\n")
-
-	// SET clause args (user columns, excluding scope)
-	for _, col := range analysis.UserColumns {
-		if opts.ScopeColumn != "" && col.Name == opts.ScopeColumn {
-			continue
-		}
-		buf.WriteString(fmt.Sprintf("\targs = append(args, params.%s)\n", toPascalCase(col.Name)))
-	}
-
-	// WHERE clause args
-	if analysis.HasPublicID {
-		buf.WriteString("\targs = append(args, params.PublicID)\n")
-	} else {
-		buf.WriteString("\targs = append(args, params.ID)\n")
-	}
-	if opts.ScopeColumn != "" {
-		buf.WriteString(fmt.Sprintf("\targs = append(args, params.%s)\n", toPascalCase(opts.ScopeColumn)))
-	}
-
-	buf.WriteString(fmt.Sprintf("\n\t_, err := r.db.ExecContext(ctx, r.update%sSQL, args...)\n", singularPascal))
-	buf.WriteString("\treturn err\n")
-	buf.WriteString("}\n\n")
-}
-
-func generateDeleteMethod(buf *bytes.Buffer, table ddl.Table, analysis TableAnalysis, singularPascal string, opts CRUDOptions) {
-	buf.WriteString(fmt.Sprintf("// Delete%s soft-deletes a %s (or hard-deletes if no deleted_at column).\n", singularPascal, toSingular(table.Name)))
-	buf.WriteString(fmt.Sprintf("func (r *QueryRunner) Delete%s(ctx context.Context, params Delete%sParams) error {\n",
-		singularPascal, singularPascal))
-
-	// Build args list
-	buf.WriteString("\tvar args []any\n")
-	if analysis.HasPublicID {
-		buf.WriteString("\targs = append(args, params.PublicID)\n")
-	} else {
-		buf.WriteString("\targs = append(args, params.ID)\n")
-	}
-	if opts.ScopeColumn != "" {
-		buf.WriteString(fmt.Sprintf("\targs = append(args, params.%s)\n", toPascalCase(opts.ScopeColumn)))
-	}
-
-	buf.WriteString(fmt.Sprintf("\n\t_, err := r.db.ExecContext(ctx, r.delete%sSQL, args...)\n", singularPascal))
-	buf.WriteString("\treturn err\n")
-	buf.WriteString("}\n\n")
-}
-
-func generateHardDeleteMethod(buf *bytes.Buffer, table ddl.Table, analysis TableAnalysis, singularPascal string, opts CRUDOptions) {
-	buf.WriteString(fmt.Sprintf("// HardDelete%s permanently deletes a %s.\n", singularPascal, toSingular(table.Name)))
-	buf.WriteString(fmt.Sprintf("func (r *QueryRunner) HardDelete%s(ctx context.Context, params HardDelete%sParams) error {\n",
-		singularPascal, singularPascal))
-
-	// Build args list
-	buf.WriteString("\tvar args []any\n")
-	if analysis.HasPublicID {
-		buf.WriteString("\targs = append(args, params.PublicID)\n")
-	} else {
-		buf.WriteString("\targs = append(args, params.ID)\n")
-	}
-	if opts.ScopeColumn != "" {
-		buf.WriteString(fmt.Sprintf("\targs = append(args, params.%s)\n", toPascalCase(opts.ScopeColumn)))
-	}
-
-	buf.WriteString(fmt.Sprintf("\n\t_, err := r.db.ExecContext(ctx, r.hardDelete%sSQL, args...)\n", singularPascal))
-	buf.WriteString("\treturn err\n")
-	buf.WriteString("}\n\n")
-}
-
-// toLowerCamel converts a snake_case string to lowerCamelCase.
-func toLowerCamel(s string) string {
-	pascal := toPascalCase(s)
-	if len(pascal) == 0 {
-		return pascal
-	}
-	return strings.ToLower(pascal[:1]) + pascal[1:]
 }

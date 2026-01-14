@@ -7,7 +7,7 @@ import (
 	"github.com/portsql/portsql/src/query"
 )
 
-func TestGenerateQueriesPackage(t *testing.T) {
+func TestGenerateSharedTypes_Queries(t *testing.T) {
 	queries := []CompiledQuery{
 		{
 			Name: "GetUserByEmail",
@@ -34,9 +34,9 @@ func TestGenerateQueriesPackage(t *testing.T) {
 		},
 	}
 
-	code, err := GenerateQueriesPackage(queries, "queries")
+	code, err := GenerateSharedTypes(queries, nil, "queries", nil)
 	if err != nil {
-		t.Fatalf("GenerateQueriesPackage failed: %v", err)
+		t.Fatalf("GenerateSharedTypes failed: %v", err)
 	}
 
 	codeStr := string(code)
@@ -49,10 +49,7 @@ func TestGenerateQueriesPackage(t *testing.T) {
 		t.Error("missing package declaration")
 	}
 
-	// Check GetUserByEmail
-	if !strings.Contains(codeStr, "GetUserByEmailSQL") {
-		t.Error("missing GetUserByEmailSQL constant")
-	}
+	// Check GetUserByEmail (no SQL constants - those are in dialect runners)
 	if !strings.Contains(codeStr, "GetUserByEmailParams") {
 		t.Error("missing GetUserByEmailParams struct")
 	}
@@ -64,9 +61,6 @@ func TestGenerateQueriesPackage(t *testing.T) {
 	}
 
 	// Check ListRecentPosts
-	if !strings.Contains(codeStr, "ListRecentPostsSQL") {
-		t.Error("missing ListRecentPostsSQL constant")
-	}
 	if !strings.Contains(codeStr, "ListRecentPostsParams") {
 		t.Error("missing ListRecentPostsParams struct")
 	}
@@ -87,9 +81,9 @@ func TestGenerateQueriesWithTimeType(t *testing.T) {
 		},
 	}
 
-	code, err := GenerateQueriesPackage(queries, "queries")
+	code, err := GenerateSharedTypes(queries, nil, "queries", nil)
 	if err != nil {
-		t.Fatalf("GenerateQueriesPackage failed: %v", err)
+		t.Fatalf("GenerateSharedTypes failed: %v", err)
 	}
 
 	codeStr := string(code)
@@ -116,17 +110,14 @@ func TestGenerateQueriesUpdateNoResult(t *testing.T) {
 		},
 	}
 
-	code, err := GenerateQueriesPackage(queries, "queries")
+	code, err := GenerateSharedTypes(queries, nil, "queries", nil)
 	if err != nil {
-		t.Fatalf("GenerateQueriesPackage failed: %v", err)
+		t.Fatalf("GenerateSharedTypes failed: %v", err)
 	}
 
 	codeStr := string(code)
 
-	// Should have SQL and Params but no Result
-	if !strings.Contains(codeStr, "UpdateUserNameSQL") {
-		t.Error("missing UpdateUserNameSQL constant")
-	}
+	// Should have Params but no Result (no SQL constants - those are in dialect runners)
 	if !strings.Contains(codeStr, "UpdateUserNameParams") {
 		t.Error("missing UpdateUserNameParams struct")
 	}
@@ -254,7 +245,7 @@ func TestDuplicateColumnNamesError(t *testing.T) {
 		},
 	}
 
-	_, err := GenerateQueriesPackage(queries, "queries")
+	_, err := GenerateSharedTypes(queries, nil, "queries", nil)
 	if err == nil {
 		t.Fatal("expected error for duplicate column names, got nil")
 	}
@@ -283,7 +274,7 @@ func TestDuplicateColumnNamesDifferentCase(t *testing.T) {
 		},
 	}
 
-	_, err := GenerateQueriesPackage(queries, "queries")
+	_, err := GenerateSharedTypes(queries, nil, "queries", nil)
 	if err == nil {
 		t.Fatal("expected error for duplicate column names, got nil")
 	}
@@ -302,7 +293,7 @@ func TestNoDuplicatesWithAliases(t *testing.T) {
 		},
 	}
 
-	_, err := GenerateQueriesPackage(queries, "queries")
+	_, err := GenerateSharedTypes(queries, nil, "queries", nil)
 	if err != nil {
 		t.Fatalf("unexpected error with aliases: %v", err)
 	}
@@ -330,9 +321,9 @@ func TestGenerateQueriesWithJSONAgg_SingleLevel(t *testing.T) {
 		},
 	}
 
-	code, err := GenerateQueriesPackage(queries, "queries")
+	code, err := GenerateSharedTypes(queries, nil, "queries", nil)
 	if err != nil {
-		t.Fatalf("GenerateQueriesPackage failed: %v", err)
+		t.Fatalf("GenerateSharedTypes failed: %v", err)
 	}
 
 	codeStr := string(code)
@@ -386,9 +377,9 @@ func TestGenerateQueriesWithJSONAgg_MultiLevel(t *testing.T) {
 		},
 	}
 
-	code, err := GenerateQueriesPackage(queries, "queries")
+	code, err := GenerateSharedTypes(queries, nil, "queries", nil)
 	if err != nil {
-		t.Fatalf("GenerateQueriesPackage failed: %v", err)
+		t.Fatalf("GenerateSharedTypes failed: %v", err)
 	}
 
 	codeStr := string(code)
@@ -447,9 +438,9 @@ func TestGenerateQueriesWithJSONAgg_MultipleFields(t *testing.T) {
 		},
 	}
 
-	code, err := GenerateQueriesPackage(queries, "queries")
+	code, err := GenerateSharedTypes(queries, nil, "queries", nil)
 	if err != nil {
-		t.Fatalf("GenerateQueriesPackage failed: %v", err)
+		t.Fatalf("GenerateSharedTypes failed: %v", err)
 	}
 
 	codeStr := string(code)
@@ -501,9 +492,9 @@ func TestGenerateQueriesWithJSONAgg_ThreeLevels(t *testing.T) {
 		},
 	}
 
-	code, err := GenerateQueriesPackage(queries, "queries")
+	code, err := GenerateSharedTypes(queries, nil, "queries", nil)
 	if err != nil {
-		t.Fatalf("GenerateQueriesPackage failed: %v", err)
+		t.Fatalf("GenerateSharedTypes failed: %v", err)
 	}
 
 	codeStr := string(code)
@@ -593,7 +584,7 @@ func TestExtractResultInfo_WithJSONAgg(t *testing.T) {
 // assertValidGoCode checks that the generated code parses as valid Go
 func assertValidGoCode(t *testing.T, code []byte) {
 	t.Helper()
-	// The code is already formatted by go/format in GenerateQueriesPackage,
+	// The code is already formatted by go/format in GenerateSharedTypes,
 	// so if it got this far without error, it's valid Go
 	if len(code) == 0 {
 		t.Error("generated code is empty")

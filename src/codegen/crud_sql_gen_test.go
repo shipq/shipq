@@ -29,26 +29,26 @@ func TestGenerateCRUDSQL_Insert_WithAutoFilledColumns(t *testing.T) {
 	}
 
 	tests := []struct {
-		name     string
-		dialect  Dialect
-		wantNow  string
-		wantSQL  string
+		name    string
+		dialect SQLDialect
+		wantNow string
+		wantSQL string
 	}{
 		{
 			name:    "Postgres",
-			dialect: DialectPostgres,
+			dialect: SQLDialectPostgres,
 			wantNow: "NOW()",
 			wantSQL: `INSERT INTO "authors" ("public_id", "name", "email", "created_at", "updated_at") VALUES ($1, $2, $3, NOW(), NOW()) RETURNING "public_id"`,
 		},
 		{
 			name:    "MySQL",
-			dialect: DialectMySQL,
+			dialect: SQLDialectMySQL,
 			wantNow: "NOW()",
 			wantSQL: "INSERT INTO `authors` (`public_id`, `name`, `email`, `created_at`, `updated_at`) VALUES (?, ?, ?, NOW(), NOW())",
 		},
 		{
 			name:    "SQLite",
-			dialect: DialectSQLite,
+			dialect: SQLDialectSQLite,
 			wantNow: "datetime('now')",
 			wantSQL: `INSERT INTO "authors" ("public_id", "name", "email", "created_at", "updated_at") VALUES (?, ?, ?, datetime('now'), datetime('now')) RETURNING "public_id"`,
 		},
@@ -70,7 +70,7 @@ func TestGenerateCRUDSQL_Insert_WithAutoFilledColumns(t *testing.T) {
 
 			// Verify public_id is NOT auto-filled (it's a param)
 			// The first placeholder should be for public_id
-			if tt.dialect == DialectPostgres {
+			if tt.dialect == SQLDialectPostgres {
 				if !strings.Contains(sqlSet.InsertSQL, "$1") {
 					t.Error("Postgres InsertSQL should have $1 for public_id")
 				}
@@ -100,26 +100,26 @@ func TestGenerateCRUDSQL_Update_WithAutoFilledUpdatedAt(t *testing.T) {
 	}
 
 	tests := []struct {
-		name     string
-		dialect  Dialect
-		wantNow  string
-		wantSQL  string
+		name    string
+		dialect SQLDialect
+		wantNow string
+		wantSQL string
 	}{
 		{
 			name:    "Postgres",
-			dialect: DialectPostgres,
+			dialect: SQLDialectPostgres,
 			wantNow: "NOW()",
 			wantSQL: `UPDATE "authors" SET "name" = $1, "email" = $2, "updated_at" = NOW() WHERE "public_id" = $3 AND "deleted_at" IS NULL`,
 		},
 		{
 			name:    "MySQL",
-			dialect: DialectMySQL,
+			dialect: SQLDialectMySQL,
 			wantNow: "NOW()",
 			wantSQL: "UPDATE `authors` SET `name` = ?, `email` = ?, `updated_at` = NOW() WHERE `public_id` = ? AND `deleted_at` IS NULL",
 		},
 		{
 			name:    "SQLite",
-			dialect: DialectSQLite,
+			dialect: SQLDialectSQLite,
 			wantNow: "datetime('now')",
 			wantSQL: `UPDATE "authors" SET "name" = ?, "email" = ?, "updated_at" = datetime('now') WHERE "public_id" = ? AND "deleted_at" IS NULL`,
 		},
@@ -159,26 +159,26 @@ func TestGenerateCRUDSQL_Delete_SoftDelete(t *testing.T) {
 	}
 
 	tests := []struct {
-		name     string
-		dialect  Dialect
-		wantNow  string
-		wantSQL  string
+		name    string
+		dialect SQLDialect
+		wantNow string
+		wantSQL string
 	}{
 		{
 			name:    "Postgres",
-			dialect: DialectPostgres,
+			dialect: SQLDialectPostgres,
 			wantNow: "NOW()",
 			wantSQL: `UPDATE "authors" SET "deleted_at" = NOW() WHERE "public_id" = $1 AND "deleted_at" IS NULL`,
 		},
 		{
 			name:    "MySQL",
-			dialect: DialectMySQL,
+			dialect: SQLDialectMySQL,
 			wantNow: "NOW()",
 			wantSQL: "UPDATE `authors` SET `deleted_at` = NOW() WHERE `public_id` = ? AND `deleted_at` IS NULL",
 		},
 		{
 			name:    "SQLite",
-			dialect: DialectSQLite,
+			dialect: SQLDialectSQLite,
 			wantNow: "datetime('now')",
 			wantSQL: `UPDATE "authors" SET "deleted_at" = datetime('now') WHERE "public_id" = ? AND "deleted_at" IS NULL`,
 		},
@@ -218,22 +218,22 @@ func TestGenerateCRUDSQL_Delete_HardDelete_WhenNoDeletedAt(t *testing.T) {
 
 	tests := []struct {
 		name    string
-		dialect Dialect
+		dialect SQLDialect
 		wantSQL string
 	}{
 		{
 			name:    "Postgres",
-			dialect: DialectPostgres,
+			dialect: SQLDialectPostgres,
 			wantSQL: `DELETE FROM "settings" WHERE "id" = $1`,
 		},
 		{
 			name:    "MySQL",
-			dialect: DialectMySQL,
+			dialect: SQLDialectMySQL,
 			wantSQL: "DELETE FROM `settings` WHERE `id` = ?",
 		},
 		{
 			name:    "SQLite",
-			dialect: DialectSQLite,
+			dialect: SQLDialectSQLite,
 			wantSQL: `DELETE FROM "settings" WHERE "id" = ?`,
 		},
 	}
@@ -273,22 +273,22 @@ func TestGenerateCRUDSQL_HardDelete(t *testing.T) {
 
 	tests := []struct {
 		name    string
-		dialect Dialect
+		dialect SQLDialect
 		wantSQL string
 	}{
 		{
 			name:    "Postgres",
-			dialect: DialectPostgres,
+			dialect: SQLDialectPostgres,
 			wantSQL: `DELETE FROM "authors" WHERE "public_id" = $1`,
 		},
 		{
 			name:    "MySQL",
-			dialect: DialectMySQL,
+			dialect: SQLDialectMySQL,
 			wantSQL: "DELETE FROM `authors` WHERE `public_id` = ?",
 		},
 		{
 			name:    "SQLite",
-			dialect: DialectSQLite,
+			dialect: SQLDialectSQLite,
 			wantSQL: `DELETE FROM "authors" WHERE "public_id" = ?`,
 		},
 	}
@@ -321,7 +321,7 @@ func TestGenerateCRUDSQL_Get_ExcludesSoftDeleted(t *testing.T) {
 		},
 	}
 
-	for _, dialect := range []Dialect{DialectPostgres, DialectMySQL, DialectSQLite} {
+	for _, dialect := range []SQLDialect{SQLDialectPostgres, SQLDialectMySQL, SQLDialectSQLite} {
 		t.Run(string(dialect), func(t *testing.T) {
 			sqlSet := GenerateCRUDSQL(table, dialect, CRUDOptions{})
 
@@ -347,7 +347,7 @@ func TestGenerateCRUDSQL_ParameterOrder(t *testing.T) {
 	}
 
 	t.Run("Postgres parameter order", func(t *testing.T) {
-		sqlSet := GenerateCRUDSQL(table, DialectPostgres, CRUDOptions{})
+		sqlSet := GenerateCRUDSQL(table, SQLDialectPostgres, CRUDOptions{})
 
 		// Insert: public_id ($1), name ($2), email ($3), then NOW() for timestamps
 		if !strings.Contains(sqlSet.InsertSQL, "$1, $2, $3, NOW(), NOW()") {
@@ -363,7 +363,7 @@ func TestGenerateCRUDSQL_ParameterOrder(t *testing.T) {
 	})
 
 	t.Run("MySQL/SQLite parameter order", func(t *testing.T) {
-		for _, dialect := range []Dialect{DialectMySQL, DialectSQLite} {
+		for _, dialect := range []SQLDialect{SQLDialectMySQL, SQLDialectSQLite} {
 			sqlSet := GenerateCRUDSQL(table, dialect, CRUDOptions{})
 
 			// Count ? placeholders in INSERT
@@ -398,7 +398,7 @@ func TestGenerateCRUDSQL_WithScopeColumn(t *testing.T) {
 
 	opts := CRUDOptions{ScopeColumn: "organization_id"}
 
-	for _, dialect := range []Dialect{DialectPostgres, DialectMySQL, DialectSQLite} {
+	for _, dialect := range []SQLDialect{SQLDialectPostgres, SQLDialectMySQL, SQLDialectSQLite} {
 		t.Run(string(dialect), func(t *testing.T) {
 			sqlSet := GenerateCRUDSQL(table, dialect, opts)
 
@@ -426,10 +426,10 @@ func TestGenerateCRUDSQL_WithScopeColumn(t *testing.T) {
 }
 
 // =============================================================================
-// CRUD Runner Generation Tests
+// Dialect Runner Generation Tests (using GenerateDialectRunner)
 // =============================================================================
 
-func TestGenerateCRUDRunner_Compiles(t *testing.T) {
+func TestGenerateDialectRunner_CRUD_Compiles(t *testing.T) {
 	plan := &migrate.MigrationPlan{
 		Schema: migrate.Schema{
 			Name: "test",
@@ -450,20 +450,24 @@ func TestGenerateCRUDRunner_Compiles(t *testing.T) {
 		},
 	}
 
-	code, err := GenerateCRUDRunner(plan, "crud", make(map[string]CRUDOptions))
-	if err != nil {
-		t.Fatalf("GenerateCRUDRunner failed: %v", err)
-	}
+	for _, dialect := range []string{"postgres", "mysql", "sqlite"} {
+		t.Run(dialect, func(t *testing.T) {
+			code, err := GenerateDialectRunner(nil, plan, dialect, "myapp/queries", make(map[string]CRUDOptions))
+			if err != nil {
+				t.Fatalf("GenerateDialectRunner failed: %v", err)
+			}
 
-	// Verify it's valid Go
-	fset := token.NewFileSet()
-	_, err = parser.ParseFile(fset, "runner.go", code, parser.AllErrors)
-	if err != nil {
-		t.Errorf("Generated code should be valid Go: %v\n\nGenerated code:\n%s", err, string(code))
+			// Verify it's valid Go
+			fset := token.NewFileSet()
+			_, err = parser.ParseFile(fset, "runner.go", code, parser.AllErrors)
+			if err != nil {
+				t.Errorf("Generated code should be valid Go: %v\n\nGenerated code:\n%s", err, string(code))
+			}
+		})
 	}
 }
 
-func TestGenerateCRUDRunner_ContainsNanoidImport(t *testing.T) {
+func TestGenerateDialectRunner_CRUD_ContainsNanoidImport(t *testing.T) {
 	plan := &migrate.MigrationPlan{
 		Schema: migrate.Schema{
 			Name: "test",
@@ -480,9 +484,9 @@ func TestGenerateCRUDRunner_ContainsNanoidImport(t *testing.T) {
 		},
 	}
 
-	code, err := GenerateCRUDRunner(plan, "crud", make(map[string]CRUDOptions))
+	code, err := GenerateDialectRunner(nil, plan, "sqlite", "myapp/queries", make(map[string]CRUDOptions))
 	if err != nil {
-		t.Fatalf("GenerateCRUDRunner failed: %v", err)
+		t.Fatalf("GenerateDialectRunner failed: %v", err)
 	}
 
 	codeStr := string(code)
@@ -498,95 +502,7 @@ func TestGenerateCRUDRunner_ContainsNanoidImport(t *testing.T) {
 	}
 }
 
-func TestGenerateCRUDRunner_HandlesDialects(t *testing.T) {
-	plan := &migrate.MigrationPlan{
-		Schema: migrate.Schema{
-			Name: "test",
-			Tables: map[string]ddl.Table{
-				"authors": {
-					Name: "authors",
-					Columns: []ddl.ColumnDefinition{
-						{Name: "id", Type: ddl.BigintType, PrimaryKey: true},
-						{Name: "public_id", Type: ddl.StringType},
-						{Name: "name", Type: ddl.StringType},
-						{Name: "created_at", Type: ddl.DatetimeType},
-						{Name: "updated_at", Type: ddl.DatetimeType},
-					},
-				},
-			},
-		},
-	}
-
-	code, err := GenerateCRUDRunner(plan, "crud", make(map[string]CRUDOptions))
-	if err != nil {
-		t.Fatalf("GenerateCRUDRunner failed: %v", err)
-	}
-
-	codeStr := string(code)
-
-	// Should have dialect constants
-	if !strings.Contains(codeStr, "Postgres Dialect = iota") {
-		t.Error("Generated code should define Postgres dialect")
-	}
-	if !strings.Contains(codeStr, "MySQL") {
-		t.Error("Generated code should define MySQL dialect")
-	}
-	if !strings.Contains(codeStr, "SQLite") {
-		t.Error("Generated code should define SQLite dialect")
-	}
-
-	// Should have switch for dialects in constructor
-	if !strings.Contains(codeStr, "switch dialect") {
-		t.Error("Generated code should switch on dialect in constructor")
-	}
-
-	// Should have NOW() for Postgres/MySQL
-	if !strings.Contains(codeStr, "NOW()") {
-		t.Error("Generated code should contain NOW() for Postgres/MySQL")
-	}
-
-	// Should have datetime('now') for SQLite
-	if !strings.Contains(codeStr, "datetime('now')") {
-		t.Error("Generated code should contain datetime('now') for SQLite")
-	}
-}
-
-func TestGenerateCRUDRunner_InsertMethodReturnsPublicID(t *testing.T) {
-	plan := &migrate.MigrationPlan{
-		Schema: migrate.Schema{
-			Name: "test",
-			Tables: map[string]ddl.Table{
-				"authors": {
-					Name: "authors",
-					Columns: []ddl.ColumnDefinition{
-						{Name: "id", Type: ddl.BigintType, PrimaryKey: true},
-						{Name: "public_id", Type: ddl.StringType},
-						{Name: "name", Type: ddl.StringType},
-					},
-				},
-			},
-		},
-	}
-
-	code, err := GenerateCRUDRunner(plan, "crud", make(map[string]CRUDOptions))
-	if err != nil {
-		t.Fatalf("GenerateCRUDRunner failed: %v", err)
-	}
-
-	codeStr := string(code)
-
-	// InsertAuthor should return (string, error)
-	if !strings.Contains(codeStr, "InsertAuthor(ctx context.Context, params InsertAuthorParams) (string, error)") {
-		t.Error("InsertAuthor should return (string, error) when public_id exists")
-	}
-
-	// Should handle MySQL differently (no RETURNING)
-	if !strings.Contains(codeStr, "if r.dialect == MySQL") {
-		t.Error("InsertAuthor should handle MySQL dialect differently")
-	}
-}
-
-func TestGenerateCRUDRunner_WithMultipleTables(t *testing.T) {
+func TestGenerateDialectRunner_CRUD_HasMethods(t *testing.T) {
 	plan := &migrate.MigrationPlan{
 		Schema: migrate.Schema{
 			Name: "test",
@@ -611,9 +527,9 @@ func TestGenerateCRUDRunner_WithMultipleTables(t *testing.T) {
 		},
 	}
 
-	code, err := GenerateCRUDRunner(plan, "crud", make(map[string]CRUDOptions))
+	code, err := GenerateDialectRunner(nil, plan, "sqlite", "myapp/queries", make(map[string]CRUDOptions))
 	if err != nil {
-		t.Fatalf("GenerateCRUDRunner failed: %v", err)
+		t.Fatalf("GenerateDialectRunner failed: %v", err)
 	}
 
 	codeStr := string(code)
@@ -635,13 +551,46 @@ func TestGenerateCRUDRunner_WithMultipleTables(t *testing.T) {
 	if strings.Contains(codeStr, "HardDeletePost") {
 		t.Error("Generated code should not have HardDeletePost")
 	}
+}
 
-	// Verify it compiles
-	fset := token.NewFileSet()
-	_, err = parser.ParseFile(fset, "runner.go", code, parser.AllErrors)
-	if err != nil {
-		t.Errorf("Generated code should be valid Go: %v\n\nGenerated code:\n%s", err, string(code))
+func TestGenerateDialectRunner_CRUD_DialectSpecificSQL(t *testing.T) {
+	plan := &migrate.MigrationPlan{
+		Schema: migrate.Schema{
+			Name: "test",
+			Tables: map[string]ddl.Table{
+				"authors": {
+					Name: "authors",
+					Columns: []ddl.ColumnDefinition{
+						{Name: "id", Type: ddl.BigintType, PrimaryKey: true},
+						{Name: "public_id", Type: ddl.StringType},
+						{Name: "name", Type: ddl.StringType},
+						{Name: "created_at", Type: ddl.DatetimeType},
+						{Name: "updated_at", Type: ddl.DatetimeType},
+					},
+				},
+			},
+		},
 	}
+
+	t.Run("Postgres uses NOW()", func(t *testing.T) {
+		code, err := GenerateDialectRunner(nil, plan, "postgres", "myapp/queries", make(map[string]CRUDOptions))
+		if err != nil {
+			t.Fatalf("GenerateDialectRunner failed: %v", err)
+		}
+		if !strings.Contains(string(code), "NOW()") {
+			t.Error("Postgres runner should use NOW()")
+		}
+	})
+
+	t.Run("SQLite uses datetime('now')", func(t *testing.T) {
+		code, err := GenerateDialectRunner(nil, plan, "sqlite", "myapp/queries", make(map[string]CRUDOptions))
+		if err != nil {
+			t.Fatalf("GenerateDialectRunner failed: %v", err)
+		}
+		if !strings.Contains(string(code), "datetime('now')") {
+			t.Error("SQLite runner should use datetime('now')")
+		}
+	})
 }
 
 // =============================================================================
@@ -658,7 +607,7 @@ func TestGenerateCRUDSQL_TableWithoutPublicID(t *testing.T) {
 		},
 	}
 
-	for _, dialect := range []Dialect{DialectPostgres, DialectMySQL, DialectSQLite} {
+	for _, dialect := range []SQLDialect{SQLDialectPostgres, SQLDialectMySQL, SQLDialectSQLite} {
 		t.Run(string(dialect), func(t *testing.T) {
 			sqlSet := GenerateCRUDSQL(table, dialect, CRUDOptions{})
 
@@ -676,7 +625,7 @@ func TestGenerateCRUDSQL_TableWithoutPublicID(t *testing.T) {
 			}
 
 			// No RETURNING clause for Postgres/SQLite (no public_id to return)
-			if dialect == DialectPostgres || dialect == DialectSQLite {
+			if dialect == SQLDialectPostgres || dialect == SQLDialectSQLite {
 				if strings.Contains(sqlSet.InsertSQL, "RETURNING") {
 					t.Error("InsertSQL should not have RETURNING when no public_id")
 				}
@@ -695,7 +644,7 @@ func TestGenerateCRUDSQL_TableWithoutTimestamps(t *testing.T) {
 		},
 	}
 
-	for _, dialect := range []Dialect{DialectPostgres, DialectMySQL, DialectSQLite} {
+	for _, dialect := range []SQLDialect{SQLDialectPostgres, SQLDialectMySQL, SQLDialectSQLite} {
 		t.Run(string(dialect), func(t *testing.T) {
 			sqlSet := GenerateCRUDSQL(table, dialect, CRUDOptions{})
 

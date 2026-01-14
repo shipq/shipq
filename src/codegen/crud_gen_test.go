@@ -10,7 +10,19 @@ import (
 	"github.com/portsql/portsql/src/migrate"
 )
 
-func TestGenerateCRUDTypes_WithPublicID(t *testing.T) {
+// Helper to wrap a table in a migration plan for testing
+func tableToMigrationPlan(table ddl.Table) *migrate.MigrationPlan {
+	return &migrate.MigrationPlan{
+		Schema: migrate.Schema{
+			Name: "test",
+			Tables: map[string]ddl.Table{
+				table.Name: table,
+			},
+		},
+	}
+}
+
+func TestGenerateSharedTypes_CRUD_WithPublicID(t *testing.T) {
 	table := ddl.Table{
 		Name: "authors",
 		Columns: []ddl.ColumnDefinition{
@@ -23,9 +35,9 @@ func TestGenerateCRUDTypes_WithPublicID(t *testing.T) {
 		},
 	}
 
-	code, err := GenerateCRUDTypes(table, "crud")
+	code, err := GenerateSharedTypes(nil, tableToMigrationPlan(table), "crud", make(map[string]CRUDOptions))
 	if err != nil {
-		t.Fatalf("GenerateCRUDTypes failed: %v", err)
+		t.Fatalf("GenerateSharedTypes failed: %v", err)
 	}
 
 	codeStr := string(code)
@@ -49,7 +61,7 @@ func TestGenerateCRUDTypes_WithPublicID(t *testing.T) {
 	}
 }
 
-func TestGenerateCRUDTypes_WithoutPublicID(t *testing.T) {
+func TestGenerateSharedTypes_CRUD_WithoutPublicID(t *testing.T) {
 	table := ddl.Table{
 		Name: "settings",
 		Columns: []ddl.ColumnDefinition{
@@ -59,9 +71,9 @@ func TestGenerateCRUDTypes_WithoutPublicID(t *testing.T) {
 		},
 	}
 
-	code, err := GenerateCRUDTypes(table, "crud")
+	code, err := GenerateSharedTypes(nil, tableToMigrationPlan(table), "crud", make(map[string]CRUDOptions))
 	if err != nil {
-		t.Fatalf("GenerateCRUDTypes failed: %v", err)
+		t.Fatalf("GenerateSharedTypes failed: %v", err)
 	}
 
 	codeStr := string(code)
@@ -80,7 +92,7 @@ func TestGenerateCRUDTypes_WithoutPublicID(t *testing.T) {
 	}
 }
 
-func TestGenerateCRUDTypes_Compiles(t *testing.T) {
+func TestGenerateSharedTypes_CRUD_Compiles(t *testing.T) {
 	table := ddl.Table{
 		Name: "authors",
 		Columns: []ddl.ColumnDefinition{
@@ -99,9 +111,9 @@ func TestGenerateCRUDTypes_Compiles(t *testing.T) {
 		},
 	}
 
-	code, err := GenerateCRUDTypes(table, "crud")
+	code, err := GenerateSharedTypes(nil, tableToMigrationPlan(table), "crud", make(map[string]CRUDOptions))
 	if err != nil {
-		t.Fatalf("GenerateCRUDTypes failed: %v", err)
+		t.Fatalf("GenerateSharedTypes failed: %v", err)
 	}
 
 	// Use go/parser to verify it's valid Go
@@ -112,7 +124,7 @@ func TestGenerateCRUDTypes_Compiles(t *testing.T) {
 	}
 }
 
-func TestGenerateCRUDTypes_InsertParamsExcludesAutoFilled(t *testing.T) {
+func TestGenerateSharedTypes_CRUD_InsertParamsExcludesAutoFilled(t *testing.T) {
 	table := ddl.Table{
 		Name: "authors",
 		Columns: []ddl.ColumnDefinition{
@@ -126,9 +138,9 @@ func TestGenerateCRUDTypes_InsertParamsExcludesAutoFilled(t *testing.T) {
 		},
 	}
 
-	code, err := GenerateCRUDTypes(table, "crud")
+	code, err := GenerateSharedTypes(nil, tableToMigrationPlan(table), "crud", make(map[string]CRUDOptions))
 	if err != nil {
-		t.Fatalf("GenerateCRUDTypes failed: %v", err)
+		t.Fatalf("GenerateSharedTypes failed: %v", err)
 	}
 
 	codeStr := string(code)
@@ -169,7 +181,7 @@ func TestGenerateCRUDTypes_InsertParamsExcludesAutoFilled(t *testing.T) {
 	}
 }
 
-func TestGenerateCRUDTypes_ResultColumnsExcludeInternalID(t *testing.T) {
+func TestGenerateSharedTypes_CRUD_ResultColumnsExcludeInternalID(t *testing.T) {
 	table := ddl.Table{
 		Name: "authors",
 		Columns: []ddl.ColumnDefinition{
@@ -180,9 +192,9 @@ func TestGenerateCRUDTypes_ResultColumnsExcludeInternalID(t *testing.T) {
 		},
 	}
 
-	code, err := GenerateCRUDTypes(table, "crud")
+	code, err := GenerateSharedTypes(nil, tableToMigrationPlan(table), "crud", make(map[string]CRUDOptions))
 	if err != nil {
-		t.Fatalf("GenerateCRUDTypes failed: %v", err)
+		t.Fatalf("GenerateSharedTypes failed: %v", err)
 	}
 
 	codeStr := string(code)
@@ -221,7 +233,7 @@ func TestGenerateCRUDTypes_ResultColumnsExcludeInternalID(t *testing.T) {
 	}
 }
 
-func TestGenerateCRUDPackage(t *testing.T) {
+func TestGenerateSharedTypes_CRUD_MultipleTables(t *testing.T) {
 	plan := &migrate.MigrationPlan{
 		Schema: migrate.Schema{
 			Name: "test",
@@ -249,9 +261,9 @@ func TestGenerateCRUDPackage(t *testing.T) {
 		},
 	}
 
-	code, err := GenerateCRUDPackage(plan, "crud")
+	code, err := GenerateSharedTypes(nil, plan, "crud", make(map[string]CRUDOptions))
 	if err != nil {
-		t.Fatalf("GenerateCRUDPackage failed: %v", err)
+		t.Fatalf("GenerateSharedTypes failed: %v", err)
 	}
 
 	codeStr := string(code)
@@ -282,7 +294,7 @@ func TestGenerateCRUDPackage(t *testing.T) {
 	}
 }
 
-func TestGenerateCRUDTypes_WithScopeColumn(t *testing.T) {
+func TestGenerateSharedTypes_CRUD_WithScopeColumn(t *testing.T) {
 	table := ddl.Table{
 		Name: "authors",
 		Columns: []ddl.ColumnDefinition{
@@ -295,13 +307,13 @@ func TestGenerateCRUDTypes_WithScopeColumn(t *testing.T) {
 		},
 	}
 
-	opts := CRUDOptions{
-		ScopeColumn: "organization_id",
+	tableOpts := map[string]CRUDOptions{
+		"authors": {ScopeColumn: "organization_id"},
 	}
 
-	code, err := GenerateCRUDTypesWithOptions(table, "crud", opts)
+	code, err := GenerateSharedTypes(nil, tableToMigrationPlan(table), "crud", tableOpts)
 	if err != nil {
-		t.Fatalf("GenerateCRUDTypesWithOptions failed: %v", err)
+		t.Fatalf("GenerateSharedTypes failed: %v", err)
 	}
 
 	codeStr := string(code)
@@ -370,7 +382,7 @@ func TestToSingular(t *testing.T) {
 	}
 }
 
-func TestGenerateCRUDTypes_NullableTypesInParams(t *testing.T) {
+func TestGenerateSharedTypes_CRUD_NullableTypesInParams(t *testing.T) {
 	table := ddl.Table{
 		Name: "authors",
 		Columns: []ddl.ColumnDefinition{
@@ -381,9 +393,9 @@ func TestGenerateCRUDTypes_NullableTypesInParams(t *testing.T) {
 		},
 	}
 
-	code, err := GenerateCRUDTypes(table, "crud")
+	code, err := GenerateSharedTypes(nil, tableToMigrationPlan(table), "crud", make(map[string]CRUDOptions))
 	if err != nil {
-		t.Fatalf("GenerateCRUDTypes failed: %v", err)
+		t.Fatalf("GenerateSharedTypes failed: %v", err)
 	}
 
 	codeStr := string(code)
