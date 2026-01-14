@@ -339,6 +339,10 @@ func (c *Compiler) writeExpr(b *strings.Builder, expr query.Expr) error {
 			// Handle both ListExpr and SubqueryExpr
 			switch right := e.Right.(type) {
 			case query.ListExpr:
+				// Validate non-empty list - IN () is invalid SQL
+				if len(right.Values) == 0 {
+					return fmt.Errorf("IN clause requires at least one value")
+				}
 				b.WriteString("(")
 				for i, v := range right.Values {
 					if i > 0 {

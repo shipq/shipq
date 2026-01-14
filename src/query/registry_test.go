@@ -397,3 +397,119 @@ func TestDifferentDefineTypes_SameNamePanics(t *testing.T) {
 	DefineOne("SomeQuery", From(authors).Build())
 	DefineMany("SomeQuery", From(authors).Build()) // Should panic even though different define type
 }
+
+// =============================================================================
+// TryDefine* tests (non-panicking APIs)
+// =============================================================================
+
+func TestTryDefineOne_Success(t *testing.T) {
+	ClearRegistry()
+
+	authors := mockTable{name: "authors"}
+	nameCol := StringColumn{Table: "authors", Name: "name"}
+
+	ast, err := TryDefineOne("GetAuthorTry", From(authors).Select(nameCol).Build())
+
+	if err != nil {
+		t.Errorf("TryDefineOne returned error: %v", err)
+	}
+	if ast == nil {
+		t.Error("TryDefineOne returned nil AST")
+	}
+
+	queries := GetRegisteredQueries()
+	if _, ok := queries["GetAuthorTry"]; !ok {
+		t.Error("Query not registered")
+	}
+}
+
+func TestTryDefineOne_EmptyName(t *testing.T) {
+	ClearRegistry()
+
+	authors := mockTable{name: "authors"}
+	ast, err := TryDefineOne("", From(authors).Build())
+
+	if err == nil {
+		t.Error("Expected error for empty name")
+	}
+	if ast != nil {
+		t.Error("Expected nil AST on error")
+	}
+}
+
+func TestTryDefineOne_NilAST(t *testing.T) {
+	ClearRegistry()
+
+	ast, err := TryDefineOne("SomeQuery", nil)
+
+	if err == nil {
+		t.Error("Expected error for nil AST")
+	}
+	if ast != nil {
+		t.Error("Expected nil AST on error")
+	}
+}
+
+func TestTryDefineOne_Duplicate(t *testing.T) {
+	ClearRegistry()
+
+	authors := mockTable{name: "authors"}
+	_, err := TryDefineOne("DupQuery", From(authors).Build())
+	if err != nil {
+		t.Fatalf("First TryDefineOne failed: %v", err)
+	}
+
+	ast, err := TryDefineOne("DupQuery", From(authors).Build())
+	if err == nil {
+		t.Error("Expected error for duplicate name")
+	}
+	if ast != nil {
+		t.Error("Expected nil AST on error")
+	}
+}
+
+func TestTryDefineMany_Success(t *testing.T) {
+	ClearRegistry()
+
+	authors := mockTable{name: "authors"}
+	ast, err := TryDefineMany("ListAuthorsTry", From(authors).Build())
+
+	if err != nil {
+		t.Errorf("TryDefineMany returned error: %v", err)
+	}
+	if ast == nil {
+		t.Error("TryDefineMany returned nil AST")
+	}
+
+	queries := GetRegisteredQueries()
+	rq, ok := queries["ListAuthorsTry"]
+	if !ok {
+		t.Error("Query not registered")
+	}
+	if rq.ReturnType != ReturnMany {
+		t.Errorf("Expected ReturnMany, got %v", rq.ReturnType)
+	}
+}
+
+func TestTryDefineExec_Success(t *testing.T) {
+	ClearRegistry()
+
+	authors := mockTable{name: "authors"}
+	ast, err := TryDefineExec("DeleteAuthorTry", Delete(authors).Build())
+
+	if err != nil {
+		t.Errorf("TryDefineExec returned error: %v", err)
+	}
+	if ast == nil {
+		t.Error("TryDefineExec returned nil AST")
+	}
+
+	queries := GetRegisteredQueries()
+	rq, ok := queries["DeleteAuthorTry"]
+	if !ok {
+		t.Error("Query not registered")
+	}
+	if rq.ReturnType != ReturnExec {
+		t.Errorf("Expected ReturnExec, got %v", rq.ReturnType)
+	}
+}

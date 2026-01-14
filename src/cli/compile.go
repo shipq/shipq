@@ -83,7 +83,7 @@ func Compile(ctx context.Context, config *Config) error {
 				MySQL:    mysqlSQL,
 				SQLite:   sqliteSQL,
 			},
-			ParamOrder: codegen.DialectParamOrder{
+			ParamOccurrences: codegen.DialectParamOccurrences{
 				Postgres: postgresParamOrder,
 				MySQL:    mysqlParamOrder,
 				SQLite:   sqliteParamOrder,

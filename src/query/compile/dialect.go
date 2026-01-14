@@ -207,8 +207,12 @@ func (d *MySQLDialect) WriteJSONAgg(b *strings.Builder, cols []query.Column, wri
 	if len(cols) == 0 {
 		return fmt.Errorf("JSON aggregation requires at least one column")
 	}
-	// COALESCE(JSON_ARRAYAGG(JSON_OBJECT(...)), JSON_ARRAY())
-	b.WriteString("COALESCE(JSON_ARRAYAGG(JSON_OBJECT(")
+	// COALESCE(JSON_ARRAYAGG(CASE WHEN col IS NOT NULL THEN JSON_OBJECT(...) END), JSON_ARRAY())
+	// Use CASE WHEN to produce null entries for LEFT JOIN no-match rows,
+	// which are filtered out during Go unmarshal.
+	b.WriteString("COALESCE(JSON_ARRAYAGG(CASE WHEN ")
+	writeColumn(cols[0])
+	b.WriteString(" IS NOT NULL THEN JSON_OBJECT(")
 	for i, col := range cols {
 		if i > 0 {
 			b.WriteString(", ")
@@ -217,7 +221,7 @@ func (d *MySQLDialect) WriteJSONAgg(b *strings.Builder, cols []query.Column, wri
 		fmt.Fprintf(b, "'%s', ", col.ColumnName())
 		writeColumn(col)
 	}
-	b.WriteString(")), JSON_ARRAY())")
+	b.WriteString(") END), JSON_ARRAY())")
 	return nil
 }
 
@@ -283,8 +287,12 @@ func (d *SQLiteDialect) WriteJSONAgg(b *strings.Builder, cols []query.Column, wr
 	if len(cols) == 0 {
 		return fmt.Errorf("JSON aggregation requires at least one column")
 	}
-	// COALESCE(JSON_GROUP_ARRAY(JSON_OBJECT(...)), '[]')
-	b.WriteString("COALESCE(JSON_GROUP_ARRAY(JSON_OBJECT(")
+	// COALESCE(JSON_GROUP_ARRAY(CASE WHEN col IS NOT NULL THEN JSON_OBJECT(...) END), '[]')
+	// Use CASE WHEN to produce null entries for LEFT JOIN no-match rows,
+	// which are filtered out during Go unmarshal.
+	b.WriteString("COALESCE(JSON_GROUP_ARRAY(CASE WHEN ")
+	writeColumn(cols[0])
+	b.WriteString(" IS NOT NULL THEN JSON_OBJECT(")
 	for i, col := range cols {
 		if i > 0 {
 			b.WriteString(", ")
@@ -293,7 +301,7 @@ func (d *SQLiteDialect) WriteJSONAgg(b *strings.Builder, cols []query.Column, wr
 		fmt.Fprintf(b, "'%s', ", col.ColumnName())
 		writeColumn(col)
 	}
-	b.WriteString(")), '[]')")
+	b.WriteString(") END), '[]')")
 	return nil
 }
 

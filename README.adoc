@@ -650,6 +650,100 @@ Type errors should be caught at compile time, not runtime:
 - No string interpolation for SQL construction
 - Generated code is straightforward and debuggable
 
+== Portability Notes
+
+PortSQL is designed for cross-database portability. This section documents important considerations when writing portable queries.
+
+=== Identifier Restrictions
+
+All table names, column names, and aliases must match the pattern `^[a-zA-Z_][a-zA-Z0-9_]*$`:
+
+- **Must start with** a letter (a-z, A-Z) or underscore (_)
+- **Can contain** letters, digits (0-9), and underscores
+- **Cannot contain** hyphens, dots, spaces, or special characters
+
+[source,go]
+----
+// Valid identifiers
+users, user_id, _private, User123, created_at
+
+// Invalid identifiers (will error during compilation)
+user-name    // hyphen not allowed
+user.name    // dot not allowed
+123users     // cannot start with digit
+----
+
+**Why this restriction?** Different databases have different rules for identifiers. By enforcing a strict subset that works everywhere, PortSQL ensures your schema and queries are truly portable across PostgreSQL, MySQL, and SQLite.
+
+=== Table Aliasing
+
+When using JOINs with table aliases, use the `WithTable()` method on columns to reference aliased tables:
+
+[source,go]
+----
+// Define your columns with aliases when needed in joins
+aliasedUserId := schema.Users.Id().WithTable("u")
+aliasedOrdersUserId := schema.Orders.UserId().WithTable("o")
+
+// Use in a join query
+query.From(schema.Users).As("u").
+    Join(schema.Orders).As("o").On(aliasedUserId.Eq(aliasedOrdersUserId)).
+    Select(aliasedUserId, aliasedOrdersUserId).
+    Build()
+----
+
+The `WithTable()` method returns a copy of the column with the new table name, leaving the original unchanged.
+
+=== JSON Aggregation Behavior
+
+When using `SelectJSONAgg()` for nested data in LEFT JOINs:
+
+- All dialects return `[]` (empty array) when there are no matched child rows
+- PostgreSQL uses `FILTER (WHERE ... IS NOT NULL)` internally
+- MySQL and SQLite use `CASE WHEN ... END` to produce the same result
+- Null filtering happens during Go unmarshal, ensuring consistent behavior
+
+[source,go]
+----
+// This query returns an empty array for authors with no books
+query.From(schema.Authors).
+    LeftJoin(schema.Books).On(schema.Authors.Id().Eq(schema.Books.AuthorId())).
+    Select(schema.Authors.Id(), schema.Authors.Name()).
+    SelectJSONAgg("books", schema.Books.Id(), schema.Books.Title()).
+    GroupBy(schema.Authors.Id()).
+    Build()
+----
+
+=== SQLite RETURNING Clause
+
+SQLite's `RETURNING` clause requires SQLite version 3.35.0 (2021-03-12) or later. If you're using an older version, `RETURNING` queries will fail at runtime.
+
+The generated CRUD `Insert()` methods use `RETURNING` when available. Check your SQLite version if you encounter issues.
+
+=== Dialect-Specific Behaviors
+
+**Boolean literals:**
+
+- PostgreSQL: `TRUE` / `FALSE`
+- MySQL: `1` / `0`
+- SQLite: `1` / `0`
+
+**NOW() function:**
+
+- PostgreSQL: `NOW()`
+- MySQL: `NOW()`
+- SQLite: `datetime('now')`
+
+**Case-insensitive search (ILIKE):**
+
+- PostgreSQL: Native `ILIKE` support
+- MySQL/SQLite: Translated to `LOWER(col) LIKE LOWER(pattern)`
+
+**Parameter placeholders:**
+
+- PostgreSQL: `$1`, `$2`, `$3`...
+- MySQL/SQLite: `?`
+
 == Development
 
 [source,bash]

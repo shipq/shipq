@@ -995,3 +995,77 @@ func TestGenerateDialectRunner_WithTx(t *testing.T) {
 		t.Error("missing WithTx method")
 	}
 }
+
+func TestGenerateDialectRunner_JSONAggWithNullFiltering(t *testing.T) {
+	// Query with JSONAgg field (nested results)
+	queries := []CompiledQueryWithDialects{
+		{
+			CompiledQuery: CompiledQuery{
+				Name:   "GetAuthorWithBooks",
+				Params: []ParamInfo{{Name: "id", GoType: "int64"}},
+				Results: []ResultInfo{
+					{Name: "id", GoType: "int64"},
+					{Name: "name", GoType: "string"},
+					{
+						Name:   "books",
+						GoType: "", // JSONAgg fields have empty GoType
+						NestedFields: []ResultInfo{
+							{Name: "id", GoType: "int64"},
+							{Name: "title", GoType: "string"},
+						},
+					},
+				},
+				ReturnType: "one",
+			},
+			SQL: DialectSQL{
+				Postgres: `SELECT "id", "name", books FROM "authors" WHERE "id" = $1`,
+				MySQL:    "SELECT `id`, `name`, books FROM `authors` WHERE `id` = ?",
+				SQLite:   `SELECT "id", "name", books FROM "authors" WHERE "id" = ?`,
+			},
+		},
+	}
+
+	// Test with PostgreSQL
+	pgCode, err := GenerateDialectRunner(queries, nil, "postgres", "myapp/queries", make(map[string]CRUDOptions))
+	if err != nil {
+		t.Fatalf("GenerateDialectRunner(postgres) failed: %v", err)
+	}
+	pgCodeStr := string(pgCode)
+
+	// Check that json import is present for JSONAgg handling
+	if !strings.Contains(pgCodeStr, `"encoding/json"`) {
+		t.Error("postgres runner should import encoding/json for JSONAgg")
+	}
+
+	// Check that JSONAgg field is scanned into intermediate []byte variable
+	if !strings.Contains(pgCodeStr, "var booksJSON []byte") {
+		t.Error("postgres runner should scan JSONAgg into []byte intermediate")
+	}
+
+	// Check that json.Unmarshal is called to parse the JSON
+	if !strings.Contains(pgCodeStr, "json.Unmarshal") {
+		t.Error("postgres runner should unmarshal JSONAgg field")
+	}
+
+	// Check for null filtering (skip "null" entries from CASE WHEN)
+	if !strings.Contains(pgCodeStr, `string(raw) == "null"`) {
+		t.Error("postgres runner should filter out null entries from JSON array")
+	}
+
+	// Test with SQLite (uses sql.NullString for JSON)
+	sqliteCode, err := GenerateDialectRunner(queries, nil, "sqlite", "myapp/queries", make(map[string]CRUDOptions))
+	if err != nil {
+		t.Fatalf("GenerateDialectRunner(sqlite) failed: %v", err)
+	}
+	sqliteCodeStr := string(sqliteCode)
+
+	// Check that SQLite uses sql.NullString for JSONAgg
+	if !strings.Contains(sqliteCodeStr, "var booksJSON sql.NullString") {
+		t.Error("sqlite runner should scan JSONAgg into sql.NullString intermediate")
+	}
+
+	// Check for proper conversion from sql.NullString to JSON
+	if !strings.Contains(sqliteCodeStr, "booksJSON.Valid") {
+		t.Error("sqlite runner should check NullString.Valid before unmarshaling")
+	}
+}

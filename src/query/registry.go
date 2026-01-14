@@ -1,6 +1,9 @@
 package query
 
-import "sync"
+import (
+	"errors"
+	"sync"
+)
 
 // QueryReturnType specifies how a query returns results.
 type QueryReturnType string
@@ -120,6 +123,50 @@ func MustDefineMany(name string, ast *AST) *AST {
 // The generated method will return (sql.Result, error).
 func MustDefineExec(name string, ast *AST) *AST {
 	return mustDefineQuery(name, ast, ReturnExec)
+}
+
+// =============================================================================
+// Non-panicking registration functions
+// =============================================================================
+
+// tryDefineQuery is the internal non-panicking registration function.
+// Returns an error instead of panicking on invalid input.
+func tryDefineQuery(name string, ast *AST, returnType QueryReturnType) (*AST, error) {
+	if name == "" {
+		return nil, errors.New("query name cannot be empty")
+	}
+	if ast == nil {
+		return nil, errors.New("query AST cannot be nil")
+	}
+	rq := RegisteredQuery{
+		AST:        ast,
+		ReturnType: returnType,
+	}
+	if _, loaded := registry.LoadOrStore(name, rq); loaded {
+		return nil, errors.New("duplicate query name: " + name)
+	}
+	return ast, nil
+}
+
+// TryDefineOne registers a query that returns 0 or 1 row.
+// Unlike MustDefineOne, this returns an error instead of panicking.
+// Use this in tools or tests where you want to handle registration errors gracefully.
+func TryDefineOne(name string, ast *AST) (*AST, error) {
+	return tryDefineQuery(name, ast, ReturnOne)
+}
+
+// TryDefineMany registers a query that returns 0 to N rows.
+// Unlike MustDefineMany, this returns an error instead of panicking.
+// Use this in tools or tests where you want to handle registration errors gracefully.
+func TryDefineMany(name string, ast *AST) (*AST, error) {
+	return tryDefineQuery(name, ast, ReturnMany)
+}
+
+// TryDefineExec registers a query that executes without returning rows.
+// Unlike MustDefineExec, this returns an error instead of panicking.
+// Use this in tools or tests where you want to handle registration errors gracefully.
+func TryDefineExec(name string, ast *AST) (*AST, error) {
+	return tryDefineQuery(name, ast, ReturnExec)
 }
 
 // DefineOne is an alias for MustDefineOne for backward compatibility.

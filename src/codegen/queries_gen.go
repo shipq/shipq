@@ -464,6 +464,16 @@ func goTypeImport(goType string) string {
 	return ""
 }
 
+// hasJSONAggFields returns true if any result field is a JSONAgg field (has NestedFields).
+func hasJSONAggFields(results []ResultInfo) bool {
+	for _, r := range results {
+		if len(r.NestedFields) > 0 {
+			return true
+		}
+	}
+	return false
+}
+
 // formatSQLString formats SQL as a Go string literal.
 func formatSQLString(sql string) string {
 	// Use backticks for multi-line or complex SQL
@@ -726,9 +736,9 @@ type DialectSQL struct {
 	SQLite   string
 }
 
-// DialectParamOrder holds the parameter occurrence order for each dialect.
-// This includes duplicates - if a param is used twice, it appears twice.
-type DialectParamOrder struct {
+// DialectParamOccurrences holds the parameter occurrence order for each dialect.
+// This includes duplicates - if a param is used twice in the SQL, it appears twice.
+type DialectParamOccurrences struct {
 	Postgres []string
 	MySQL    []string
 	SQLite   []string
@@ -738,10 +748,10 @@ type DialectParamOrder struct {
 type CompiledQueryWithDialects struct {
 	CompiledQuery
 	SQL DialectSQL
-	// ParamOrder holds the parameter names in occurrence order (with duplicates).
+	// ParamOccurrences holds the parameter names in occurrence order (with duplicates).
 	// This is needed because the SQL placeholders ($1, $2 or ?, ?) are per-occurrence,
 	// so we need to build args in the same order.
-	ParamOrder DialectParamOrder
+	ParamOccurrences DialectParamOccurrences
 }
 
 // toLowerCamelCase converts a PascalCase string to lowerCamelCase.
@@ -807,6 +817,15 @@ func GenerateDialectRunner(
 	// Always import the parent types package if we have queries or CRUD
 	if len(queries) > 0 || len(tableNames) > 0 {
 		imports[typesImportPath] = true
+	}
+
+	// Check if any query has JSONAgg fields (need encoding/json and fmt for unmarshalling)
+	for _, q := range queries {
+		if hasJSONAggFields(q.Results) {
+			imports["encoding/json"] = true
+			imports["fmt"] = true
+			break
+		}
 	}
 
 	// nanoid is only needed if we have CRUD tables with public_id (for Insert methods)
@@ -1005,26 +1024,35 @@ func generateDialectQueryMethod(buf *bytes.Buffer, q CompiledQueryWithDialects, 
 		}
 	}
 
+	// Identify JSONAgg fields that need scan-then-unmarshal handling
+	// These have NestedFields populated and compile to typed slices
+	jsonAggFields := make(map[string]bool)
+	for _, r := range q.Results {
+		if len(r.NestedFields) > 0 {
+			jsonAggFields[toPascalCase(r.Name)] = true
+		}
+	}
+
 	switch q.ReturnType {
 	case "one":
-		generateDialectOneMethod(buf, q, sqlField, dialect, typesPkg, jsonColumns)
+		generateDialectOneMethod(buf, q, sqlField, dialect, typesPkg, jsonColumns, jsonAggFields)
 	case "many":
-		generateDialectManyMethod(buf, q, sqlField, dialect, typesPkg, jsonColumns)
+		generateDialectManyMethod(buf, q, sqlField, dialect, typesPkg, jsonColumns, jsonAggFields)
 	case "exec":
 		generateDialectExecMethod(buf, q, sqlField, dialect, typesPkg)
 	default:
 		// Default to many for backward compatibility
-		generateDialectManyMethod(buf, q, sqlField, dialect, typesPkg, jsonColumns)
+		generateDialectManyMethod(buf, q, sqlField, dialect, typesPkg, jsonColumns, jsonAggFields)
 	}
 }
 
 // generateDialectOneMethod generates a method that returns 0 or 1 row.
-func generateDialectOneMethod(buf *bytes.Buffer, q CompiledQueryWithDialects, sqlField, dialect, typesPkg string, jsonColumns map[string]bool) {
+func generateDialectOneMethod(buf *bytes.Buffer, q CompiledQueryWithDialects, sqlField, dialect, typesPkg string, jsonColumns map[string]bool, jsonAggFields map[string]bool) {
 	resultType := fmt.Sprintf("%s.%sResult", typesPkg, q.Name)
 	paramsType := fmt.Sprintf("%s.%sParams", typesPkg, q.Name)
 
 	// Get param order for this dialect (includes duplicates)
-	paramOrder := getParamOrderForDialect(q, dialect)
+	paramOrder := getParamOccurrencesForDialect(q, dialect)
 
 	buf.WriteString(fmt.Sprintf("// %s executes the query and returns at most one result.\n", q.Name))
 
@@ -1062,11 +1090,28 @@ func generateDialectOneMethod(buf *bytes.Buffer, q CompiledQueryWithDialects, sq
 		}
 	}
 
+	// For JSONAgg fields, we need intermediate variables to scan JSON then unmarshal
+	if len(jsonAggFields) > 0 {
+		for _, res := range q.Results {
+			fieldName := toPascalCase(res.Name)
+			if jsonAggFields[fieldName] {
+				if dialect == "sqlite" {
+					buf.WriteString(fmt.Sprintf("\tvar %sJSON sql.NullString\n", toLowerCamelCase(res.Name)))
+				} else {
+					buf.WriteString(fmt.Sprintf("\tvar %sJSON []byte\n", toLowerCamelCase(res.Name)))
+				}
+			}
+		}
+	}
+
 	// Scan
 	buf.WriteString("\terr := row.Scan(\n")
 	for _, res := range q.Results {
 		fieldName := toPascalCase(res.Name)
-		if dialect == "sqlite" && jsonColumns[fieldName] {
+		if jsonAggFields[fieldName] {
+			// JSONAgg: scan to intermediate JSON variable
+			buf.WriteString(fmt.Sprintf("\t\t&%sJSON,\n", toLowerCamelCase(res.Name)))
+		} else if dialect == "sqlite" && jsonColumns[fieldName] {
 			// SQLite: scan JSON to sql.NullString temp var
 			buf.WriteString(fmt.Sprintf("\t\t&%sNull,\n", toLowerCamelCase(res.Name)))
 		} else {
@@ -1093,17 +1138,52 @@ func generateDialectOneMethod(buf *bytes.Buffer, q CompiledQueryWithDialects, sq
 		}
 	}
 
+	// Unmarshal JSONAgg fields into typed slices, filtering out null entries
+	// (MySQL/SQLite produce [null, {...}, null] for LEFT JOIN no-match rows)
+	if len(jsonAggFields) > 0 {
+		for _, res := range q.Results {
+			fieldName := toPascalCase(res.Name)
+			if jsonAggFields[fieldName] {
+				varName := toLowerCamelCase(res.Name) + "JSON"
+				itemTypeName := fmt.Sprintf("%s.%s%sItem", typesPkg, q.Name, fieldName)
+				if dialect == "sqlite" {
+					buf.WriteString(fmt.Sprintf("\tif %s.Valid && %s.String != \"\" {\n", varName, varName))
+					buf.WriteString(fmt.Sprintf("\t\tvar %sRaw []json.RawMessage\n", toLowerCamelCase(res.Name)))
+					buf.WriteString(fmt.Sprintf("\t\tif err := json.Unmarshal([]byte(%s.String), &%sRaw); err != nil {\n", varName, toLowerCamelCase(res.Name)))
+				} else {
+					buf.WriteString(fmt.Sprintf("\tif len(%s) > 0 {\n", varName))
+					buf.WriteString(fmt.Sprintf("\t\tvar %sRaw []json.RawMessage\n", toLowerCamelCase(res.Name)))
+					buf.WriteString(fmt.Sprintf("\t\tif err := json.Unmarshal(%s, &%sRaw); err != nil {\n", varName, toLowerCamelCase(res.Name)))
+				}
+				buf.WriteString(fmt.Sprintf("\t\t\treturn nil, fmt.Errorf(\"unmarshal %s: %%w\", err)\n", fieldName))
+				buf.WriteString("\t\t}\n")
+				// Filter out null entries and unmarshal each item
+				buf.WriteString(fmt.Sprintf("\t\tfor _, raw := range %sRaw {\n", toLowerCamelCase(res.Name)))
+				buf.WriteString("\t\t\tif len(raw) == 0 || string(raw) == \"null\" {\n")
+				buf.WriteString("\t\t\t\tcontinue\n")
+				buf.WriteString("\t\t\t}\n")
+				buf.WriteString(fmt.Sprintf("\t\t\tvar item %s\n", itemTypeName))
+				buf.WriteString("\t\t\tif err := json.Unmarshal(raw, &item); err != nil {\n")
+				buf.WriteString(fmt.Sprintf("\t\t\t\treturn nil, fmt.Errorf(\"unmarshal %s item: %%w\", err)\n", fieldName))
+				buf.WriteString("\t\t\t}\n")
+				buf.WriteString(fmt.Sprintf("\t\t\tresult.%s = append(result.%s, item)\n", fieldName, fieldName))
+				buf.WriteString("\t\t}\n")
+				buf.WriteString("\t}\n")
+			}
+		}
+	}
+
 	buf.WriteString("\treturn &result, nil\n")
 	buf.WriteString("}\n\n")
 }
 
 // generateDialectManyMethod generates a method that returns 0 to N rows.
-func generateDialectManyMethod(buf *bytes.Buffer, q CompiledQueryWithDialects, sqlField, dialect, typesPkg string, jsonColumns map[string]bool) {
+func generateDialectManyMethod(buf *bytes.Buffer, q CompiledQueryWithDialects, sqlField, dialect, typesPkg string, jsonColumns map[string]bool, jsonAggFields map[string]bool) {
 	resultType := fmt.Sprintf("%s.%sResult", typesPkg, q.Name)
 	paramsType := fmt.Sprintf("%s.%sParams", typesPkg, q.Name)
 
 	// Get param order for this dialect (includes duplicates)
-	paramOrder := getParamOrderForDialect(q, dialect)
+	paramOrder := getParamOccurrencesForDialect(q, dialect)
 
 	buf.WriteString(fmt.Sprintf("// %s executes the query and returns all results.\n", q.Name))
 
@@ -1148,10 +1228,27 @@ func generateDialectManyMethod(buf *bytes.Buffer, q CompiledQueryWithDialects, s
 		}
 	}
 
+	// For JSONAgg fields, we need intermediate variables to scan JSON then unmarshal
+	if len(jsonAggFields) > 0 {
+		for _, res := range q.Results {
+			fieldName := toPascalCase(res.Name)
+			if jsonAggFields[fieldName] {
+				if dialect == "sqlite" {
+					buf.WriteString(fmt.Sprintf("\t\tvar %sJSON sql.NullString\n", toLowerCamelCase(res.Name)))
+				} else {
+					buf.WriteString(fmt.Sprintf("\t\tvar %sJSON []byte\n", toLowerCamelCase(res.Name)))
+				}
+			}
+		}
+	}
+
 	buf.WriteString("\t\terr := rows.Scan(\n")
 	for _, res := range q.Results {
 		fieldName := toPascalCase(res.Name)
-		if dialect == "sqlite" && jsonColumns[fieldName] {
+		if jsonAggFields[fieldName] {
+			// JSONAgg: scan to intermediate JSON variable
+			buf.WriteString(fmt.Sprintf("\t\t\t&%sJSON,\n", toLowerCamelCase(res.Name)))
+		} else if dialect == "sqlite" && jsonColumns[fieldName] {
 			// SQLite: scan JSON to sql.NullString temp var
 			buf.WriteString(fmt.Sprintf("\t\t\t&%sNull,\n", toLowerCamelCase(res.Name)))
 		} else {
@@ -1175,6 +1272,41 @@ func generateDialectManyMethod(buf *bytes.Buffer, q CompiledQueryWithDialects, s
 		}
 	}
 
+	// Unmarshal JSONAgg fields into typed slices, filtering out null entries
+	// (MySQL/SQLite produce [null, {...}, null] for LEFT JOIN no-match rows)
+	if len(jsonAggFields) > 0 {
+		for _, res := range q.Results {
+			fieldName := toPascalCase(res.Name)
+			if jsonAggFields[fieldName] {
+				varName := toLowerCamelCase(res.Name) + "JSON"
+				itemTypeName := fmt.Sprintf("%s.%s%sItem", typesPkg, q.Name, fieldName)
+				if dialect == "sqlite" {
+					buf.WriteString(fmt.Sprintf("\t\tif %s.Valid && %s.String != \"\" {\n", varName, varName))
+					buf.WriteString(fmt.Sprintf("\t\t\tvar %sRaw []json.RawMessage\n", toLowerCamelCase(res.Name)))
+					buf.WriteString(fmt.Sprintf("\t\t\tif err := json.Unmarshal([]byte(%s.String), &%sRaw); err != nil {\n", varName, toLowerCamelCase(res.Name)))
+				} else {
+					buf.WriteString(fmt.Sprintf("\t\tif len(%s) > 0 {\n", varName))
+					buf.WriteString(fmt.Sprintf("\t\t\tvar %sRaw []json.RawMessage\n", toLowerCamelCase(res.Name)))
+					buf.WriteString(fmt.Sprintf("\t\t\tif err := json.Unmarshal(%s, &%sRaw); err != nil {\n", varName, toLowerCamelCase(res.Name)))
+				}
+				buf.WriteString(fmt.Sprintf("\t\t\t\treturn nil, fmt.Errorf(\"unmarshal %s: %%w\", err)\n", fieldName))
+				buf.WriteString("\t\t\t}\n")
+				// Filter out null entries and unmarshal each item
+				buf.WriteString(fmt.Sprintf("\t\t\tfor _, raw := range %sRaw {\n", toLowerCamelCase(res.Name)))
+				buf.WriteString("\t\t\t\tif len(raw) == 0 || string(raw) == \"null\" {\n")
+				buf.WriteString("\t\t\t\t\tcontinue\n")
+				buf.WriteString("\t\t\t\t}\n")
+				buf.WriteString(fmt.Sprintf("\t\t\t\tvar itemPart %s\n", itemTypeName))
+				buf.WriteString("\t\t\t\tif err := json.Unmarshal(raw, &itemPart); err != nil {\n")
+				buf.WriteString(fmt.Sprintf("\t\t\t\t\treturn nil, fmt.Errorf(\"unmarshal %s item: %%w\", err)\n", fieldName))
+				buf.WriteString("\t\t\t\t}\n")
+				buf.WriteString(fmt.Sprintf("\t\t\t\titem.%s = append(item.%s, itemPart)\n", fieldName, fieldName))
+				buf.WriteString("\t\t\t}\n")
+				buf.WriteString("\t\t}\n")
+			}
+		}
+	}
+
 	buf.WriteString("\t\tresults = append(results, item)\n")
 	buf.WriteString("\t}\n\n")
 
@@ -1190,7 +1322,7 @@ func generateDialectExecMethod(buf *bytes.Buffer, q CompiledQueryWithDialects, s
 	paramsType := fmt.Sprintf("%s.%sParams", typesPkg, q.Name)
 
 	// Get param order for this dialect (includes duplicates)
-	paramOrder := getParamOrderForDialect(q, dialect)
+	paramOrder := getParamOccurrencesForDialect(q, dialect)
 
 	buf.WriteString(fmt.Sprintf("// %s executes the query and returns the result.\n", q.Name))
 
@@ -1218,18 +1350,18 @@ func generateDialectExecMethod(buf *bytes.Buffer, q CompiledQueryWithDialects, s
 	buf.WriteString("}\n\n")
 }
 
-// getParamOrderForDialect returns the parameter occurrence order for a specific dialect.
-func getParamOrderForDialect(q CompiledQueryWithDialects, dialect string) []string {
+// getParamOccurrencesForDialect returns the parameter occurrence order for a specific dialect.
+func getParamOccurrencesForDialect(q CompiledQueryWithDialects, dialect string) []string {
 	switch dialect {
 	case "postgres":
-		return q.ParamOrder.Postgres
+		return q.ParamOccurrences.Postgres
 	case "mysql":
-		return q.ParamOrder.MySQL
+		return q.ParamOccurrences.MySQL
 	case "sqlite":
-		return q.ParamOrder.SQLite
+		return q.ParamOccurrences.SQLite
 	default:
 		// Fallback to postgres order
-		return q.ParamOrder.Postgres
+		return q.ParamOccurrences.Postgres
 	}
 }
 
