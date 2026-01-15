@@ -430,7 +430,7 @@
         "postgres": "CREATE TABLE \"categories\" (\"id\" BIGINT PRIMARY KEY, \"name\" VARCHAR(255) NOT NULL)",
         "mysql": "CREATE TABLE `categories` (`id` BIGINT PRIMARY KEY, `name` VARCHAR(255) NOT NULL) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4"
       },
-      "name": "create_categories_table"
+      "name": "20260111170656_create_categories_table"
     },
     {
       "instructions": {
@@ -438,7 +438,7 @@
         "postgres": "CREATE TABLE \"users\" (\"id\" BIGINT PRIMARY KEY, \"public_id\" VARCHAR(255) NOT NULL, \"created_at\" TIMESTAMP WITH TIME ZONE NOT NULL, \"deleted_at\" TIMESTAMP WITH TIME ZONE NOT NULL, \"updated_at\" TIMESTAMP WITH TIME ZONE NOT NULL, \"username\" VARCHAR(255) NOT NULL, \"first_name\" VARCHAR(255) NOT NULL, \"last_name\" VARCHAR(255) NOT NULL, \"email\" VARCHAR(255) NOT NULL, \"password\" VARCHAR(255) NOT NULL, \"phone\" VARCHAR(255), \"user_status\" INTEGER NOT NULL);\nCREATE UNIQUE INDEX \"idx_users_id\" ON \"users\" (\"id\");\nCREATE UNIQUE INDEX \"idx_users_public_id\" ON \"users\" (\"public_id\");\nCREATE UNIQUE INDEX \"idx_users_username\" ON \"users\" (\"username\")",
         "mysql": "CREATE TABLE `users` (`id` BIGINT PRIMARY KEY, `public_id` VARCHAR(255) NOT NULL, `created_at` DATETIME NOT NULL, `deleted_at` DATETIME NOT NULL, `updated_at` DATETIME NOT NULL, `username` VARCHAR(255) NOT NULL, `first_name` VARCHAR(255) NOT NULL, `last_name` VARCHAR(255) NOT NULL, `email` VARCHAR(255) NOT NULL, `password` VARCHAR(255) NOT NULL, `phone` VARCHAR(255), `user_status` INT NOT NULL) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;\nCREATE UNIQUE INDEX `idx_users_id` ON `users` (`id`);\nCREATE UNIQUE INDEX `idx_users_public_id` ON `users` (`public_id`);\nCREATE UNIQUE INDEX `idx_users_username` ON `users` (`username`)"
       },
-      "name": "create_users_table"
+      "name": "20260111170659_create_users_table"
     },
     {
       "instructions": {
@@ -446,7 +446,7 @@
         "postgres": "CREATE TABLE \"tags\" (\"id\" BIGINT PRIMARY KEY, \"name\" VARCHAR(255) NOT NULL)",
         "mysql": "CREATE TABLE `tags` (`id` BIGINT PRIMARY KEY, `name` VARCHAR(255) NOT NULL) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4"
       },
-      "name": "create_tags_table"
+      "name": "20260111170700_create_tags_table"
     },
     {
       "instructions": {
@@ -454,15 +454,15 @@
         "postgres": "CREATE TABLE \"pets\" (\"id\" BIGINT PRIMARY KEY, \"category_id\" BIGINT NOT NULL, \"name\" VARCHAR(255) NOT NULL, \"photo_urls\" JSONB NOT NULL, \"status\" VARCHAR(255));\nCREATE INDEX \"idx_pets_category_id\" ON \"pets\" (\"category_id\")",
         "mysql": "CREATE TABLE `pets` (`id` BIGINT PRIMARY KEY, `category_id` BIGINT NOT NULL, `name` VARCHAR(255) NOT NULL, `photo_urls` JSON NOT NULL, `status` VARCHAR(255)) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;\nCREATE INDEX `idx_pets_category_id` ON `pets` (`category_id`)"
       },
-      "name": "create_pets_table"
+      "name": "20260111170701_create_pets_table"
     },
     {
       "instructions": {
         "sqlite": "CREATE TABLE \"orders\" (\"id\" INTEGER PRIMARY KEY, \"pet_id\" INTEGER NOT NULL, \"quantity\" INTEGER NOT NULL, \"ship_date\" TEXT, \"status\" TEXT, \"complete\" INTEGER NOT NULL DEFAULT 0);\nCREATE INDEX \"idx_orders_pet_id\" ON \"orders\" (\"pet_id\")",
         "postgres": "CREATE TABLE \"orders\" (\"id\" BIGINT PRIMARY KEY, \"pet_id\" BIGINT NOT NULL, \"quantity\" INTEGER NOT NULL, \"ship_date\" TIMESTAMP WITH TIME ZONE, \"status\" VARCHAR(255), \"complete\" BOOLEAN NOT NULL DEFAULT FALSE);\nCREATE INDEX \"idx_orders_pet_id\" ON \"orders\" (\"pet_id\")",
-        "mysql": "CREATE TABLE `orders` (`id` BIGINT PRIMARY KEY, `pet_id` BIGINT NOT NULL, `quantity` INT NOT NULL, `ship_date` DATETIME, `status` VARCHAR(255), `complete` TINYINT(1) NOT NULL DEFAULT 0) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;\nCREATE INDEX `idx_orders_pet_id` ON `orders` (`pet_id`)"
+        "mysql": "CREATE TABLE `orders` (`id` BIGINT PRIMARY KEY, `pet_id` BIGINT NOT NULL, `quantity` INT NOT NULL, `ship_date` DATETIME, `status` VARCHAR(255), `complete` TINYINT(1) NOT NULL DEFAULT 0) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;\nCREATE INDEX `idx_orders_pet_id` ON `orders` (`order_id`)"
       },
-      "name": "create_orders_table"
+      "name": "20260111170702_create_orders_table"
     }
   ]
 }

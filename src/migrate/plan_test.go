@@ -1,10 +1,63 @@
 package migrate
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/portsql/portsql/src/ddl"
 )
+
+// =============================================================================
+// ValidateMigrationName Tests (TDD - these should fail initially)
+// =============================================================================
+
+func TestValidateMigrationName_ValidNames(t *testing.T) {
+	validNames := []string{
+		"20260111170656_create_users",
+		"20260111170656_x", // minimum valid (14 digits + underscore + 1 char)
+		"99991231235959_some_migration_name",
+		"00000000000000_a",
+	}
+
+	for _, name := range validNames {
+		t.Run(name, func(t *testing.T) {
+			err := ValidateMigrationName(name)
+			if err != nil {
+				t.Errorf("ValidateMigrationName(%q) should pass, got error: %v", name, err)
+			}
+		})
+	}
+}
+
+func TestValidateMigrationName_InvalidNames(t *testing.T) {
+	testCases := []struct {
+		name        string
+		errContains string
+	}{
+		{"create_users", "timestamp"},                  // no timestamp
+		{"2026011117065_create", "timestamp"},          // 13 digits (too short)
+		{"20260111170656create", "underscore"},         // missing underscore after timestamp
+		{"abcd0111170656_create", "timestamp"},         // non-digits in timestamp
+		{"20260111170656_", "empty"},                   // empty name after underscore
+		{"", "short"},                                  // empty string
+		{"12345678901234", "short"},                    // just timestamp, no underscore or name
+		{"1234567890123_x", "timestamp"},               // 13 digits
+		{"123456789012345_x", "timestamp"},             // position 14 is digit, not underscore
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			err := ValidateMigrationName(tc.name)
+			if err == nil {
+				t.Errorf("ValidateMigrationName(%q) should fail", tc.name)
+				return
+			}
+			if !strings.Contains(strings.ToLower(err.Error()), tc.errContains) {
+				t.Errorf("ValidateMigrationName(%q) error should contain %q, got: %v", tc.name, tc.errContains, err)
+			}
+		})
+	}
+}
 
 // =============================================================================
 // AddTable Tests

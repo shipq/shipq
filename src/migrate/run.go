@@ -4,12 +4,29 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
-	"sort"
 )
 
 // Run executes all pending migrations from the plan.
 // It is safe to call on every application startup - it only runs unapplied migrations.
+//
+// Migration names must follow the TIMESTAMP_name format (e.g., "20260111170656_create_users")
+// and must be in strictly ascending lexicographic order (which equals timestamp order).
 func Run(ctx context.Context, db *sql.DB, plan *MigrationPlan, dialect string) error {
+	// Validate all migration names and ensure they're in order
+	var prevName string
+	for _, migration := range plan.Migrations {
+		// Validate name format
+		if err := ValidateMigrationName(migration.Name); err != nil {
+			return fmt.Errorf("invalid migration: %w", err)
+		}
+
+		// Validate ordering (must be strictly ascending)
+		if migration.Name <= prevName {
+			return fmt.Errorf("migrations out of order: %q must come after %q", migration.Name, prevName)
+		}
+		prevName = migration.Name
+	}
+
 	// Ensure tracking table exists
 	if err := EnsureTrackingTable(ctx, db, dialect); err != nil {
 		return fmt.Errorf("failed to create tracking table: %w", err)
@@ -28,14 +45,8 @@ func Run(ctx context.Context, db *sql.DB, plan *MigrationPlan, dialect string) e
 	}
 
 	// Execute all migrations in the plan that haven't been applied
-	// The migration name is used as the unique key
-	for i, migration := range plan.Migrations {
-		// Use the migration name as the unique identifier
-		// Generate a version from the index for ordering
-		version := fmt.Sprintf("%014d", i)
-		name := fmt.Sprintf("%s_%s", version, migration.Name)
-
-		if appliedSet[name] {
+	for _, migration := range plan.Migrations {
+		if appliedSet[migration.Name] {
 			continue
 		}
 
@@ -52,13 +63,8 @@ func Run(ctx context.Context, db *sql.DB, plan *MigrationPlan, dialect string) e
 			return fmt.Errorf("unsupported dialect: %s", dialect)
 		}
 
-		// Execute the migration
-		if _, err := db.ExecContext(ctx, sqlStmt); err != nil {
-			return fmt.Errorf("failed to execute migration %s: %w", migration.Name, err)
-		}
-
-		// Record the migration using the full name as unique key
-		if err := RecordMigration(ctx, db, dialect, version, name); err != nil {
+		// Execute migration in a transaction
+		if err := runMigrationInTransaction(ctx, db, dialect, migration.Name, sqlStmt); err != nil {
 			return err
 		}
 	}
@@ -66,74 +72,36 @@ func Run(ctx context.Context, db *sql.DB, plan *MigrationPlan, dialect string) e
 	return nil
 }
 
-// RunWithVersions executes migrations using provided version strings.
-// This is used by the CLI when running migrations from files with timestamps.
-func RunWithVersions(ctx context.Context, db *sql.DB, migrations []VersionedMigration, dialect string) error {
-	// Ensure tracking table exists
-	if err := EnsureTrackingTable(ctx, db, dialect); err != nil {
-		return fmt.Errorf("failed to create tracking table: %w", err)
-	}
-
-	// Get already applied migrations (returns full names)
-	applied, err := GetAppliedMigrations(ctx, db)
+// runMigrationInTransaction executes a single migration within a transaction.
+// Both the SQL execution and the tracking record are within the same transaction.
+func runMigrationInTransaction(ctx context.Context, db *sql.DB, dialect, name, sqlStmt string) error {
+	tx, err := db.BeginTx(ctx, nil)
 	if err != nil {
-		return fmt.Errorf("failed to get applied migrations: %w", err)
+		return fmt.Errorf("failed to start transaction for migration %s: %w", name, err)
+	}
+	defer tx.Rollback() // no-op if committed
+
+	// Execute the migration SQL
+	if _, err := tx.ExecContext(ctx, sqlStmt); err != nil {
+		return fmt.Errorf("failed to execute migration %s: %w", name, err)
 	}
 
-	// Create a set of applied names for fast lookup
-	appliedSet := make(map[string]bool)
-	for _, name := range applied {
-		appliedSet[name] = true
+	// Extract version (timestamp) from the name for the version column
+	version := name[:14]
+
+	// Record the migration within the same transaction
+	if err := RecordMigrationTx(ctx, tx, dialect, version, name); err != nil {
+		return err
 	}
 
-	// Sort migrations by version then name for deterministic ordering
-	sort.Slice(migrations, func(i, j int) bool {
-		if migrations[i].Version != migrations[j].Version {
-			return migrations[i].Version < migrations[j].Version
-		}
-		return migrations[i].Name < migrations[j].Name
-	})
-
-	// Execute each unapplied migration
-	for _, m := range migrations {
-		// Check against the full name (which is the primary key)
-		if appliedSet[m.Name] {
-			continue
-		}
-
-		// Get the SQL for this dialect
-		var sqlStmt string
-		switch dialect {
-		case Postgres:
-			sqlStmt = m.Instructions.Postgres
-		case MySQL:
-			sqlStmt = m.Instructions.MySQL
-		case Sqlite:
-			sqlStmt = m.Instructions.Sqlite
-		default:
-			return fmt.Errorf("unsupported dialect: %s", dialect)
-		}
-
-		// Execute the migration
-		if _, err := db.ExecContext(ctx, sqlStmt); err != nil {
-			return fmt.Errorf("failed to execute migration %s: %w", m.Name, err)
-		}
-
-		// Record the migration using name as the unique identifier
-		if err := RecordMigration(ctx, db, dialect, m.Version, m.Name); err != nil {
-			return err
-		}
+	// Commit the transaction
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("failed to commit migration %s: %w", name, err)
 	}
 
 	return nil
 }
 
-// VersionedMigration is a migration with an explicit version string.
-type VersionedMigration struct {
-	Version      string
-	Name         string
-	Instructions MigrationInstructions
-}
 
 // DetectDialect attempts to detect the database dialect from a *sql.DB.
 // It uses the driver name to determine the dialect.

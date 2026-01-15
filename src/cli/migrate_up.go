@@ -93,12 +93,19 @@ func MigrateUp(ctx context.Context, config *Config) error {
 		fmt.Printf("Running migration: %s\n", mf.Name)
 
 		// Generate and run temp program to get migration plan
-		plan, err := executeMigrationFile(ctx, config.Paths.Migrations, mf)
+		// Pass accumulated plan so UpdateTable/DropTable can see existing tables
+		plan, err := executeMigrationFile(ctx, config.Paths.Migrations, mf, accumulatedPlan)
 		if err != nil {
 			return fmt.Errorf("failed to execute migration %s: %w", mf.Name, err)
 		}
 
-		// Execute SQL for this migration
+		// Start a transaction for this migration
+		tx, err := db.BeginTx(ctx, nil)
+		if err != nil {
+			return fmt.Errorf("failed to start transaction for %s: %w", mf.Name, err)
+		}
+
+		// Execute SQL for this migration within the transaction
 		for _, m := range plan.Migrations {
 			var sqlStmt string
 			switch dialect {
@@ -114,21 +121,32 @@ func MigrateUp(ctx context.Context, config *Config) error {
 				continue
 			}
 
-			if _, err := db.ExecContext(ctx, sqlStmt); err != nil {
+			if _, err := tx.ExecContext(ctx, sqlStmt); err != nil {
+				tx.Rollback()
 				return fmt.Errorf("failed to execute SQL for %s: %w\nSQL: %s", m.Name, err, sqlStmt)
 			}
 		}
 
-		// Merge into accumulated plan
+		// Record migration within the same transaction
+		if err := migrate.RecordMigrationTx(ctx, tx, dialect, mf.Version, mf.Name); err != nil {
+			tx.Rollback()
+			return fmt.Errorf("failed to record migration %s: %w", mf.Name, err)
+		}
+
+		// Commit the transaction
+		if err := tx.Commit(); err != nil {
+			return fmt.Errorf("failed to commit migration %s: %w", mf.Name, err)
+		}
+
+		// Merge into accumulated plan with timestamped names
 		for name, table := range plan.Schema.Tables {
 			accumulatedPlan.Schema.Tables[name] = table
 		}
-		accumulatedPlan.Migrations = append(accumulatedPlan.Migrations, plan.Migrations...)
-
-		// Record migration
-		if err := migrate.RecordMigration(ctx, db, dialect, mf.Version, mf.Name); err != nil {
-			return fmt.Errorf("failed to record migration %s: %w", mf.Name, err)
+		// Prefix migration names with timestamp from the file
+		for i := range plan.Migrations {
+			plan.Migrations[i].Name = fmt.Sprintf("%s_%s", mf.Version, plan.Migrations[i].Name)
 		}
+		accumulatedPlan.Migrations = append(accumulatedPlan.Migrations, plan.Migrations...)
 
 		fmt.Printf("  ✓ Applied %s\n", mf.Name)
 	}
@@ -223,7 +241,8 @@ func scanMigrationFiles(dir string) ([]migrationFile, error) {
 }
 
 // executeMigrationFile generates a temp program to execute a migration and capture its plan.
-func executeMigrationFile(ctx context.Context, migrationsDir string, mf migrationFile) (*migrate.MigrationPlan, error) {
+// The existingPlan parameter provides the current schema so UpdateTable/DropTable can work.
+func executeMigrationFile(ctx context.Context, migrationsDir string, mf migrationFile, existingPlan *migrate.MigrationPlan) (*migrate.MigrationPlan, error) {
 	// Get the module path for imports
 	modulePath, err := getModulePath()
 	if err != nil {
@@ -236,6 +255,16 @@ func executeMigrationFile(ctx context.Context, migrationsDir string, mf migratio
 		return nil, fmt.Errorf("failed to create temp directory: %w", err)
 	}
 	defer os.RemoveAll(tmpDir)
+
+	// Write existing schema to temp file so the migration can use it
+	schemaPath := filepath.Join(tmpDir, "schema.json")
+	schemaJSON, err := existingPlan.ToJSON()
+	if err != nil {
+		return nil, fmt.Errorf("failed to serialize schema: %w", err)
+	}
+	if err := os.WriteFile(schemaPath, schemaJSON, 0644); err != nil {
+		return nil, fmt.Errorf("failed to write temp schema: %w", err)
+	}
 
 	// Get absolute path to migrations directory
 	absMigrationsDir, err := filepath.Abs(migrationsDir)
@@ -261,7 +290,7 @@ func executeMigrationFile(ctx context.Context, migrationsDir string, mf migratio
 	// Generate function name from migration file
 	funcName := "Migrate_" + mf.Name
 
-	// Generate the temp main.go
+	// Generate the temp main.go that loads the existing schema
 	mainGo := fmt.Sprintf(`package main
 
 import (
@@ -273,7 +302,26 @@ import (
 )
 
 func main() {
-	plan := migrate.NewPlan()
+	// Load existing schema from environment variable
+	schemaPath := os.Getenv("PORTSQL_SCHEMA_PATH")
+	var plan *migrate.MigrationPlan
+	if schemaPath != "" {
+		data, err := os.ReadFile(schemaPath)
+		if err != nil {
+			os.Stderr.WriteString("failed to read schema: " + err.Error() + "\n")
+			os.Exit(1)
+		}
+		plan, err = migrate.PlanFromJSON(data)
+		if err != nil {
+			os.Stderr.WriteString("failed to parse schema: " + err.Error() + "\n")
+			os.Exit(1)
+		}
+		// Clear migrations - we only want the schema, not old migrations
+		plan.Migrations = nil
+	} else {
+		plan = migrate.NewPlan()
+	}
+
 	if err := migrations.%s(plan); err != nil {
 		os.Stderr.WriteString("migration error: " + err.Error() + "\n")
 		os.Exit(1)
@@ -287,9 +335,10 @@ func main() {
 		return nil, fmt.Errorf("failed to write temp main.go: %w", err)
 	}
 
-	// Run go run
+	// Run go run with schema path in environment
 	cmd := exec.CommandContext(ctx, "go", "run", mainPath)
 	cmd.Dir = cwd // Run from original directory for proper module resolution
+	cmd.Env = append(os.Environ(), "PORTSQL_SCHEMA_PATH="+schemaPath)
 	output, err := cmd.Output()
 	if err != nil {
 		if exitErr, ok := err.(*exec.ExitError); ok {

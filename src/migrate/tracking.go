@@ -100,6 +100,34 @@ func RecordMigration(ctx context.Context, db *sql.DB, dialect, version, name str
 	return nil
 }
 
+// RecordMigrationTx inserts a migration into the tracking table within a transaction.
+// This is used by Run() to ensure atomicity of migration execution and recording.
+func RecordMigrationTx(ctx context.Context, tx *sql.Tx, dialect, version, name string) error {
+	var insertSQL string
+	var args []interface{}
+
+	switch dialect {
+	case Postgres:
+		insertSQL = `INSERT INTO _portsql_migrations (name, version, applied_at) VALUES ($1, $2, $3)`
+		args = []interface{}{name, version, time.Now()}
+	case MySQL:
+		insertSQL = `INSERT INTO _portsql_migrations (name, version, applied_at) VALUES (?, ?, ?)`
+		args = []interface{}{name, version, time.Now()}
+	case Sqlite:
+		insertSQL = `INSERT INTO _portsql_migrations (name, version, applied_at) VALUES (?, ?, ?)`
+		args = []interface{}{name, version, time.Now().Format(time.RFC3339)}
+	default:
+		return fmt.Errorf("unsupported dialect: %s", dialect)
+	}
+
+	_, err := tx.ExecContext(ctx, insertSQL, args...)
+	if err != nil {
+		return fmt.Errorf("failed to record migration %s: %w", name, err)
+	}
+
+	return nil
+}
+
 // GetAllTables returns the list of all table names in the database.
 func GetAllTables(ctx context.Context, db *sql.DB, dialect string) ([]string, error) {
 	var querySQL string

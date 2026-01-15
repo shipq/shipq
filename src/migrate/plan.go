@@ -6,6 +6,39 @@ import (
 	"github.com/portsql/portsql/src/ddl"
 )
 
+// ValidateMigrationName validates that a migration name follows the TIMESTAMP_name format.
+// The name must be at least 16 characters: 14 digit timestamp + underscore + at least 1 char.
+func ValidateMigrationName(name string) error {
+	// Check minimum length for: 14 digit timestamp + underscore + 1 char name
+	if len(name) < 16 {
+		// Provide more specific error based on what's wrong
+		if len(name) < 14 {
+			return fmt.Errorf("migration name must start with 14-digit timestamp, too short: %q", name)
+		}
+		if len(name) == 14 {
+			return fmt.Errorf("migration name must have underscore and name after timestamp, too short: %q", name)
+		}
+		if len(name) == 15 {
+			return fmt.Errorf("migration name empty after timestamp underscore: %q", name)
+		}
+		return fmt.Errorf("migration name too short: %q", name)
+	}
+
+	// First 14 characters must be digits (timestamp)
+	for i := 0; i < 14; i++ {
+		if name[i] < '0' || name[i] > '9' {
+			return fmt.Errorf("migration name must start with 14-digit timestamp: %q", name)
+		}
+	}
+
+	// Character 15 (index 14) must be underscore
+	if name[14] != '_' {
+		return fmt.Errorf("migration name must have underscore after timestamp: %q", name)
+	}
+
+	return nil
+}
+
 type Schema struct {
 	Name   string               `json:"name"`
 	Tables map[string]ddl.Table `json:"tables"`
