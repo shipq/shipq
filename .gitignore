@@ -1,4 +1,3 @@
-databases/.mysql-data
-databases/.postgres-data
-databases/.sqlite-data
-portsql
+db/databases/.mysql-data
+db/databases/.postgres-data
+db/databases/.sqlite-data

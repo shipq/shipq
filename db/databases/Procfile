@@ -1,0 +1,3 @@
+mysql: "$PROJECT_ROOT"/db/databases/mysql.sh
+postgres: "$PROJECT_ROOT"/db/databases/postgres.sh
+sqlite: "$PROJECT_ROOT"/db/databases/sqlite.sh
