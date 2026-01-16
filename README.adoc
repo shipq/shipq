@@ -75,20 +75,25 @@ PortSQL uses two code generation phases:
 ----
 package migrations
 
-import "github.com/portsql/portsql/src/ddl"
+import (
+    "github.com/portsql/portsql/src/ddl"
+    "github.com/portsql/portsql/src/migrate"
+)
 
-func BuildSchema(plan *migrate.MigrationPlan) error {
-    // Create users table
-    plan.AddEmptyTable("users", func(tb *ddl.TableBuilder) error {
-        tb.Bigint("id").PrimaryKey()
+func Migrate_20260111170659_create_users(plan *migrate.MigrationPlan) error {
+    // AddTable includes standard columns: id, public_id, created_at, deleted_at, updated_at
+    _, err := plan.AddTable("users", func(tb *ddl.TableBuilder) error {
         tb.String("name")
         tb.String("email").Unique()
-        tb.Datetime("created_at").Indexed()
+        tb.Datetime("last_login").Nullable()
         return nil
     })
+    return err
+}
 
-    // Create posts table
-    plan.AddEmptyTable("posts", func(tb *ddl.TableBuilder) error {
+func Migrate_20260111170700_create_posts(plan *migrate.MigrationPlan) error {
+    // AddEmptyTable creates a table with no default columns
+    _, err := plan.AddEmptyTable("posts", func(tb *ddl.TableBuilder) error {
         tb.Bigint("id").PrimaryKey()
         tb.Bigint("author_id").Indexed()
         tb.String("title")
@@ -96,12 +101,11 @@ func BuildSchema(plan *migrate.MigrationPlan) error {
         tb.Datetime("published_at").Nullable()
         return nil
     })
-
-    return nil
+    return err
 }
 ----
 
-**Run Phase 1 codegen** → Generates `schema/tables.go`:
+**Run `portsql migrate up`** → Generates `schematypes/tables.go`:
 
 [source,go]
 ----
@@ -118,9 +122,13 @@ var Users = UsersTable{}
 func (UsersTable) TableName() string { return "users" }
 
 func (UsersTable) Id() query.Int64Column       { return query.Int64Column{Table: "users", Name: "id"} }
+func (UsersTable) PublicId() query.StringColumn { return query.StringColumn{Table: "users", Name: "public_id"} }
 func (UsersTable) Name() query.StringColumn    { return query.StringColumn{Table: "users", Name: "name"} }
 func (UsersTable) Email() query.StringColumn   { return query.StringColumn{Table: "users", Name: "email"} }
+func (UsersTable) LastLogin() query.NullTimeColumn { return query.NullTimeColumn{Table: "users", Name: "last_login"} }
 func (UsersTable) CreatedAt() query.TimeColumn { return query.TimeColumn{Table: "users", Name: "created_at"} }
+func (UsersTable) UpdatedAt() query.TimeColumn { return query.TimeColumn{Table: "users", Name: "updated_at"} }
+func (UsersTable) DeletedAt() query.TimeColumn { return query.TimeColumn{Table: "users", Name: "deleted_at"} }
 
 // PostsTable provides type-safe column references for the posts table.
 type PostsTable struct{}
@@ -150,20 +158,20 @@ import (
 )
 
 func init() {
-    // DefineOne - returns 0 or 1 row (nil if not found)
-    query.DefineOne("GetUserByEmail",
+    // MustDefineOne - returns 0 or 1 row (*Result or nil)
+    query.MustDefineOne("GetUserByEmail",
         query.From(schematypes.Users).
             Select(
                 schematypes.Users.Id(),
                 schematypes.Users.Name(),
                 schematypes.Users.Email(),
             ).
-            Where(schematypes.Users.Email().Eq(query.Param("email"))).
+            Where(schematypes.Users.Email().Eq(query.Param[string]("email"))).
             Build(),
     )
 
-    // DefineOne with JSON aggregation - user with their posts
-    query.DefineOne("GetUserWithPosts",
+    // MustDefineOne with JSON aggregation - user with their posts
+    query.MustDefineOne("GetUserWithPosts",
         query.From(schematypes.Users).
             LeftJoin(schematypes.Posts).On(schematypes.Users.Id().Eq(schematypes.Posts.AuthorId())).
             Select(
@@ -175,13 +183,13 @@ func init() {
                 schematypes.Posts.Title(),
                 schematypes.Posts.PublishedAt(),
             ).
-            Where(schematypes.Users.Id().Eq(query.Param("user_id"))).
+            Where(schematypes.Users.Id().Eq(query.Param[int64]("user_id"))).
             GroupBy(schematypes.Users.Id(), schematypes.Users.Name()).
             Build(),
     )
 
-    // DefineMany - returns 0 to N rows
-    query.DefineMany("ListRecentPosts",
+    // MustDefineMany - returns 0 to N rows
+    query.MustDefineMany("ListRecentPosts",
         query.From(schematypes.Posts).
             Select(
                 schematypes.Posts.Id(),
@@ -191,13 +199,13 @@ func init() {
             ).
             Where(schematypes.Posts.PublishedAt().IsNotNull()).
             OrderBy(schematypes.Posts.PublishedAt().Desc()).
-            Limit(query.Param("limit")).
-            Offset(query.Param("offset")).
+            Limit(query.Param[int]("limit")).
+            Offset(query.Param[int]("offset")).
             Build(),
     )
 
-    // DefineExec - for INSERT/UPDATE/DELETE (returns sql.Result)
-    query.DefineExec("DeleteExpiredSessions",
+    // MustDefineExec - for INSERT/UPDATE/DELETE (returns sql.Result)
+    query.MustDefineExec("DeleteExpiredSessions",
         query.Delete(schematypes.Sessions).
             Where(schematypes.Sessions.ExpiresAt().Lt(query.Now())).
             Build(),
@@ -247,6 +255,19 @@ type ListRecentPostsResult struct {
     Id          int64
     Title       string
     AuthorId    int64
+    PublishedAt *time.Time
+}
+
+// JSON aggregation generates properly typed nested structs
+type GetUserWithPostsResult struct {
+    Id    int64
+    Name  string
+    Posts []GetUserWithPostsPostsItem
+}
+
+type GetUserWithPostsPostsItem struct {
+    Id          int64
+    Title       string
     PublishedAt *time.Time
 }
 ----
@@ -302,25 +323,158 @@ func (s *Server) ListPosts(ctx context.Context, limit, offset int) ([]queries.Li
 | Aggregates (COUNT, SUM, AVG, MIN, MAX) | ✓ | ✓ | ✓
 |===
 
+=== Schema Column Types
+
+PortSQL supports the following column types in your schema definitions:
+
+|===
+| Builder Method | SQL Type | Go Type | Nullable Go Type
+
+| `Bigint(name)` | BIGINT | `int64` | `*int64`
+| `Integer(name)` | INTEGER | `int32` | `*int32`
+| `Float(name)` | FLOAT | `float64` | `*float64`
+| `Decimal(name, precision, scale)` | DECIMAL(p,s) | `string` | `*string`
+| `Bool(name)` | BOOLEAN | `bool` | `*bool`
+| `String(name)` | VARCHAR(255) | `string` | `*string`
+| `Varchar(name, length)` | VARCHAR(length) | `string` | `*string`
+| `Text(name)` | TEXT | `string` | `*string`
+| `Datetime(name)` | TIMESTAMP WITH TIME ZONE | `time.Time` | `*time.Time`
+| `Timestamp(name)` | TIMESTAMP WITH TIME ZONE | `time.Time` | `*time.Time`
+| `Binary(name)` | BLOB/BYTEA | `[]byte` | `[]byte`
+| `JSON(name)` | JSON/JSONB | `json.RawMessage` | `json.RawMessage`
+|===
+
+Column modifiers:
+
+- `.PrimaryKey()` - Mark as primary key (integers only)
+- `.Nullable()` - Allow NULL values
+- `.Unique()` - Add unique constraint and index
+- `.Indexed()` - Add non-unique index
+- `.Default(value)` - Set default value (type-specific)
+
 === Type-Safe Column Types
 
 PortSQL generates typed column references that prevent invalid operations at compile time:
 
 [source,go]
 ----
-// This compiles - comparing strings
-schema.Users.Email().Eq(query.Param("email"))
+// Comparison operations (available on all column types)
+schema.Users.Email().Eq(query.Param[string]("email"))
+schema.Users.Email().Ne(query.Param[string]("other"))
+schema.Users.Id().Lt(query.Param[int64]("max_id"))
+schema.Users.Id().Le(query.Param[int64]("max_id"))
+schema.Users.Id().Gt(query.Param[int64]("min_id"))
+schema.Users.Id().Ge(query.Param[int64]("min_id"))
 
-// This compiles - numeric comparison
-schema.Posts.AuthorId().Gt(query.Param("min_id"))
+// IN clause
+schema.Users.Status().In("active", "pending", "invited")
 
-// String-specific operations
-schema.Users.Name().Like(query.Param("pattern"))
-schema.Users.Email().ILike(query.Param("search"))  // Case-insensitive
-
-// Nullable columns
+// Null checks
 schema.Posts.PublishedAt().IsNull()
 schema.Posts.PublishedAt().IsNotNull()
+
+// String-specific operations
+schema.Users.Name().Like(query.Param[string]("pattern"))
+schema.Users.Email().ILike(query.Param[string]("search"))  // Case-insensitive
+
+// Ordering
+schema.Users.CreatedAt().Asc()
+schema.Posts.PublishedAt().Desc()
+----
+
+=== Query Parameters
+
+Use type-parameterized `Param[T]` to create type-safe parameters:
+
+[source,go]
+----
+// String parameter
+query.Param[string]("email")
+
+// Integer parameters
+query.Param[int64]("id")
+query.Param[int]("limit")
+
+// Nullable parameters
+query.Param[*string]("optional_name")
+query.Param[*time.Time]("optional_date")
+
+// Literal values
+query.Literal(100)
+query.Literal("active")
+
+// Current timestamp
+query.Now()
+----
+
+=== Logical Operators
+
+[source,go]
+----
+// AND
+query.And(
+    schema.Users.Status().Eq("active"),
+    schema.Users.EmailVerified().Eq(true),
+)
+
+// OR
+query.Or(
+    schema.Users.Role().Eq("admin"),
+    schema.Users.Role().Eq("moderator"),
+)
+
+// NOT
+query.Not(schema.Users.Banned().Eq(true))
+----
+
+=== Aggregate Functions
+
+[source,go]
+----
+// Count all rows
+query.From(schema.Users).
+    SelectCountAs("total").
+    Build()
+
+// Count with column
+query.From(schema.Orders).
+    SelectExprAs(query.CountCol(schema.Orders.Id()), "order_count").
+    Build()
+
+// Count distinct
+query.From(schema.Orders).
+    SelectExprAs(query.CountDistinct(schema.Orders.UserId()), "unique_customers").
+    Build()
+
+// Sum, Avg, Min, Max
+query.From(schema.Orders).
+    SelectSumAs(schema.Orders.Total(), "revenue").
+    SelectAvgAs(schema.Orders.Total(), "avg_order").
+    SelectMinAs(schema.Orders.Total(), "min_order").
+    SelectMaxAs(schema.Orders.Total(), "max_order").
+    Build()
+----
+
+=== CTEs (Common Table Expressions)
+
+[source,go]
+----
+// Simple CTE
+query.With("recent_orders",
+    query.From(schema.Orders).
+        Select(schema.Orders.UserId(), schema.Orders.Total()).
+        Where(schema.Orders.CreatedAt().Gt(query.Param[time.Time]("since"))),
+).
+Select(query.CTERef("recent_orders")).
+    Select(/* columns from CTE */).
+    Build()
+
+// Multiple CTEs
+query.With("cte1", firstQuery).
+    And("cte2", secondQuery).
+    Select(query.CTERef("cte1")).
+    Join(query.CTERef("cte2")).On(/* condition */).
+    Build()
 ----
 
 === Cross-Database Translations
@@ -585,6 +739,27 @@ queries/
     └── runner.go      # PostgreSQL runner
 ----
 
+== CLI Commands
+
+[source,bash]
+----
+# Create a new timestamped migration file
+portsql migrate new create_users
+# Creates: migrations/YYYYMMDDHHMMSS_create_users.go
+
+# Run pending migrations and regenerate schematypes
+portsql migrate up
+
+# Drop all tables and re-run migrations (localhost only, for development)
+portsql migrate reset
+
+# Compile query definitions to SQL strings
+portsql compile
+
+# Show help
+portsql help
+----
+
 == Project Structure
 
 [source]
@@ -604,7 +779,7 @@ portsql/
 │   │
 │   ├── query/            # Query builder and AST
 │   │   ├── builder.go    # SELECT query builder
-│   │   ├── registry.go   # DefineOne/DefineMany/DefineExec registration
+│   │   ├── registry.go   # MustDefineOne/MustDefineMany/MustDefineExec registration
 │   │   ├── columns.go    # Typed column definitions
 │   │   ├── expr.go       # Expression types (conditions, operators)
 │   │   ├── ast.go        # Query AST structure
