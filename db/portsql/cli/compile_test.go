@@ -1,11 +1,203 @@
 package cli
 
 import (
+	"os"
+	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/shipq/shipq/db/portsql/ddl"
 	"github.com/shipq/shipq/db/portsql/migrate"
 )
+
+// =============================================================================
+// getModulePath Tests
+// =============================================================================
+
+func TestGetModulePath_CurrentDir(t *testing.T) {
+	// Save and restore cwd
+	origDir, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.Chdir(origDir)
+
+	// Create temp directory with go.mod
+	tmpDir, err := os.MkdirTemp("", "portsql-test-*")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	// Resolve symlinks (macOS /tmp -> /private/tmp)
+	tmpDir, err = filepath.EvalSymlinks(tmpDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	goModContent := "module github.com/test/mymodule\n\ngo 1.21\n"
+	if err := os.WriteFile(filepath.Join(tmpDir, "go.mod"), []byte(goModContent), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Change to temp directory
+	if err := os.Chdir(tmpDir); err != nil {
+		t.Fatal(err)
+	}
+
+	// Test
+	modulePath, moduleRoot, err := getModulePath()
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if modulePath != "github.com/test/mymodule" {
+		t.Errorf("expected module path 'github.com/test/mymodule', got %q", modulePath)
+	}
+
+	if moduleRoot != tmpDir {
+		t.Errorf("expected module root %q, got %q", tmpDir, moduleRoot)
+	}
+}
+
+func TestGetModulePath_ParentDir(t *testing.T) {
+	// Save and restore cwd
+	origDir, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.Chdir(origDir)
+
+	// Create temp directory structure:
+	// tmpDir/
+	//   go.mod
+	//   subpkg/
+	tmpDir, err := os.MkdirTemp("", "portsql-test-*")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	// Resolve symlinks (macOS /tmp -> /private/tmp)
+	tmpDir, err = filepath.EvalSymlinks(tmpDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	goModContent := "module github.com/test/monorepo\n\ngo 1.21\n"
+	if err := os.WriteFile(filepath.Join(tmpDir, "go.mod"), []byte(goModContent), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	subDir := filepath.Join(tmpDir, "subpkg")
+	if err := os.Mkdir(subDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	// Change to subpkg directory (which has no go.mod)
+	if err := os.Chdir(subDir); err != nil {
+		t.Fatal(err)
+	}
+
+	// Test - should find go.mod in parent
+	modulePath, moduleRoot, err := getModulePath()
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if modulePath != "github.com/test/monorepo" {
+		t.Errorf("expected module path 'github.com/test/monorepo', got %q", modulePath)
+	}
+
+	if moduleRoot != tmpDir {
+		t.Errorf("expected module root %q, got %q", tmpDir, moduleRoot)
+	}
+}
+
+func TestGetModulePath_DeeplyNested(t *testing.T) {
+	// Save and restore cwd
+	origDir, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.Chdir(origDir)
+
+	// Create temp directory structure:
+	// tmpDir/
+	//   go.mod
+	//   a/b/c/deep/
+	tmpDir, err := os.MkdirTemp("", "portsql-test-*")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	// Resolve symlinks (macOS /tmp -> /private/tmp)
+	tmpDir, err = filepath.EvalSymlinks(tmpDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	goModContent := "module github.com/test/deepmodule\n\ngo 1.21\n"
+	if err := os.WriteFile(filepath.Join(tmpDir, "go.mod"), []byte(goModContent), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	deepDir := filepath.Join(tmpDir, "a", "b", "c", "deep")
+	if err := os.MkdirAll(deepDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	// Change to deeply nested directory
+	if err := os.Chdir(deepDir); err != nil {
+		t.Fatal(err)
+	}
+
+	// Test - should walk up and find go.mod
+	modulePath, moduleRoot, err := getModulePath()
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if modulePath != "github.com/test/deepmodule" {
+		t.Errorf("expected module path 'github.com/test/deepmodule', got %q", modulePath)
+	}
+
+	if moduleRoot != tmpDir {
+		t.Errorf("expected module root %q, got %q", tmpDir, moduleRoot)
+	}
+}
+
+func TestGetModulePath_NotFound(t *testing.T) {
+	// Save and restore cwd
+	origDir, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.Chdir(origDir)
+
+	// Create temp directory with no go.mod
+	tmpDir, err := os.MkdirTemp("", "portsql-test-*")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	// Change to temp directory
+	if err := os.Chdir(tmpDir); err != nil {
+		t.Fatal(err)
+	}
+
+	// Test - should fail
+	_, _, err = getModulePath()
+	if err == nil {
+		t.Fatal("expected error for missing go.mod")
+	}
+
+	if !strings.Contains(err.Error(), "go.mod not found") {
+		t.Errorf("expected 'go.mod not found' in error, got: %v", err)
+	}
+}
 
 // =============================================================================
 // Table Detection Tests

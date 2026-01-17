@@ -188,21 +188,17 @@ func Compile(ctx context.Context, config *Config) error {
 	// --- Generate dialect-specific runners ---
 
 	// Get module path for types import
-	modulePath, err := getModulePath()
+	modulePath, moduleRoot, err := getModulePath()
 	if err != nil {
 		return fmt.Errorf("failed to get module path: %w", err)
 	}
 
 	// Get the relative path of queries output from the module root
-	cwd, err := os.Getwd()
-	if err != nil {
-		return fmt.Errorf("failed to get working directory: %w", err)
-	}
 	absQueriesOut, err := filepath.Abs(config.Paths.QueriesOut)
 	if err != nil {
 		return fmt.Errorf("failed to get absolute path: %w", err)
 	}
-	relQueriesOut, err := filepath.Rel(cwd, absQueriesOut)
+	relQueriesOut, err := filepath.Rel(moduleRoot, absQueriesOut)
 	if err != nil {
 		return fmt.Errorf("failed to get relative path: %w", err)
 	}
@@ -245,7 +241,7 @@ func Compile(ctx context.Context, config *Config) error {
 // extractRegisteredQueries generates a temp program to extract queries from the registry.
 func extractRegisteredQueries(ctx context.Context, queriesInPath string) (map[string]query.RegisteredQuery, error) {
 	// Get the module path for imports
-	modulePath, err := getModulePath()
+	modulePath, moduleRoot, err := getModulePath()
 	if err != nil {
 		return nil, fmt.Errorf("failed to get module path: %w", err)
 	}
@@ -263,13 +259,8 @@ func extractRegisteredQueries(ctx context.Context, queriesInPath string) (map[st
 		return nil, fmt.Errorf("failed to get absolute path: %w", err)
 	}
 
-	// Calculate the import path
-	cwd, err := os.Getwd()
-	if err != nil {
-		return nil, err
-	}
-
-	relPath, err := filepath.Rel(cwd, absQueriesPath)
+	// Calculate the import path relative to module root
+	relPath, err := filepath.Rel(moduleRoot, absQueriesPath)
 	if err != nil {
 		return nil, err
 	}
@@ -304,7 +295,7 @@ func main() {
 
 	// Run go run
 	cmd := exec.CommandContext(ctx, "go", "run", mainPath)
-	cmd.Dir = cwd // Run from original directory for proper module resolution
+	cmd.Dir = moduleRoot // Run from module root for proper module resolution
 	output, err := cmd.Output()
 	if err != nil {
 		if exitErr, ok := err.(*exec.ExitError); ok {

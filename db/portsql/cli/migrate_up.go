@@ -244,7 +244,7 @@ func scanMigrationFiles(dir string) ([]migrationFile, error) {
 // The existingPlan parameter provides the current schema so UpdateTable/DropTable can work.
 func executeMigrationFile(ctx context.Context, migrationsDir string, mf migrationFile, existingPlan *migrate.MigrationPlan) (*migrate.MigrationPlan, error) {
 	// Get the module path for imports
-	modulePath, err := getModulePath()
+	modulePath, moduleRoot, err := getModulePath()
 	if err != nil {
 		return nil, fmt.Errorf("failed to get module path: %w", err)
 	}
@@ -272,14 +272,8 @@ func executeMigrationFile(ctx context.Context, migrationsDir string, mf migratio
 		return nil, fmt.Errorf("failed to get absolute path: %w", err)
 	}
 
-	// Calculate the import path for migrations
-	// This assumes migrations are in a subdirectory of the module
-	cwd, err := os.Getwd()
-	if err != nil {
-		return nil, err
-	}
-
-	relPath, err := filepath.Rel(cwd, absMigrationsDir)
+	// Calculate the import path for migrations relative to module root
+	relPath, err := filepath.Rel(moduleRoot, absMigrationsDir)
 	if err != nil {
 		return nil, err
 	}
@@ -337,7 +331,7 @@ func main() {
 
 	// Run go run with schema path in environment
 	cmd := exec.CommandContext(ctx, "go", "run", mainPath)
-	cmd.Dir = cwd // Run from original directory for proper module resolution
+	cmd.Dir = moduleRoot // Run from module root for proper module resolution
 	cmd.Env = append(os.Environ(), "PORTSQL_SCHEMA_PATH="+schemaPath)
 	output, err := cmd.Output()
 	if err != nil {
@@ -356,22 +350,34 @@ func main() {
 	return &plan, nil
 }
 
-// getModulePath reads the module path from go.mod.
-func getModulePath() (string, error) {
-	data, err := os.ReadFile("go.mod")
+// getModulePath walks up directories to find go.mod and returns both the module path and the module root directory.
+func getModulePath() (modulePath string, moduleRoot string, err error) {
+	dir, err := os.Getwd()
 	if err != nil {
-		return "", fmt.Errorf("failed to read go.mod: %w", err)
+		return "", "", err
 	}
 
-	lines := strings.Split(string(data), "\n")
-	for _, line := range lines {
-		line = strings.TrimSpace(line)
-		if strings.HasPrefix(line, "module ") {
-			return strings.TrimPrefix(line, "module "), nil
+	for {
+		goModPath := filepath.Join(dir, "go.mod")
+		data, err := os.ReadFile(goModPath)
+		if err == nil {
+			// Found go.mod, parse it
+			lines := strings.Split(string(data), "\n")
+			for _, line := range lines {
+				line = strings.TrimSpace(line)
+				if strings.HasPrefix(line, "module ") {
+					return strings.TrimPrefix(line, "module "), dir, nil
+				}
+			}
+			return "", "", fmt.Errorf("module declaration not found in go.mod")
 		}
-	}
 
-	return "", fmt.Errorf("module declaration not found in go.mod")
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			return "", "", fmt.Errorf("go.mod not found (searched up to filesystem root)")
+		}
+		dir = parent
+	}
 }
 
 // openDatabase opens a database connection based on the URL and dialect.
