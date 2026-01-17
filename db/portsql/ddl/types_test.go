@@ -2,6 +2,7 @@ package ddl
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
 )
 
@@ -107,4 +108,62 @@ func strPtrVal(p *string) string {
 		return "nil"
 	}
 	return *p
+}
+
+// =============================================================================
+// ColumnDefinition.References Field Tests
+// =============================================================================
+
+func TestColumnDefinition_References_JSON(t *testing.T) {
+	col := ColumnDefinition{
+		Name:       "category_id",
+		Type:       BigintType,
+		References: "categories",
+	}
+
+	data, err := json.Marshal(col)
+	if err != nil {
+		t.Fatalf("marshal failed: %v", err)
+	}
+
+	if !strings.Contains(string(data), `"references":"categories"`) {
+		t.Errorf("expected references in JSON, got: %s", data)
+	}
+}
+
+func TestColumnDefinition_References_OmitEmpty(t *testing.T) {
+	col := ColumnDefinition{Name: "id", Type: BigintType}
+
+	data, err := json.Marshal(col)
+	if err != nil {
+		t.Fatalf("marshal failed: %v", err)
+	}
+
+	if strings.Contains(string(data), "references") {
+		t.Errorf("expected references to be omitted, got: %s", data)
+	}
+}
+
+func TestColumnDefinition_References_Roundtrip(t *testing.T) {
+	original := ColumnDefinition{
+		Name:       "pet_id",
+		Type:       BigintType,
+		References: "pets",
+	}
+
+	// Marshal
+	data, err := json.Marshal(original)
+	if err != nil {
+		t.Fatalf("marshal failed: %v", err)
+	}
+
+	// Unmarshal
+	var restored ColumnDefinition
+	if err := json.Unmarshal(data, &restored); err != nil {
+		t.Fatalf("unmarshal failed: %v", err)
+	}
+
+	if restored.References != "pets" {
+		t.Errorf("expected References='pets', got %q", restored.References)
+	}
 }

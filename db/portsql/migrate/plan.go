@@ -4,6 +4,7 @@ import (
 	"fmt"
 
 	"github.com/shipq/shipq/db/portsql/ddl"
+	"github.com/shipq/shipq/db/portsql/ref"
 )
 
 // ValidateMigrationName validates that a migration name follows the TIMESTAMP_name format.
@@ -66,6 +67,16 @@ type MigrationPlan struct {
 	Migrations []Migration `json:"migrations"`
 }
 
+// Table returns a validated reference to an existing table in the schema.
+// Returns an error if the table does not exist. This is used to establish
+// relationships between tables without creating actual FK constraints.
+func (m *MigrationPlan) Table(name string) (*ref.TableRef, error) {
+	if _, ok := m.Schema.Tables[name]; !ok {
+		return nil, fmt.Errorf("table %q not found in schema", name)
+	}
+	return &ref.TableRef{Name: name}, nil
+}
+
 // AddEmptyTable creates a new table in the schema and passes a TableBuilder for type-safe column definitions.
 func (m *MigrationPlan) AddEmptyTable(name string, fn func(*ddl.TableBuilder) error) (*MigrationPlan, error) {
 	// Check for duplicate table
@@ -86,6 +97,20 @@ func (m *MigrationPlan) AddEmptyTable(name string, fn func(*ddl.TableBuilder) er
 
 	// Add the built table to the schema
 	table := tb.Build()
+
+	// Validate junction tables must have exactly 2 References columns
+	if table.IsJunctionTable {
+		refCount := 0
+		for _, col := range table.Columns {
+			if col.References != "" {
+				refCount++
+			}
+		}
+		if refCount != 2 {
+			return nil, fmt.Errorf("junction table %q must have exactly 2 References columns, found %d", name, refCount)
+		}
+	}
+
 	m.Schema.Tables[name] = *table
 
 	// Generate SQL for each database

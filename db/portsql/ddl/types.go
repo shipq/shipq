@@ -33,6 +33,7 @@ type ColumnDefinition struct {
 	PrimaryKey bool    `json:"primary_key"`
 	Index      bool    `json:"index"`
 	ForeignKey string  `json:"foreign_key"`
+	References string  `json:"references,omitempty"` // Target table name for automatic relations (no actual FK)
 }
 
 // IndexDefinition represents an index on a database table.
@@ -44,9 +45,10 @@ type IndexDefinition struct {
 
 // Table represents a database table with its columns and indexes.
 type Table struct {
-	Name    string             `json:"name"`
-	Columns []ColumnDefinition `json:"columns"`
-	Indexes []IndexDefinition  `json:"indexes"`
+	Name            string             `json:"name"`
+	Columns         []ColumnDefinition `json:"columns"`
+	Indexes         []IndexDefinition  `json:"indexes"`
+	IsJunctionTable bool               `json:"is_junction_table,omitempty"` // True for many-to-many junction tables
 }
 
 // Serialize serializes the table to a JSON string.

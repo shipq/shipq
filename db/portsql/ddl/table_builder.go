@@ -2,6 +2,8 @@ package ddl
 
 import (
 	"strconv"
+
+	"github.com/shipq/shipq/db/portsql/ref"
 )
 
 // TableBuilder owns the table and provides methods to add columns and indexes.
@@ -137,6 +139,13 @@ func MakeTable(name string) *TableBuilder {
 // Build returns the constructed table.
 func (tb *TableBuilder) Build() *Table {
 	return tb.table
+}
+
+// JunctionTable marks this table as a many-to-many junction table.
+// Junction tables should have exactly 2 columns with References set.
+func (tb *TableBuilder) JunctionTable() *TableBuilder {
+	tb.table.IsJunctionTable = true
+	return tb
 }
 
 // AddIndex adds a composite index on the specified columns.
@@ -423,6 +432,13 @@ func (b *IntColumnBuilder) Indexed() *IntColumnBuilder {
 func (b *IntColumnBuilder) Default(v int64) *IntColumnBuilder {
 	s := strconv.FormatInt(v, 10)
 	b.col.Default = &s
+	return b
+}
+
+// References marks this column as referencing another table.
+// This is metadata for automatic relation code generation - no actual FK constraint is created.
+func (b *IntColumnBuilder) References(tableRef *ref.TableRef) *IntColumnBuilder {
+	b.col.References = tableRef.TableName()
 	return b
 }
 

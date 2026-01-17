@@ -8,6 +8,185 @@ import (
 )
 
 // =============================================================================
+// Table() Method Tests - Get validated table reference
+// =============================================================================
+
+func TestMigrationPlan_Table_Success(t *testing.T) {
+	plan := NewPlan()
+	plan.Schema.Tables["users"] = ddl.Table{Name: "users"}
+
+	tableRef, err := plan.Table("users")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if tableRef.TableName() != "users" {
+		t.Errorf("expected 'users', got %q", tableRef.TableName())
+	}
+}
+
+func TestMigrationPlan_Table_NotFound(t *testing.T) {
+	plan := NewPlan()
+
+	_, err := plan.Table("nonexistent")
+	if err == nil {
+		t.Fatal("expected error for nonexistent table")
+	}
+	if !strings.Contains(err.Error(), "not found") {
+		t.Errorf("expected 'not found' in error, got: %v", err)
+	}
+}
+
+func TestMigrationPlan_Table_MultipleTablesExist(t *testing.T) {
+	plan := NewPlan()
+	plan.Schema.Tables["users"] = ddl.Table{Name: "users"}
+	plan.Schema.Tables["categories"] = ddl.Table{Name: "categories"}
+	plan.Schema.Tables["pets"] = ddl.Table{Name: "pets"}
+
+	// Should find each table
+	for _, name := range []string{"users", "categories", "pets"} {
+		tableRef, err := plan.Table(name)
+		if err != nil {
+			t.Errorf("Table(%q) failed: %v", name, err)
+			continue
+		}
+		if tableRef.TableName() != name {
+			t.Errorf("expected %q, got %q", name, tableRef.TableName())
+		}
+	}
+}
+
+func TestMigrationPlan_Table_EmptySchema(t *testing.T) {
+	plan := NewPlan()
+
+	_, err := plan.Table("any")
+	if err == nil {
+		t.Fatal("expected error for empty schema")
+	}
+}
+
+// =============================================================================
+// Junction Table Validation Tests
+// =============================================================================
+
+func TestAddEmptyTable_JunctionTable_Valid(t *testing.T) {
+	plan := NewPlan()
+
+	// First create the referenced tables
+	_, err := plan.AddEmptyTable("pets", func(tb *ddl.TableBuilder) error {
+		tb.Bigint("id").PrimaryKey()
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("AddTable pets failed: %v", err)
+	}
+
+	_, err = plan.AddEmptyTable("tags", func(tb *ddl.TableBuilder) error {
+		tb.Bigint("id").PrimaryKey()
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("AddTable tags failed: %v", err)
+	}
+
+	pets, _ := plan.Table("pets")
+	tags, _ := plan.Table("tags")
+
+	// Valid junction table with exactly 2 references
+	_, err = plan.AddEmptyTable("pet_tags", func(tb *ddl.TableBuilder) error {
+		tb.JunctionTable()
+		tb.Bigint("pet_id").References(pets)
+		tb.Bigint("tag_id").References(tags)
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("valid junction table failed: %v", err)
+	}
+
+	table := plan.Schema.Tables["pet_tags"]
+	if !table.IsJunctionTable {
+		t.Error("expected IsJunctionTable to be true")
+	}
+}
+
+func TestAddEmptyTable_JunctionTable_TooFewReferences(t *testing.T) {
+	plan := NewPlan()
+
+	// Create a referenced table
+	_, err := plan.AddEmptyTable("pets", func(tb *ddl.TableBuilder) error {
+		tb.Bigint("id").PrimaryKey()
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("AddTable pets failed: %v", err)
+	}
+
+	pets, _ := plan.Table("pets")
+
+	// Invalid: junction table with only 1 reference
+	_, err = plan.AddEmptyTable("bad_junction", func(tb *ddl.TableBuilder) error {
+		tb.JunctionTable()
+		tb.Bigint("pet_id").References(pets)
+		tb.Bigint("other_id") // No reference!
+		return nil
+	})
+	if err == nil {
+		t.Error("expected error for junction table with <2 references")
+	}
+	if err != nil && !strings.Contains(err.Error(), "2") {
+		t.Errorf("expected error to mention '2', got: %v", err)
+	}
+}
+
+func TestAddEmptyTable_JunctionTable_TooManyReferences(t *testing.T) {
+	plan := NewPlan()
+
+	// Create referenced tables
+	plan.AddEmptyTable("pets", func(tb *ddl.TableBuilder) error {
+		tb.Bigint("id").PrimaryKey()
+		return nil
+	})
+	plan.AddEmptyTable("tags", func(tb *ddl.TableBuilder) error {
+		tb.Bigint("id").PrimaryKey()
+		return nil
+	})
+	plan.AddEmptyTable("users", func(tb *ddl.TableBuilder) error {
+		tb.Bigint("id").PrimaryKey()
+		return nil
+	})
+
+	pets, _ := plan.Table("pets")
+	tags, _ := plan.Table("tags")
+	users, _ := plan.Table("users")
+
+	// Invalid: junction table with 3 references
+	_, err := plan.AddEmptyTable("bad_junction", func(tb *ddl.TableBuilder) error {
+		tb.JunctionTable()
+		tb.Bigint("pet_id").References(pets)
+		tb.Bigint("tag_id").References(tags)
+		tb.Bigint("user_id").References(users)
+		return nil
+	})
+	if err == nil {
+		t.Error("expected error for junction table with >2 references")
+	}
+}
+
+func TestAddEmptyTable_JunctionTable_NoReferences(t *testing.T) {
+	plan := NewPlan()
+
+	// Invalid: junction table with no references
+	_, err := plan.AddEmptyTable("bad_junction", func(tb *ddl.TableBuilder) error {
+		tb.JunctionTable()
+		tb.Bigint("col1")
+		tb.Bigint("col2")
+		return nil
+	})
+	if err == nil {
+		t.Error("expected error for junction table with 0 references")
+	}
+}
+
+// =============================================================================
 // ValidateMigrationName Tests (TDD - these should fail initially)
 // =============================================================================
 

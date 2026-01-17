@@ -2,6 +2,8 @@ package ddl
 
 import (
 	"testing"
+
+	"github.com/shipq/shipq/db/portsql/ref"
 )
 
 func TestColumnTypes(t *testing.T) {
@@ -804,5 +806,150 @@ func TestColRefTypeSafety(t *testing.T) {
 	}
 	if table.Indexes[0].Columns[0] != "foo" || table.Indexes[0].Columns[1] != "bar" {
 		t.Errorf("unexpected columns: %v", table.Indexes[0].Columns)
+	}
+}
+
+// =============================================================================
+// References() Method Tests - Automatic Relations
+// =============================================================================
+
+func TestIntColumnBuilder_References(t *testing.T) {
+	tableRef := &ref.TableRef{Name: "categories"}
+
+	tb := MakeEmptyTable("pets")
+	tb.Bigint("category_id").Indexed().References(tableRef)
+	table := tb.Build()
+
+	var categoryCol *ColumnDefinition
+	for _, col := range table.Columns {
+		if col.Name == "category_id" {
+			categoryCol = &col
+			break
+		}
+	}
+
+	if categoryCol == nil {
+		t.Fatal("category_id column not found")
+	}
+	if categoryCol.References != "categories" {
+		t.Errorf("expected references='categories', got %q", categoryCol.References)
+	}
+}
+
+func TestIntColumnBuilder_References_Chaining(t *testing.T) {
+	// Test that References() can be chained with other methods
+	tableRef := &ref.TableRef{Name: "users"}
+
+	tb := MakeEmptyTable("posts")
+	tb.Bigint("user_id").References(tableRef).Indexed()
+	table := tb.Build()
+
+	var userCol *ColumnDefinition
+	for _, col := range table.Columns {
+		if col.Name == "user_id" {
+			userCol = &col
+			break
+		}
+	}
+
+	if userCol == nil {
+		t.Fatal("user_id column not found")
+	}
+	if userCol.References != "users" {
+		t.Errorf("expected references='users', got %q", userCol.References)
+	}
+	if !userCol.Index {
+		t.Error("expected column to be indexed")
+	}
+}
+
+func TestIntegerColumnBuilder_References(t *testing.T) {
+	// Test Integer (32-bit) column also supports References
+	tableRef := &ref.TableRef{Name: "status_codes"}
+
+	tb := MakeEmptyTable("items")
+	tb.Integer("status_code").References(tableRef)
+	table := tb.Build()
+
+	var statusCol *ColumnDefinition
+	for _, col := range table.Columns {
+		if col.Name == "status_code" {
+			statusCol = &col
+			break
+		}
+	}
+
+	if statusCol == nil {
+		t.Fatal("status_code column not found")
+	}
+	if statusCol.References != "status_codes" {
+		t.Errorf("expected references='status_codes', got %q", statusCol.References)
+	}
+}
+
+func TestMultipleReferences(t *testing.T) {
+	// Test multiple columns can have references
+	categoriesRef := &ref.TableRef{Name: "categories"}
+	tagsRef := &ref.TableRef{Name: "tags"}
+
+	tb := MakeEmptyTable("pet_tags")
+	tb.Bigint("pet_id").Indexed()
+	tb.Bigint("category_id").References(categoriesRef)
+	tb.Bigint("tag_id").References(tagsRef)
+	table := tb.Build()
+
+	refCount := 0
+	for _, col := range table.Columns {
+		if col.References != "" {
+			refCount++
+		}
+	}
+
+	if refCount != 2 {
+		t.Errorf("expected 2 columns with references, got %d", refCount)
+	}
+}
+
+// =============================================================================
+// JunctionTable() Method Tests - Many-to-Many Relationships
+// =============================================================================
+
+func TestTableBuilder_JunctionTable(t *testing.T) {
+	tb := MakeEmptyTable("pet_tags")
+	tb.JunctionTable()
+	table := tb.Build()
+
+	if !table.IsJunctionTable {
+		t.Error("expected IsJunctionTable to be true")
+	}
+}
+
+func TestTableBuilder_JunctionTable_DefaultFalse(t *testing.T) {
+	// Regular tables should have IsJunctionTable = false
+	tb := MakeEmptyTable("users")
+	tb.Bigint("id").PrimaryKey()
+	table := tb.Build()
+
+	if table.IsJunctionTable {
+		t.Error("expected IsJunctionTable to be false for regular tables")
+	}
+}
+
+func TestTableBuilder_JunctionTable_Chaining(t *testing.T) {
+	// Test that JunctionTable() can be chained
+	petsRef := &ref.TableRef{Name: "pets"}
+	tagsRef := &ref.TableRef{Name: "tags"}
+
+	tb := MakeEmptyTable("pet_tags")
+	tb.JunctionTable()
+	tb.Bigint("pet_id").References(petsRef)
+	tb.Bigint("tag_id").References(tagsRef)
+	table := tb.Build()
+
+	if !table.IsJunctionTable {
+		t.Error("expected IsJunctionTable to be true")
+	}
+	if len(table.Columns) != 2 {
+		t.Errorf("expected 2 columns, got %d", len(table.Columns))
 	}
 }

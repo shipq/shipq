@@ -100,6 +100,9 @@ func Compile(ctx context.Context, config *Config) error {
 	var crudPlan *migrate.MigrationPlan
 	tableOpts := make(map[string]codegen.CRUDOptions)
 
+	// Relations discovered from schema
+	var relations []codegen.Relation
+
 	plan, err := loadSchema(config.Paths.Migrations)
 	if err == nil {
 		// Get tables that qualify for CRUD (created with AddTable)
@@ -132,6 +135,22 @@ func Compile(ctx context.Context, config *Config) error {
 				crudPlan.Schema.Tables[table.Name] = table
 			}
 		}
+
+		// Scan for relations
+		relations = codegen.ScanRelations(plan)
+		if len(relations) > 0 {
+			fmt.Printf("\nFound %d relations:\n", len(relations))
+			for _, rel := range relations {
+				switch rel.Type {
+				case codegen.RelationHasMany:
+					fmt.Printf("  %s HasMany %s (via %s.%s)\n", rel.FromTable, rel.ToTable, rel.ToTable, rel.FKColumn)
+				case codegen.RelationBelongsTo:
+					fmt.Printf("  %s BelongsTo %s (via %s.%s)\n", rel.FromTable, rel.ToTable, rel.FromTable, rel.FKColumn)
+				case codegen.RelationManyToMany:
+					fmt.Printf("  %s ManyToMany %s (via %s)\n", rel.FromTable, rel.ToTable, rel.JunctionTable)
+				}
+			}
+		}
 	}
 
 	// --- Generate shared types (types.go) ---
@@ -145,6 +164,20 @@ func Compile(ctx context.Context, config *Config) error {
 		return fmt.Errorf("failed to write types.go: %w", err)
 	}
 	fmt.Printf("Generated: %s\n", typesPath)
+
+	// --- Generate relation types (relations_types.go) ---
+	if len(relations) > 0 && plan != nil {
+		relTypesCode, err := codegen.GenerateRelationTypes(plan, relations)
+		if err != nil {
+			return fmt.Errorf("failed to generate relation types: %w", err)
+		}
+
+		relTypesPath := filepath.Join(config.Paths.QueriesOut, "relations_types.go")
+		if err := os.WriteFile(relTypesPath, relTypesCode, 0644); err != nil {
+			return fmt.Errorf("failed to write relations_types.go: %w", err)
+		}
+		fmt.Printf("Generated: %s\n", relTypesPath)
+	}
 
 	// --- Remove old files from previous architecture ---
 	os.Remove(filepath.Join(config.Paths.QueriesOut, "queries.go"))
