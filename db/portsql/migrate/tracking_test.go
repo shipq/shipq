@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"testing"
+	"time"
 
 	_ "modernc.org/sqlite"
 )
@@ -212,5 +213,236 @@ func TestSameTimestampDifferentNames(t *testing.T) {
 		if name != expected[i] {
 			t.Errorf("expected migration %d to be %q, got %q", i, expected[i], name)
 		}
+	}
+}
+
+// =============================================================================
+// UTC Timestamp Tests
+// =============================================================================
+
+func TestRecordMigration_AlwaysUTC(t *testing.T) {
+	// Test that recorded timestamps are always in UTC, regardless of local timezone.
+	// This ensures cross-database consistency.
+	db, err := sql.Open("sqlite", ":memory:")
+	if err != nil {
+		t.Fatalf("failed to open sqlite: %v", err)
+	}
+	defer db.Close()
+
+	ctx := context.Background()
+
+	// Create tracking table
+	if err := EnsureTrackingTable(ctx, db, Sqlite); err != nil {
+		t.Fatalf("EnsureTrackingTable failed: %v", err)
+	}
+
+	// Record time before migration (truncate to second since RFC3339 loses sub-second)
+	beforeUTC := time.Now().UTC().Truncate(time.Second)
+
+	// Record a migration
+	if err := RecordMigration(ctx, db, Sqlite, "20260115120000", "20260115120000_test_utc"); err != nil {
+		t.Fatalf("RecordMigration failed: %v", err)
+	}
+
+	// Record time after migration (add 1 second buffer for truncation)
+	afterUTC := time.Now().UTC().Add(time.Second).Truncate(time.Second)
+
+	// Query the applied_at timestamp directly
+	var appliedAtStr string
+	err = db.QueryRowContext(ctx,
+		"SELECT applied_at FROM _portsql_migrations WHERE name = ?",
+		"20260115120000_test_utc",
+	).Scan(&appliedAtStr)
+	if err != nil {
+		t.Fatalf("failed to query applied_at: %v", err)
+	}
+
+	// Parse the timestamp (SQLite stores as RFC3339 text)
+	appliedAt, err := time.Parse(time.RFC3339, appliedAtStr)
+	if err != nil {
+		t.Fatalf("failed to parse applied_at timestamp %q: %v", appliedAtStr, err)
+	}
+
+	// Verify the timestamp is in UTC (RFC3339 with Z suffix or +00:00)
+	if appliedAt.Location() != time.UTC {
+		t.Errorf("expected applied_at to be in UTC, got location %v", appliedAt.Location())
+	}
+
+	// Verify timestamp is within expected range (between before and after, accounting for truncation)
+	if appliedAt.Before(beforeUTC) || appliedAt.After(afterUTC) {
+		t.Errorf("applied_at %v is not between %v and %v", appliedAt, beforeUTC, afterUTC)
+	}
+
+	// Additionally verify the stored string ends with Z (UTC indicator)
+	if appliedAtStr[len(appliedAtStr)-1] != 'Z' {
+		t.Errorf("expected timestamp to end with 'Z' (UTC), got %q", appliedAtStr)
+	}
+}
+
+func TestRecordMigrationTx_AlwaysUTC(t *testing.T) {
+	// Test that RecordMigrationTx also uses UTC timestamps
+	db, err := sql.Open("sqlite", ":memory:")
+	if err != nil {
+		t.Fatalf("failed to open sqlite: %v", err)
+	}
+	defer db.Close()
+
+	ctx := context.Background()
+
+	// Create tracking table
+	if err := EnsureTrackingTable(ctx, db, Sqlite); err != nil {
+		t.Fatalf("EnsureTrackingTable failed: %v", err)
+	}
+
+	// Start a transaction
+	tx, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		t.Fatalf("failed to begin transaction: %v", err)
+	}
+
+	// Record time before migration (truncate to second since RFC3339 loses sub-second)
+	beforeUTC := time.Now().UTC().Truncate(time.Second)
+
+	// Record a migration within transaction
+	if err := RecordMigrationTx(ctx, tx, Sqlite, "20260115130000", "20260115130000_test_utc_tx"); err != nil {
+		tx.Rollback()
+		t.Fatalf("RecordMigrationTx failed: %v", err)
+	}
+
+	// Commit transaction
+	if err := tx.Commit(); err != nil {
+		t.Fatalf("failed to commit transaction: %v", err)
+	}
+
+	// Record time after migration (add 1 second buffer for truncation)
+	afterUTC := time.Now().UTC().Add(time.Second).Truncate(time.Second)
+
+	// Query the applied_at timestamp
+	var appliedAtStr string
+	err = db.QueryRowContext(ctx,
+		"SELECT applied_at FROM _portsql_migrations WHERE name = ?",
+		"20260115130000_test_utc_tx",
+	).Scan(&appliedAtStr)
+	if err != nil {
+		t.Fatalf("failed to query applied_at: %v", err)
+	}
+
+	// Parse and verify UTC
+	appliedAt, err := time.Parse(time.RFC3339, appliedAtStr)
+	if err != nil {
+		t.Fatalf("failed to parse applied_at timestamp %q: %v", appliedAtStr, err)
+	}
+
+	if appliedAt.Location() != time.UTC {
+		t.Errorf("expected applied_at to be in UTC, got location %v", appliedAt.Location())
+	}
+
+	if appliedAt.Before(beforeUTC) || appliedAt.After(afterUTC) {
+		t.Errorf("applied_at %v is not between %v and %v", appliedAt, beforeUTC, afterUTC)
+	}
+}
+
+// =============================================================================
+// Identifier Escaping Tests
+// =============================================================================
+
+func TestEscapeIdentifier(t *testing.T) {
+	tests := []struct {
+		name     string
+		input    string
+		dialect  string
+		expected string
+	}{
+		// Postgres (uses double quotes)
+		{name: "postgres simple", input: "users", dialect: Postgres, expected: `"users"`},
+		{name: "postgres with space", input: "user data", dialect: Postgres, expected: `"user data"`},
+		{name: "postgres with double quote", input: `user"name`, dialect: Postgres, expected: `"user""name"`},
+		{name: "postgres with multiple quotes", input: `a"b"c`, dialect: Postgres, expected: `"a""b""c"`},
+
+		// MySQL (uses backticks)
+		{name: "mysql simple", input: "users", dialect: MySQL, expected: "`users`"},
+		{name: "mysql with space", input: "user data", dialect: MySQL, expected: "`user data`"},
+		{name: "mysql with backtick", input: "user`name", dialect: MySQL, expected: "`user``name`"},
+		{name: "mysql with multiple backticks", input: "a`b`c", dialect: MySQL, expected: "`a``b``c`"},
+
+		// SQLite (uses double quotes like Postgres)
+		{name: "sqlite simple", input: "users", dialect: Sqlite, expected: `"users"`},
+		{name: "sqlite with space", input: "user data", dialect: Sqlite, expected: `"user data"`},
+		{name: "sqlite with double quote", input: `user"name`, dialect: Sqlite, expected: `"user""name"`},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := escapeIdentifier(tt.input, tt.dialect)
+			if got != tt.expected {
+				t.Errorf("escapeIdentifier(%q, %q) = %q, want %q", tt.input, tt.dialect, got, tt.expected)
+			}
+		})
+	}
+}
+
+func TestTimestampFormat_SQLite_RFC3339UTC(t *testing.T) {
+	// Verify that SQLite timestamps are stored in RFC3339 format with UTC timezone
+	db, err := sql.Open("sqlite", ":memory:")
+	if err != nil {
+		t.Fatalf("failed to open sqlite: %v", err)
+	}
+	defer db.Close()
+
+	ctx := context.Background()
+
+	// Create tracking table
+	if err := EnsureTrackingTable(ctx, db, Sqlite); err != nil {
+		t.Fatalf("EnsureTrackingTable failed: %v", err)
+	}
+
+	// Record multiple migrations
+	migrations := []string{
+		"20260115140000_first",
+		"20260115140001_second",
+		"20260115140002_third",
+	}
+
+	for _, name := range migrations {
+		version := name[:14]
+		if err := RecordMigration(ctx, db, Sqlite, version, name); err != nil {
+			t.Fatalf("RecordMigration(%s) failed: %v", name, err)
+		}
+	}
+
+	// Query all timestamps
+	rows, err := db.QueryContext(ctx, "SELECT name, applied_at FROM _portsql_migrations")
+	if err != nil {
+		t.Fatalf("failed to query migrations: %v", err)
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var name, appliedAtStr string
+		if err := rows.Scan(&name, &appliedAtStr); err != nil {
+			t.Fatalf("failed to scan row: %v", err)
+		}
+
+		// Verify format is valid RFC3339
+		parsedTime, err := time.Parse(time.RFC3339, appliedAtStr)
+		if err != nil {
+			t.Errorf("migration %s: timestamp %q is not valid RFC3339: %v", name, appliedAtStr, err)
+			continue
+		}
+
+		// Verify it's UTC (ends with Z or has +00:00 offset)
+		if parsedTime.Location() != time.UTC {
+			t.Errorf("migration %s: expected UTC, got location %v (timestamp: %s)",
+				name, parsedTime.Location(), appliedAtStr)
+		}
+
+		// Verify the string representation ends with 'Z'
+		if appliedAtStr[len(appliedAtStr)-1] != 'Z' {
+			t.Errorf("migration %s: expected timestamp to end with 'Z', got %q", name, appliedAtStr)
+		}
+	}
+
+	if err := rows.Err(); err != nil {
+		t.Fatalf("error iterating rows: %v", err)
 	}
 }

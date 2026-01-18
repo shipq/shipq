@@ -2,10 +2,36 @@ package cli
 
 import (
 	"bufio"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 )
+
+// ValidDialects is the list of supported database dialects.
+var ValidDialects = []string{"postgres", "mysql", "sqlite"}
+
+// normalizeDialect normalizes and validates a dialect string.
+// Returns the normalized dialect (lowercased, trimmed) or an error if invalid.
+// Returns empty string for empty input (to allow filtering).
+func normalizeDialect(s string) (string, error) {
+	d := strings.ToLower(strings.TrimSpace(s))
+	if d == "" {
+		return "", nil // Will be filtered out by caller
+	}
+	switch d {
+	case "postgres", "mysql", "sqlite":
+		return d, nil
+	default:
+		return "", fmt.Errorf(
+			"invalid dialect %q in portsql.ini\n"+
+				"  Supported dialects: postgres, mysql, sqlite\n"+
+				"  Example: dialects = postgres, sqlite\n"+
+				"  Hint: Check for typos or extra spaces",
+			s,
+		)
+	}
+}
 
 // Config holds the portsql configuration.
 type Config struct {
@@ -51,6 +77,13 @@ type CRUDConfig struct {
 	// TableScopes holds per-table scope overrides.
 	// Key is table name, value is scope column (empty string = no scope).
 	TableScopes map[string]string
+
+	// GlobalOrder is the default sort order for list queries.
+	// Valid values: "asc" (oldest first), "desc" (newest first, default).
+	GlobalOrder string
+	// TableOrders holds per-table order overrides.
+	// Key is table name, value is "asc" or "desc".
+	TableOrders map[string]string
 }
 
 // GetScopeForTable returns the scope column for a table.
@@ -65,6 +98,24 @@ func (c *CRUDConfig) GetScopeForTable(tableName string) string {
 	}
 	// Fall back to global scope
 	return c.GlobalScope
+}
+
+// GetOrderForTable returns the sort order for a table.
+// It checks table-specific overrides first, then falls back to global order.
+// Returns "desc" (newest first) if no order is configured.
+func (c *CRUDConfig) GetOrderForTable(tableName string) string {
+	// Check if table has a specific order override
+	if c.TableOrders != nil {
+		if order, exists := c.TableOrders[tableName]; exists {
+			return order
+		}
+	}
+	// Fall back to global order
+	if c.GlobalOrder != "" {
+		return c.GlobalOrder
+	}
+	// Default to desc (newest first)
+	return "desc"
 }
 
 // HasTableOverride returns true if the table has a specific scope override.
@@ -91,6 +142,8 @@ func DefaultConfig() *Config {
 		CRUD: CRUDConfig{
 			GlobalScope: "",
 			TableScopes: make(map[string]string),
+			GlobalOrder: "",
+			TableOrders: make(map[string]string),
 		},
 	}
 }
@@ -153,9 +206,16 @@ func LoadConfig(configPath string) (*Config, error) {
 				cfg.Database.URL = value
 			case "dialects":
 				// Parse comma-separated dialect list: "sqlite,postgres"
-				dialects := strings.Split(value, ",")
-				for i, d := range dialects {
-					dialects[i] = strings.TrimSpace(d)
+				parts := strings.Split(value, ",")
+				var dialects []string
+				for _, part := range parts {
+					d, err := normalizeDialect(part)
+					if err != nil {
+						return nil, err
+					}
+					if d != "" { // Filter out empty entries (e.g., trailing comma)
+						dialects = append(dialects, d)
+					}
 				}
 				cfg.Database.Dialects = dialects
 			}
@@ -175,6 +235,8 @@ func LoadConfig(configPath string) (*Config, error) {
 			switch key {
 			case "scope":
 				cfg.CRUD.GlobalScope = value
+			case "order":
+				cfg.CRUD.GlobalOrder = value
 			}
 		case strings.HasPrefix(section, "crud."):
 			// Per-table CRUD settings: [crud.tablename]
@@ -185,6 +247,11 @@ func LoadConfig(configPath string) (*Config, error) {
 					cfg.CRUD.TableScopes = make(map[string]string)
 				}
 				cfg.CRUD.TableScopes[tableName] = value
+			case "order":
+				if cfg.CRUD.TableOrders == nil {
+					cfg.CRUD.TableOrders = make(map[string]string)
+				}
+				cfg.CRUD.TableOrders[tableName] = value
 			}
 		}
 	}

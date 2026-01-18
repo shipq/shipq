@@ -226,7 +226,86 @@ func writeGetTypes(buf *bytes.Buffer, table ddl.Table, analysis TableAnalysis, s
 func writeListTypes(buf *bytes.Buffer, table ddl.Table, analysis TableAnalysis, singularPascal string, opts CRUDOptions) {
 	pluralPascal := toPascalCase(table.Name)
 
+	// Check if table supports cursor pagination (requires both created_at and public_id)
+	supportsCursor := analysis.HasCreatedAt && analysis.HasPublicID
+
 	buf.WriteString(fmt.Sprintf("// --- List ---\n\n"))
+
+	if supportsCursor {
+		// Generate cursor struct for cursor-based pagination
+		writeListCursorStruct(buf, pluralPascal)
+
+		// Generate params with cursor fields
+		writeListParamsWithCursor(buf, table, analysis, pluralPascal, opts)
+
+		// Generate result wrapper with Items and NextCursor
+		writeListResultWithCursor(buf, table, analysis, pluralPascal)
+
+		// Generate item struct with actual columns
+		writeListItemStruct(buf, table, analysis, pluralPascal)
+	} else {
+		// Fallback to offset-based pagination for tables without created_at/public_id
+		writeListParamsWithOffset(buf, table, pluralPascal, opts)
+		writeListResultDirect(buf, table, analysis, pluralPascal)
+	}
+}
+
+// writeListCursorStruct generates the cursor struct for pagination
+func writeListCursorStruct(buf *bytes.Buffer, pluralPascal string) {
+	buf.WriteString(fmt.Sprintf("// List%sCursor represents a pagination cursor.\n", pluralPascal))
+	buf.WriteString(fmt.Sprintf("type List%sCursor struct {\n", pluralPascal))
+	buf.WriteString("\tCreatedAt time.Time\n")
+	buf.WriteString("\tPublicID  string\n")
+	buf.WriteString("}\n\n")
+}
+
+// writeListParamsWithCursor generates params with cursor-based pagination fields
+func writeListParamsWithCursor(buf *bytes.Buffer, table ddl.Table, analysis TableAnalysis, pluralPascal string, opts CRUDOptions) {
+	buf.WriteString(fmt.Sprintf("// List%sParams contains parameters for listing %s.\n", pluralPascal, table.Name))
+	buf.WriteString(fmt.Sprintf("type List%sParams struct {\n", pluralPascal))
+
+	// Add scope column if configured
+	if opts.ScopeColumn != "" {
+		scopeCol := findColumn(table, opts.ScopeColumn)
+		if scopeCol != nil {
+			mapping := MapColumnType(*scopeCol)
+			buf.WriteString(fmt.Sprintf("\t%s %s\n", toPascalCase(opts.ScopeColumn), mapping.GoType))
+		}
+	}
+
+	buf.WriteString("\tLimit         int\n")
+	buf.WriteString(fmt.Sprintf("\tCursor        *List%sCursor\n", pluralPascal))
+	buf.WriteString("\tCreatedAfter  *time.Time\n")
+	buf.WriteString("\tCreatedBefore *time.Time\n")
+	buf.WriteString("}\n\n")
+}
+
+// writeListResultWithCursor generates result struct wrapping Items and NextCursor
+func writeListResultWithCursor(buf *bytes.Buffer, table ddl.Table, analysis TableAnalysis, pluralPascal string) {
+	buf.WriteString(fmt.Sprintf("// List%sResult contains the paginated result.\n", pluralPascal))
+	buf.WriteString(fmt.Sprintf("type List%sResult struct {\n", pluralPascal))
+	buf.WriteString(fmt.Sprintf("\tItems      []List%sItem\n", pluralPascal))
+	buf.WriteString(fmt.Sprintf("\tNextCursor *List%sCursor\n", pluralPascal))
+	buf.WriteString("}\n\n")
+}
+
+// writeListItemStruct generates the item struct with actual columns
+func writeListItemStruct(buf *bytes.Buffer, table ddl.Table, analysis TableAnalysis, pluralPascal string) {
+	buf.WriteString(fmt.Sprintf("// List%sItem contains a single item from a list of %s.\n", pluralPascal, table.Name))
+	buf.WriteString(fmt.Sprintf("type List%sItem struct {\n", pluralPascal))
+	for _, col := range analysis.ResultColumns {
+		// Exclude updated_at from list results for brevity
+		if col.Name == "updated_at" {
+			continue
+		}
+		mapping := MapColumnType(col)
+		buf.WriteString(fmt.Sprintf("\t%s %s\n", toPascalCase(col.Name), mapping.GoType))
+	}
+	buf.WriteString("}\n\n")
+}
+
+// writeListParamsWithOffset generates params with offset-based pagination (fallback)
+func writeListParamsWithOffset(buf *bytes.Buffer, table ddl.Table, pluralPascal string, opts CRUDOptions) {
 	buf.WriteString(fmt.Sprintf("// List%sParams contains parameters for listing %s.\n", pluralPascal, table.Name))
 	buf.WriteString(fmt.Sprintf("type List%sParams struct {\n", pluralPascal))
 
@@ -242,12 +321,14 @@ func writeListTypes(buf *bytes.Buffer, table ddl.Table, analysis TableAnalysis, 
 	buf.WriteString("\tLimit  int\n")
 	buf.WriteString("\tOffset int\n")
 	buf.WriteString("}\n\n")
+}
 
-	// List result - result columns excluding updated_at for brevity
+// writeListResultDirect generates result struct with columns directly (fallback)
+func writeListResultDirect(buf *bytes.Buffer, table ddl.Table, analysis TableAnalysis, pluralPascal string) {
 	buf.WriteString(fmt.Sprintf("// List%sResult contains a single item from a list of %s.\n", pluralPascal, table.Name))
 	buf.WriteString(fmt.Sprintf("type List%sResult struct {\n", pluralPascal))
 	for _, col := range analysis.ResultColumns {
-		// Optionally exclude updated_at from list results for brevity
+		// Exclude updated_at from list results for brevity
 		if col.Name == "updated_at" {
 			continue
 		}
@@ -362,9 +443,9 @@ func writeHardDeleteTypes(buf *bytes.Buffer, table ddl.Table, analysis TableAnal
 
 // findColumn finds a column by name in a table
 func findColumn(table ddl.Table, name string) *ddl.ColumnDefinition {
-	for _, col := range table.Columns {
-		if col.Name == name {
-			return &col
+	for i := range table.Columns {
+		if table.Columns[i].Name == name {
+			return &table.Columns[i]
 		}
 	}
 	return nil
@@ -493,9 +574,11 @@ func formatSQLString(sql string) string {
 }
 
 // ExtractResultInfo extracts result column information from a SELECT query AST.
-func ExtractResultInfo(ast *query.AST) []ResultInfo {
+// Returns an error if a SELECT expression cannot have its result name inferred
+// (e.g., complex expressions without an alias).
+func ExtractResultInfo(ast *query.AST) ([]ResultInfo, error) {
 	if ast.Kind != query.SelectQuery {
-		return nil
+		return nil, nil
 	}
 
 	var results []ResultInfo
@@ -547,8 +630,12 @@ func ExtractResultInfo(ast *query.AST) []ResultInfo {
 				// GoType will be set by GenerateQueriesPackage based on the nested type name
 				goType = "" // Marker - will be replaced with []TypeName
 			default:
-				// For other expressions, need an alias
-				continue
+				// Cannot infer name for this expression type - require an alias
+				return nil, fmt.Errorf(
+					"cannot infer result name for expression type %T in SELECT clause; "+
+						"use SelectExprAs() to provide an alias",
+					sel.Expr,
+				)
 			}
 		}
 
@@ -583,7 +670,7 @@ func ExtractResultInfo(ast *query.AST) []ResultInfo {
 		}
 	}
 
-	return results
+	return results, nil
 }
 
 // ExtractParamInfo extracts parameter information from the AST by walking
@@ -829,12 +916,16 @@ func GenerateDialectRunner(
 	}
 
 	// nanoid is only needed if we have CRUD tables with public_id (for Insert methods)
+	// strings is needed for cursor-based pagination (dynamic SQL building)
 	for _, tableName := range tableNames {
 		table := crudPlan.Schema.Tables[tableName]
 		analysis := AnalyzeTable(table)
 		if analysis.HasPublicID {
-			imports["github.com/portsql/nanoid"] = true
-			break
+			imports["github.com/shipq/shipq/nanoid"] = true
+		}
+		// Cursor pagination requires strings package for dynamic SQL building
+		if analysis.HasCreatedAt && analysis.HasPublicID {
+			imports["strings"] = true
 		}
 	}
 
@@ -1470,6 +1561,185 @@ func generateDialectGetMethod(buf *bytes.Buffer, table ddl.Table, analysis Table
 }
 
 func generateDialectListMethod(buf *bytes.Buffer, table ddl.Table, analysis TableAnalysis, singularPascal, pluralPascal string, opts CRUDOptions, dialect, typesPkg string, jsonColumns map[string]bool) {
+	// Check if cursor pagination is supported
+	supportsCursor := analysis.HasCreatedAt && analysis.HasPublicID
+
+	if supportsCursor {
+		generateDialectListMethodWithCursor(buf, table, analysis, singularPascal, pluralPascal, opts, dialect, typesPkg, jsonColumns)
+	} else {
+		generateDialectListMethodWithOffset(buf, table, analysis, singularPascal, pluralPascal, opts, dialect, typesPkg, jsonColumns)
+	}
+}
+
+// generateDialectListMethodWithCursor generates list method with cursor-based pagination
+func generateDialectListMethodWithCursor(buf *bytes.Buffer, table ddl.Table, analysis TableAnalysis, singularPascal, pluralPascal string, opts CRUDOptions, dialect, typesPkg string, jsonColumns map[string]bool) {
+	paramsType := fmt.Sprintf("%s.List%sParams", typesPkg, pluralPascal)
+	resultType := fmt.Sprintf("%s.List%sResult", typesPkg, pluralPascal)
+	itemType := fmt.Sprintf("%s.List%sItem", typesPkg, pluralPascal)
+	cursorType := fmt.Sprintf("%s.List%sCursor", typesPkg, pluralPascal)
+
+	buf.WriteString(fmt.Sprintf("// List%s fetches a paginated list of %s using cursor-based pagination.\n", pluralPascal, table.Name))
+	buf.WriteString(fmt.Sprintf("func (r *QueryRunner) List%s(ctx context.Context, params %s) (*%s, error) {\n",
+		pluralPascal, paramsType, resultType))
+
+	// Build SQL dynamically based on optional params
+	buf.WriteString("\t// Build SQL with optional cursor and filter conditions\n")
+	buf.WriteString(fmt.Sprintf("\tsql := r.list%sSQL\n", pluralPascal))
+	buf.WriteString("\tvar args []any\n")
+
+	// Add scope column first if configured
+	if opts.ScopeColumn != "" {
+		buf.WriteString(fmt.Sprintf("\targs = append(args, params.%s)\n", toPascalCase(opts.ScopeColumn)))
+	}
+
+	buf.WriteString("\n")
+
+	// Build WHERE clause additions for filters and cursor
+	buf.WriteString("\t// Add optional filter and cursor conditions\n")
+	buf.WriteString("\tvar whereClauses []string\n")
+
+	// CreatedAfter filter
+	buf.WriteString("\tif params.CreatedAfter != nil {\n")
+	buf.WriteString(fmt.Sprintf("\t\twhereClauses = append(whereClauses, %s)\n", formatDynamicCondition("created_at", ">=", dialect)))
+	buf.WriteString("\t\targs = append(args, *params.CreatedAfter)\n")
+	buf.WriteString("\t}\n")
+
+	// CreatedBefore filter
+	buf.WriteString("\tif params.CreatedBefore != nil {\n")
+	buf.WriteString(fmt.Sprintf("\t\twhereClauses = append(whereClauses, %s)\n", formatDynamicCondition("created_at", "<", dialect)))
+	buf.WriteString("\t\targs = append(args, *params.CreatedBefore)\n")
+	buf.WriteString("\t}\n")
+
+	// Cursor condition (keyset pagination)
+	buf.WriteString("\tif params.Cursor != nil {\n")
+	// The cursor condition: (created_at < ? OR (created_at = ? AND id < (SELECT id FROM table WHERE public_id = ?)))
+	cursorCondition := formatCursorCondition(table.Name, dialect)
+	buf.WriteString(fmt.Sprintf("\t\twhereClauses = append(whereClauses, %s)\n", cursorCondition))
+	buf.WriteString("\t\targs = append(args, params.Cursor.CreatedAt, params.Cursor.CreatedAt, params.Cursor.PublicID)\n")
+	buf.WriteString("\t}\n")
+
+	// Insert WHERE clauses into SQL
+	buf.WriteString("\n\t// Insert additional WHERE conditions before ORDER BY\n")
+	buf.WriteString("\tif len(whereClauses) > 0 {\n")
+	buf.WriteString("\t\torderIdx := strings.Index(sql, \" ORDER BY\")\n")
+	buf.WriteString("\t\tif orderIdx > 0 {\n")
+	buf.WriteString("\t\t\tsql = sql[:orderIdx] + \" AND \" + strings.Join(whereClauses, \" AND \") + sql[orderIdx:]\n")
+	buf.WriteString("\t\t}\n")
+	buf.WriteString("\t}\n")
+
+	// Fetch limit + 1 to detect if more pages exist
+	buf.WriteString("\n\t// Fetch limit + 1 to detect if more pages exist\n")
+	buf.WriteString("\targs = append(args, params.Limit + 1)\n")
+
+	buf.WriteString("\n\trows, err := r.db.QueryContext(ctx, sql, args...)\n")
+	buf.WriteString("\tif err != nil {\n")
+	buf.WriteString("\t\treturn nil, err\n")
+	buf.WriteString("\t}\n")
+	buf.WriteString("\tdefer rows.Close()\n")
+
+	buf.WriteString(fmt.Sprintf("\n\tvar items []%s\n", itemType))
+	buf.WriteString("\tfor rows.Next() {\n")
+	buf.WriteString(fmt.Sprintf("\t\tvar item %s\n", itemType))
+
+	// For SQLite with JSON columns, use sql.NullString to handle NULLs
+	if dialect == "sqlite" && len(jsonColumns) > 0 {
+		for _, col := range analysis.ResultColumns {
+			if col.Name == "updated_at" {
+				continue
+			}
+			fieldName := toPascalCase(col.Name)
+			if jsonColumns[fieldName] {
+				buf.WriteString(fmt.Sprintf("\t\tvar %sNull sql.NullString\n", toLowerCamelCase(col.Name)))
+			}
+		}
+	}
+
+	buf.WriteString("\t\terr := rows.Scan(\n")
+
+	// Scan result columns (excluding updated_at)
+	for _, col := range analysis.ResultColumns {
+		if col.Name == "updated_at" {
+			continue
+		}
+		fieldName := toPascalCase(col.Name)
+		if dialect == "sqlite" && jsonColumns[fieldName] {
+			buf.WriteString(fmt.Sprintf("\t\t\t&%sNull,\n", toLowerCamelCase(col.Name)))
+		} else {
+			buf.WriteString(fmt.Sprintf("\t\t\t&item.%s,\n", fieldName))
+		}
+	}
+	buf.WriteString("\t\t)\n")
+	buf.WriteString("\t\tif err != nil {\n")
+	buf.WriteString("\t\t\treturn nil, err\n")
+	buf.WriteString("\t\t}\n")
+
+	// For SQLite, convert JSON sql.NullString to []byte (nil if NULL)
+	if dialect == "sqlite" && len(jsonColumns) > 0 {
+		for _, col := range analysis.ResultColumns {
+			if col.Name == "updated_at" {
+				continue
+			}
+			fieldName := toPascalCase(col.Name)
+			if jsonColumns[fieldName] {
+				buf.WriteString(fmt.Sprintf("\t\tif %sNull.Valid {\n", toLowerCamelCase(col.Name)))
+				buf.WriteString(fmt.Sprintf("\t\t\titem.%s = []byte(%sNull.String)\n", fieldName, toLowerCamelCase(col.Name)))
+				buf.WriteString("\t\t}\n")
+			}
+		}
+	}
+
+	buf.WriteString("\t\titems = append(items, item)\n")
+	buf.WriteString("\t}\n")
+
+	buf.WriteString("\tif err := rows.Err(); err != nil {\n")
+	buf.WriteString("\t\treturn nil, err\n")
+	buf.WriteString("\t}\n")
+
+	// Build result with NextCursor
+	buf.WriteString("\n\t// Build result with NextCursor if more pages exist\n")
+	buf.WriteString(fmt.Sprintf("\tresult := &%s{}\n", resultType))
+	buf.WriteString("\tif len(items) > params.Limit {\n")
+	buf.WriteString("\t\t// More pages exist - trim to requested limit and build cursor\n")
+	buf.WriteString("\t\tresult.Items = items[:params.Limit]\n")
+	buf.WriteString("\t\tlastItem := result.Items[len(result.Items)-1]\n")
+	buf.WriteString(fmt.Sprintf("\t\tresult.NextCursor = &%s{\n", cursorType))
+	buf.WriteString("\t\t\tCreatedAt: lastItem.CreatedAt,\n")
+	buf.WriteString("\t\t\tPublicID:  lastItem.PublicId,\n")
+	buf.WriteString("\t\t}\n")
+	buf.WriteString("\t} else {\n")
+	buf.WriteString("\t\tresult.Items = items\n")
+	buf.WriteString("\t}\n")
+
+	buf.WriteString("\treturn result, nil\n")
+	buf.WriteString("}\n\n")
+}
+
+// formatDynamicCondition returns a Go string literal for a dynamic WHERE condition
+func formatDynamicCondition(column, operator, dialect string) string {
+	switch dialect {
+	case "mysql":
+		return fmt.Sprintf("`%s` + ` %s ?`", column, operator)
+	default:
+		// Use backtick for the outer Go string to avoid escaping inner double quotes
+		return fmt.Sprintf("`\"%s\" %s ?`", column, operator)
+	}
+}
+
+// formatCursorCondition returns a Go string literal for the cursor keyset condition
+func formatCursorCondition(tableName, dialect string) string {
+	switch dialect {
+	case "mysql":
+		// For MySQL, use backticks for identifier quoting
+		return fmt.Sprintf("`(` + \"`created_at`\" + ` < ? OR (` + \"`created_at`\" + ` = ? AND ` + \"`id`\" + ` < (SELECT ` + \"`id`\" + ` FROM ` + \"`%s`\" + ` WHERE ` + \"`public_id`\" + ` = ?)))`", tableName)
+	default:
+		// For Postgres/SQLite, use double quotes for identifier quoting
+		// Use backticks for the Go string to contain the SQL
+		return fmt.Sprintf("`(\"created_at\" < ? OR (\"created_at\" = ? AND \"id\" < (SELECT \"id\" FROM \"%s\" WHERE \"public_id\" = ?)))`", tableName)
+	}
+}
+
+// generateDialectListMethodWithOffset generates list method with offset-based pagination (fallback)
+func generateDialectListMethodWithOffset(buf *bytes.Buffer, table ddl.Table, analysis TableAnalysis, singularPascal, pluralPascal string, opts CRUDOptions, dialect, typesPkg string, jsonColumns map[string]bool) {
 	paramsType := fmt.Sprintf("%s.List%sParams", typesPkg, pluralPascal)
 	resultType := fmt.Sprintf("%s.List%sResult", typesPkg, pluralPascal)
 

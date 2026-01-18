@@ -1,6 +1,7 @@
 package codegen
 
 import (
+	"fmt"
 	"go/parser"
 	"go/token"
 	"strings"
@@ -492,8 +493,8 @@ func TestGenerateDialectRunner_CRUD_ContainsNanoidImport(t *testing.T) {
 	codeStr := string(code)
 
 	// Should import nanoid
-	if !strings.Contains(codeStr, "github.com/portsql/nanoid") {
-		t.Error("Generated code should import github.com/portsql/nanoid")
+	if !strings.Contains(codeStr, "github.com/shipq/shipq/nanoid") {
+		t.Error("Generated code should import github.com/shipq/shipq/nanoid")
 	}
 
 	// Should use nanoid.New()
@@ -656,6 +657,502 @@ func TestGenerateCRUDSQL_TableWithoutTimestamps(t *testing.T) {
 			// Update should NOT have NOW() calls
 			if strings.Contains(sqlSet.UpdateSQL, "NOW()") || strings.Contains(sqlSet.UpdateSQL, "datetime") {
 				t.Errorf("UpdateSQL should not have timestamp functions when no timestamp columns.\nGot: %s", sqlSet.UpdateSQL)
+			}
+		})
+	}
+}
+
+// =============================================================================
+// Cursor-Based Pagination SQL Tests
+// =============================================================================
+
+func TestGenerateCRUDSQL_List_CursorPagination_CompositeOrderBy(t *testing.T) {
+	// Tables with created_at AND public_id should use composite ORDER BY for cursor pagination
+	table := ddl.Table{
+		Name: "users",
+		Columns: []ddl.ColumnDefinition{
+			{Name: "id", Type: ddl.BigintType, PrimaryKey: true},
+			{Name: "public_id", Type: ddl.StringType},
+			{Name: "name", Type: ddl.StringType},
+			{Name: "created_at", Type: ddl.DatetimeType},
+			{Name: "updated_at", Type: ddl.DatetimeType},
+			{Name: "deleted_at", Type: ddl.DatetimeType, Nullable: true},
+		},
+	}
+
+	for _, dialect := range []SQLDialect{SQLDialectPostgres, SQLDialectMySQL, SQLDialectSQLite} {
+		t.Run(string(dialect), func(t *testing.T) {
+			sqlSet := GenerateCRUDSQL(table, dialect, CRUDOptions{})
+
+			// Should have composite ORDER BY (created_at DESC, id DESC)
+			createdAtCol := quoteIdentifier("created_at", dialect)
+			idCol := quoteIdentifier("id", dialect)
+			expectedOrder := fmt.Sprintf("ORDER BY %s DESC, %s DESC", createdAtCol, idCol)
+
+			if !strings.Contains(sqlSet.ListSQL, expectedOrder) {
+				t.Errorf("ListSQL should have composite ORDER BY for cursor pagination.\nExpected to contain: %s\nGot: %s",
+					expectedOrder, sqlSet.ListSQL)
+			}
+		})
+	}
+}
+
+func TestGenerateCRUDSQL_List_CursorPagination_NoOffset(t *testing.T) {
+	// Cursor pagination should NOT use OFFSET
+	table := ddl.Table{
+		Name: "users",
+		Columns: []ddl.ColumnDefinition{
+			{Name: "id", Type: ddl.BigintType, PrimaryKey: true},
+			{Name: "public_id", Type: ddl.StringType},
+			{Name: "name", Type: ddl.StringType},
+			{Name: "created_at", Type: ddl.DatetimeType},
+			{Name: "updated_at", Type: ddl.DatetimeType},
+		},
+	}
+
+	for _, dialect := range []SQLDialect{SQLDialectPostgres, SQLDialectMySQL, SQLDialectSQLite} {
+		t.Run(string(dialect), func(t *testing.T) {
+			sqlSet := GenerateCRUDSQL(table, dialect, CRUDOptions{})
+
+			// Should NOT have OFFSET for cursor pagination
+			if strings.Contains(strings.ToUpper(sqlSet.ListSQL), "OFFSET") {
+				t.Errorf("ListSQL should NOT have OFFSET for cursor pagination.\nGot: %s", sqlSet.ListSQL)
+			}
+
+			// Should still have LIMIT
+			if !strings.Contains(strings.ToUpper(sqlSet.ListSQL), "LIMIT") {
+				t.Errorf("ListSQL should have LIMIT.\nGot: %s", sqlSet.ListSQL)
+			}
+		})
+	}
+}
+
+func TestGenerateCRUDSQL_List_OffsetFallback_WithoutCursorSupport(t *testing.T) {
+	// Tables without created_at should fall back to OFFSET pagination
+	table := ddl.Table{
+		Name: "settings",
+		Columns: []ddl.ColumnDefinition{
+			{Name: "id", Type: ddl.BigintType, PrimaryKey: true},
+			{Name: "key", Type: ddl.StringType},
+			{Name: "value", Type: ddl.TextType},
+		},
+	}
+
+	for _, dialect := range []SQLDialect{SQLDialectPostgres, SQLDialectMySQL, SQLDialectSQLite} {
+		t.Run(string(dialect), func(t *testing.T) {
+			sqlSet := GenerateCRUDSQL(table, dialect, CRUDOptions{})
+
+			// Should have OFFSET for fallback pagination
+			if !strings.Contains(strings.ToUpper(sqlSet.ListSQL), "OFFSET") {
+				t.Errorf("ListSQL should have OFFSET for tables without cursor support.\nGot: %s", sqlSet.ListSQL)
+			}
+		})
+	}
+}
+
+func TestGenerateCRUDSQL_List_CursorPagination_BaseSQL(t *testing.T) {
+	// The base ListSQL should be usable as a starting point for dynamic query building
+	table := ddl.Table{
+		Name: "users",
+		Columns: []ddl.ColumnDefinition{
+			{Name: "id", Type: ddl.BigintType, PrimaryKey: true},
+			{Name: "public_id", Type: ddl.StringType},
+			{Name: "name", Type: ddl.StringType},
+			{Name: "email", Type: ddl.StringType},
+			{Name: "created_at", Type: ddl.DatetimeType},
+			{Name: "updated_at", Type: ddl.DatetimeType},
+			{Name: "deleted_at", Type: ddl.DatetimeType, Nullable: true},
+		},
+	}
+
+	tests := []struct {
+		name    string
+		dialect SQLDialect
+	}{
+		{"Postgres", SQLDialectPostgres},
+		{"MySQL", SQLDialectMySQL},
+		{"SQLite", SQLDialectSQLite},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			sqlSet := GenerateCRUDSQL(table, tt.dialect, CRUDOptions{})
+
+			// Base SQL should select public_id, name, email, created_at (exclude id, updated_at, deleted_at)
+			if !strings.Contains(sqlSet.ListSQL, quoteIdentifier("public_id", tt.dialect)) {
+				t.Errorf("ListSQL should select public_id.\nGot: %s", sqlSet.ListSQL)
+			}
+			if !strings.Contains(sqlSet.ListSQL, quoteIdentifier("name", tt.dialect)) {
+				t.Errorf("ListSQL should select name.\nGot: %s", sqlSet.ListSQL)
+			}
+			if !strings.Contains(sqlSet.ListSQL, quoteIdentifier("created_at", tt.dialect)) {
+				t.Errorf("ListSQL should select created_at.\nGot: %s", sqlSet.ListSQL)
+			}
+
+			// Should have deleted_at IS NULL condition
+			if !strings.Contains(sqlSet.ListSQL, "IS NULL") {
+				t.Errorf("ListSQL should have deleted_at IS NULL.\nGot: %s", sqlSet.ListSQL)
+			}
+		})
+	}
+}
+
+func TestGenerateCRUDSQL_List_CursorPagination_WithScope(t *testing.T) {
+	table := ddl.Table{
+		Name: "users",
+		Columns: []ddl.ColumnDefinition{
+			{Name: "id", Type: ddl.BigintType, PrimaryKey: true},
+			{Name: "public_id", Type: ddl.StringType},
+			{Name: "org_id", Type: ddl.BigintType},
+			{Name: "name", Type: ddl.StringType},
+			{Name: "created_at", Type: ddl.DatetimeType},
+			{Name: "updated_at", Type: ddl.DatetimeType},
+		},
+	}
+
+	opts := CRUDOptions{ScopeColumn: "org_id"}
+
+	for _, dialect := range []SQLDialect{SQLDialectPostgres, SQLDialectMySQL, SQLDialectSQLite} {
+		t.Run(string(dialect), func(t *testing.T) {
+			sqlSet := GenerateCRUDSQL(table, dialect, opts)
+
+			// Should include scope column in WHERE
+			if !strings.Contains(sqlSet.ListSQL, quoteIdentifier("org_id", dialect)) {
+				t.Errorf("ListSQL should include scope column.\nGot: %s", sqlSet.ListSQL)
+			}
+
+			// Should still have composite ORDER BY
+			createdAtCol := quoteIdentifier("created_at", dialect)
+			idCol := quoteIdentifier("id", dialect)
+			expectedOrder := fmt.Sprintf("ORDER BY %s DESC, %s DESC", createdAtCol, idCol)
+
+			if !strings.Contains(sqlSet.ListSQL, expectedOrder) {
+				t.Errorf("ListSQL with scope should still have composite ORDER BY.\nGot: %s", sqlSet.ListSQL)
+			}
+
+			// Should NOT have OFFSET
+			if strings.Contains(strings.ToUpper(sqlSet.ListSQL), "OFFSET") {
+				t.Errorf("ListSQL with scope should NOT have OFFSET.\nGot: %s", sqlSet.ListSQL)
+			}
+		})
+	}
+}
+
+// =============================================================================
+// Runner Method Generation Tests for Cursor Pagination
+// =============================================================================
+
+func TestGenerateDialectRunner_List_CursorPagination_ReturnType(t *testing.T) {
+	// Tables with cursor support should return *ListUsersResult (wrapper struct)
+	// instead of []ListUsersResult (slice)
+	plan := &migrate.MigrationPlan{
+		Schema: migrate.Schema{
+			Name: "test",
+			Tables: map[string]ddl.Table{
+				"users": {
+					Name: "users",
+					Columns: []ddl.ColumnDefinition{
+						{Name: "id", Type: ddl.BigintType, PrimaryKey: true},
+						{Name: "public_id", Type: ddl.StringType},
+						{Name: "name", Type: ddl.StringType},
+						{Name: "created_at", Type: ddl.DatetimeType},
+						{Name: "updated_at", Type: ddl.DatetimeType},
+					},
+				},
+			},
+		},
+	}
+
+	code, err := GenerateDialectRunner(nil, plan, "sqlite", "myapp/queries", make(map[string]CRUDOptions))
+	if err != nil {
+		t.Fatalf("GenerateDialectRunner failed: %v", err)
+	}
+
+	codeStr := string(code)
+
+	// Should return *queries.ListUsersResult (not []queries.ListUsersResult)
+	if !strings.Contains(codeStr, "*queries.ListUsersResult") {
+		t.Errorf("ListUsers should return *queries.ListUsersResult for cursor pagination.\nGenerated code:\n%s", codeStr)
+	}
+
+	// The return should NOT be a slice for cursor-enabled tables
+	// Find the ListUsers method signature
+	methodIdx := strings.Index(codeStr, "func (r *QueryRunner) ListUsers")
+	if methodIdx == -1 {
+		t.Fatal("ListUsers method not found")
+	}
+	// Check the next 200 chars for the return type
+	endIdx := methodIdx + 200
+	if endIdx > len(codeStr) {
+		endIdx = len(codeStr)
+	}
+	methodSig := codeStr[methodIdx:endIdx]
+
+	// Should have *queries.ListUsersResult, error in signature
+	if !strings.Contains(methodSig, "(*queries.ListUsersResult, error)") {
+		t.Errorf("ListUsers should return (*queries.ListUsersResult, error).\nMethod signature: %s", methodSig)
+	}
+}
+
+func TestGenerateDialectRunner_List_CursorPagination_FetchNPlusOne(t *testing.T) {
+	// Generated code should fetch limit+1 to detect if more pages exist
+	plan := &migrate.MigrationPlan{
+		Schema: migrate.Schema{
+			Name: "test",
+			Tables: map[string]ddl.Table{
+				"users": {
+					Name: "users",
+					Columns: []ddl.ColumnDefinition{
+						{Name: "id", Type: ddl.BigintType, PrimaryKey: true},
+						{Name: "public_id", Type: ddl.StringType},
+						{Name: "name", Type: ddl.StringType},
+						{Name: "created_at", Type: ddl.DatetimeType},
+						{Name: "updated_at", Type: ddl.DatetimeType},
+					},
+				},
+			},
+		},
+	}
+
+	code, err := GenerateDialectRunner(nil, plan, "sqlite", "myapp/queries", make(map[string]CRUDOptions))
+	if err != nil {
+		t.Fatalf("GenerateDialectRunner failed: %v", err)
+	}
+
+	codeStr := string(code)
+
+	// Find the ListUsers method
+	methodIdx := strings.Index(codeStr, "func (r *QueryRunner) ListUsers")
+	if methodIdx == -1 {
+		t.Fatal("ListUsers method not found")
+	}
+
+	// Find the end of the method (next func declaration or end of file)
+	nextFuncIdx := strings.Index(codeStr[methodIdx+1:], "\nfunc ")
+	var methodCode string
+	if nextFuncIdx == -1 {
+		methodCode = codeStr[methodIdx:]
+	} else {
+		methodCode = codeStr[methodIdx : methodIdx+1+nextFuncIdx]
+	}
+
+	// Should use params.Limit + 1 to fetch one extra row
+	if !strings.Contains(methodCode, "params.Limit + 1") && !strings.Contains(methodCode, "params.Limit+1") {
+		t.Errorf("ListUsers should fetch params.Limit + 1 rows.\nMethod code:\n%s", methodCode)
+	}
+}
+
+func TestGenerateDialectRunner_List_CursorPagination_BuildsNextCursor(t *testing.T) {
+	// Generated code should build NextCursor from the last item when more pages exist
+	plan := &migrate.MigrationPlan{
+		Schema: migrate.Schema{
+			Name: "test",
+			Tables: map[string]ddl.Table{
+				"users": {
+					Name: "users",
+					Columns: []ddl.ColumnDefinition{
+						{Name: "id", Type: ddl.BigintType, PrimaryKey: true},
+						{Name: "public_id", Type: ddl.StringType},
+						{Name: "name", Type: ddl.StringType},
+						{Name: "created_at", Type: ddl.DatetimeType},
+						{Name: "updated_at", Type: ddl.DatetimeType},
+					},
+				},
+			},
+		},
+	}
+
+	code, err := GenerateDialectRunner(nil, plan, "sqlite", "myapp/queries", make(map[string]CRUDOptions))
+	if err != nil {
+		t.Fatalf("GenerateDialectRunner failed: %v", err)
+	}
+
+	codeStr := string(code)
+
+	// Find the ListUsers method
+	methodIdx := strings.Index(codeStr, "func (r *QueryRunner) ListUsers")
+	if methodIdx == -1 {
+		t.Fatal("ListUsers method not found")
+	}
+
+	// Find the end of the method
+	nextFuncIdx := strings.Index(codeStr[methodIdx+1:], "\nfunc ")
+	var methodCode string
+	if nextFuncIdx == -1 {
+		methodCode = codeStr[methodIdx:]
+	} else {
+		methodCode = codeStr[methodIdx : methodIdx+1+nextFuncIdx]
+	}
+
+	// Should construct NextCursor with CreatedAt and PublicID
+	if !strings.Contains(methodCode, "NextCursor") {
+		t.Errorf("ListUsers should construct NextCursor.\nMethod code:\n%s", methodCode)
+	}
+
+	// Should reference ListUsersCursor
+	if !strings.Contains(methodCode, "ListUsersCursor") {
+		t.Errorf("ListUsers should use ListUsersCursor type.\nMethod code:\n%s", methodCode)
+	}
+}
+
+func TestGenerateDialectRunner_List_CursorPagination_DynamicSQL(t *testing.T) {
+	// Generated code should build SQL dynamically based on cursor/filter params
+	plan := &migrate.MigrationPlan{
+		Schema: migrate.Schema{
+			Name: "test",
+			Tables: map[string]ddl.Table{
+				"users": {
+					Name: "users",
+					Columns: []ddl.ColumnDefinition{
+						{Name: "id", Type: ddl.BigintType, PrimaryKey: true},
+						{Name: "public_id", Type: ddl.StringType},
+						{Name: "name", Type: ddl.StringType},
+						{Name: "created_at", Type: ddl.DatetimeType},
+						{Name: "updated_at", Type: ddl.DatetimeType},
+					},
+				},
+			},
+		},
+	}
+
+	code, err := GenerateDialectRunner(nil, plan, "sqlite", "myapp/queries", make(map[string]CRUDOptions))
+	if err != nil {
+		t.Fatalf("GenerateDialectRunner failed: %v", err)
+	}
+
+	codeStr := string(code)
+
+	// Find the ListUsers method
+	methodIdx := strings.Index(codeStr, "func (r *QueryRunner) ListUsers")
+	if methodIdx == -1 {
+		t.Fatal("ListUsers method not found")
+	}
+
+	// Find the end of the method
+	nextFuncIdx := strings.Index(codeStr[methodIdx+1:], "\nfunc ")
+	var methodCode string
+	if nextFuncIdx == -1 {
+		methodCode = codeStr[methodIdx:]
+	} else {
+		methodCode = codeStr[methodIdx : methodIdx+1+nextFuncIdx]
+	}
+
+	// Should check params.Cursor != nil
+	if !strings.Contains(methodCode, "params.Cursor != nil") {
+		t.Errorf("ListUsers should check if cursor is provided.\nMethod code:\n%s", methodCode)
+	}
+
+	// Should check params.CreatedAfter != nil
+	if !strings.Contains(methodCode, "params.CreatedAfter != nil") {
+		t.Errorf("ListUsers should check if CreatedAfter is provided.\nMethod code:\n%s", methodCode)
+	}
+
+	// Should check params.CreatedBefore != nil
+	if !strings.Contains(methodCode, "params.CreatedBefore != nil") {
+		t.Errorf("ListUsers should check if CreatedBefore is provided.\nMethod code:\n%s", methodCode)
+	}
+}
+
+func TestGenerateDialectRunner_List_OffsetFallback_ReturnType(t *testing.T) {
+	// Tables without cursor support should still return []ListSettingsResult
+	plan := &migrate.MigrationPlan{
+		Schema: migrate.Schema{
+			Name: "test",
+			Tables: map[string]ddl.Table{
+				"settings": {
+					Name: "settings",
+					Columns: []ddl.ColumnDefinition{
+						{Name: "id", Type: ddl.BigintType, PrimaryKey: true},
+						{Name: "key", Type: ddl.StringType},
+						{Name: "value", Type: ddl.TextType},
+					},
+				},
+			},
+		},
+	}
+
+	code, err := GenerateDialectRunner(nil, plan, "sqlite", "myapp/queries", make(map[string]CRUDOptions))
+	if err != nil {
+		t.Fatalf("GenerateDialectRunner failed: %v", err)
+	}
+
+	codeStr := string(code)
+
+	// Should return []queries.ListSettingsResult (slice, not wrapper)
+	if !strings.Contains(codeStr, "[]queries.ListSettingsResult") {
+		t.Errorf("ListSettings should return []queries.ListSettingsResult for offset pagination.\nGenerated code:\n%s", codeStr)
+	}
+
+	// Verify it's valid Go
+	fset := token.NewFileSet()
+	_, err = parser.ParseFile(fset, "runner.go", code, parser.AllErrors)
+	if err != nil {
+		t.Errorf("Generated code should be valid Go: %v\n\nGenerated code:\n%s", err, codeStr)
+	}
+}
+
+// =============================================================================
+// Order Direction SQL Tests
+// =============================================================================
+
+func TestGenerateCRUDSQL_List_OrderAsc(t *testing.T) {
+	table := ddl.Table{
+		Name: "audit_logs",
+		Columns: []ddl.ColumnDefinition{
+			{Name: "id", Type: ddl.BigintType, PrimaryKey: true},
+			{Name: "public_id", Type: ddl.StringType},
+			{Name: "message", Type: ddl.StringType},
+			{Name: "created_at", Type: ddl.DatetimeType},
+			{Name: "updated_at", Type: ddl.DatetimeType},
+		},
+	}
+
+	opts := CRUDOptions{OrderAsc: true}
+
+	for _, dialect := range []SQLDialect{SQLDialectPostgres, SQLDialectMySQL, SQLDialectSQLite} {
+		t.Run(string(dialect), func(t *testing.T) {
+			sqlSet := GenerateCRUDSQL(table, dialect, opts)
+
+			// Should have ORDER BY ASC
+			createdAtCol := quoteIdentifier("created_at", dialect)
+			idCol := quoteIdentifier("id", dialect)
+			expectedOrder := fmt.Sprintf("ORDER BY %s ASC, %s ASC", createdAtCol, idCol)
+
+			if !strings.Contains(sqlSet.ListSQL, expectedOrder) {
+				t.Errorf("ListSQL with OrderAsc should have ASC order.\nExpected to contain: %s\nGot: %s",
+					expectedOrder, sqlSet.ListSQL)
+			}
+		})
+	}
+}
+
+func TestGenerateCRUDSQL_List_OrderDesc_Default(t *testing.T) {
+	table := ddl.Table{
+		Name: "users",
+		Columns: []ddl.ColumnDefinition{
+			{Name: "id", Type: ddl.BigintType, PrimaryKey: true},
+			{Name: "public_id", Type: ddl.StringType},
+			{Name: "name", Type: ddl.StringType},
+			{Name: "created_at", Type: ddl.DatetimeType},
+			{Name: "updated_at", Type: ddl.DatetimeType},
+		},
+	}
+
+	// OrderAsc: false (default) should produce DESC
+	opts := CRUDOptions{OrderAsc: false}
+
+	for _, dialect := range []SQLDialect{SQLDialectPostgres, SQLDialectMySQL, SQLDialectSQLite} {
+		t.Run(string(dialect), func(t *testing.T) {
+			sqlSet := GenerateCRUDSQL(table, dialect, opts)
+
+			// Should have ORDER BY DESC (default)
+			createdAtCol := quoteIdentifier("created_at", dialect)
+			idCol := quoteIdentifier("id", dialect)
+			expectedOrder := fmt.Sprintf("ORDER BY %s DESC, %s DESC", createdAtCol, idCol)
+
+			if !strings.Contains(sqlSet.ListSQL, expectedOrder) {
+				t.Errorf("ListSQL with default OrderAsc=false should have DESC order.\nExpected to contain: %s\nGot: %s",
+					expectedOrder, sqlSet.ListSQL)
 			}
 		})
 	}

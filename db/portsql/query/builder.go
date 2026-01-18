@@ -1,5 +1,9 @@
 package query
 
+import (
+	"log"
+)
+
 // Table is implemented by generated table structs.
 type Table interface {
 	TableName() string
@@ -68,7 +72,7 @@ func (b *SelectBuilder) SelectExprAs(expr Expr, alias string) *SelectBuilder {
 // Panics if no columns are provided, as JSON aggregation requires at least one column.
 func (b *SelectBuilder) SelectJSONAgg(fieldName string, cols ...Column) *SelectBuilder {
 	if len(cols) == 0 {
-		panic("SelectJSONAgg requires at least one column")
+		log.Fatalln("SelectJSONAgg requires at least one column - please fix your query and try again.")
 	}
 	b.ast.SelectCols = append(b.ast.SelectCols, SelectExpr{
 		Expr: JSONAggExpr{

@@ -139,7 +139,10 @@ func TestExtractResultInfo(t *testing.T) {
 		},
 	}
 
-	results := ExtractResultInfo(ast)
+	results, err := ExtractResultInfo(ast)
+	if err != nil {
+		t.Fatalf("ExtractResultInfo failed: %v", err)
+	}
 
 	if len(results) != 3 {
 		t.Fatalf("expected 3 results, got %d", len(results))
@@ -156,6 +159,78 @@ func TestExtractResultInfo(t *testing.T) {
 	// Check aliased column
 	if results[2].Name != "user_email" {
 		t.Errorf("expected name 'user_email', got %q", results[2].Name)
+	}
+}
+
+func TestExtractResultInfo_ErrorOnUnrecognizedExpr(t *testing.T) {
+	// BinaryExpr without an alias should fail - we can't infer a result name for it
+	ast := &query.AST{
+		Kind: query.SelectQuery,
+		FromTable: query.TableRef{
+			Name: "users",
+		},
+		SelectCols: []query.SelectExpr{
+			{Expr: query.ColumnExpr{Column: query.Int64Column{Table: "users", Name: "id"}}},
+			// This binary expr has no alias, so we can't determine its result name
+			{Expr: query.BinaryExpr{
+				Left:  query.ColumnExpr{Column: query.Int64Column{Table: "users", Name: "a"}},
+				Op:    query.OpEq, // Using OpEq as example of a binary operation
+				Right: query.ColumnExpr{Column: query.Int64Column{Table: "users", Name: "b"}},
+			}},
+		},
+	}
+
+	_, err := ExtractResultInfo(ast)
+	if err == nil {
+		t.Fatal("expected error for unrecognized expression without alias, got nil")
+	}
+
+	errStr := err.Error()
+
+	// Check error mentions the expression type
+	if !strings.Contains(errStr, "BinaryExpr") {
+		t.Errorf("error should mention expression type, got: %s", errStr)
+	}
+
+	// Check error suggests using SelectExprAs
+	if !strings.Contains(errStr, "SelectExprAs") {
+		t.Errorf("error should suggest SelectExprAs, got: %s", errStr)
+	}
+}
+
+func TestExtractResultInfo_AliasedExpressionOK(t *testing.T) {
+	// BinaryExpr WITH an alias should succeed
+	ast := &query.AST{
+		Kind: query.SelectQuery,
+		FromTable: query.TableRef{
+			Name: "users",
+		},
+		SelectCols: []query.SelectExpr{
+			{Expr: query.ColumnExpr{Column: query.Int64Column{Table: "users", Name: "id"}}},
+			// This binary expr has an alias, so it should work
+			{
+				Expr: query.BinaryExpr{
+					Left:  query.ColumnExpr{Column: query.Int64Column{Table: "users", Name: "a"}},
+					Op:    query.OpEq,
+					Right: query.ColumnExpr{Column: query.Int64Column{Table: "users", Name: "b"}},
+				},
+				Alias: "is_equal",
+			},
+		},
+	}
+
+	results, err := ExtractResultInfo(ast)
+	if err != nil {
+		t.Fatalf("ExtractResultInfo failed: %v", err)
+	}
+
+	if len(results) != 2 {
+		t.Fatalf("expected 2 results, got %d", len(results))
+	}
+
+	// Check the aliased expression result
+	if results[1].Name != "is_equal" {
+		t.Errorf("expected name 'is_equal', got %q", results[1].Name)
 	}
 }
 
@@ -549,7 +624,10 @@ func TestExtractResultInfo_WithJSONAgg(t *testing.T) {
 		},
 	}
 
-	results := ExtractResultInfo(ast)
+	results, err := ExtractResultInfo(ast)
+	if err != nil {
+		t.Fatalf("ExtractResultInfo failed: %v", err)
+	}
 
 	if len(results) != 3 {
 		t.Fatalf("expected 3 results, got %d", len(results))

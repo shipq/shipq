@@ -377,3 +377,208 @@ scope = org_id
 		}
 	}
 }
+
+// =============================================================================
+// Cursor Pagination Integration Tests
+// =============================================================================
+
+func TestIntegration_CursorPagination_GeneratedCode(t *testing.T) {
+	// Test that cursor pagination generates the right types and code structure
+
+	// Create schema with AddTable-style tables (has created_at and public_id)
+	schema := createAddTableSchema("users")
+
+	config := `[database]
+url = sqlite:test.db
+
+[paths]
+queries_out = queries
+`
+
+	tmpDir := setupTestProject(t, schema, config)
+	cfg, err := LoadConfig(tmpDir)
+	if err != nil {
+		t.Fatalf("LoadConfig failed: %v", err)
+	}
+
+	// Collect tables that need CRUD
+	var crudTables []ddl.Table
+	for _, table := range schema.Schema.Tables {
+		crudTables = append(crudTables, table)
+	}
+
+	tableOpts := make(map[string]codegen.CRUDOptions)
+	for _, table := range crudTables {
+		tableOpts[table.Name] = codegen.CRUDOptions{
+			ScopeColumn: cfg.CRUD.GetScopeForTable(table.Name),
+			OrderAsc:    cfg.CRUD.GetOrderForTable(table.Name) == "asc",
+		}
+	}
+
+	// Create CRUD plan
+	crudPlan := &migrate.MigrationPlan{
+		Schema: migrate.Schema{
+			Tables: make(map[string]ddl.Table),
+		},
+	}
+	for _, table := range crudTables {
+		crudPlan.Schema.Tables[table.Name] = table
+	}
+
+	// Generate shared types
+	code, err := codegen.GenerateSharedTypes(nil, crudPlan, "queries", tableOpts)
+	if err != nil {
+		t.Fatalf("GenerateSharedTypes failed: %v", err)
+	}
+
+	codeStr := string(code)
+
+	// Verify cursor pagination types are generated for tables with created_at + public_id
+	expectedCursorTypes := []string{
+		"ListUsersCursor",       // Cursor struct
+		"ListUsersItem",         // Item struct (actual data)
+		"ListUsersResult",       // Wrapper with Items + NextCursor
+		"ListUsersParams",       // Params with Cursor, CreatedAfter, CreatedBefore
+	}
+
+	for _, typeName := range expectedCursorTypes {
+		if !strings.Contains(codeStr, "type "+typeName+" struct") {
+			t.Errorf("expected cursor pagination type %s not found in generated code", typeName)
+		}
+	}
+
+	// Verify cursor struct has CreatedAt and PublicID
+	if !strings.Contains(codeStr, "CreatedAt time.Time") {
+		t.Error("ListUsersCursor should have CreatedAt time.Time field")
+	}
+	if !strings.Contains(codeStr, "PublicID  string") {
+		t.Error("ListUsersCursor should have PublicID string field")
+	}
+
+	// Verify params has cursor fields
+	if !strings.Contains(codeStr, "Cursor        *ListUsersCursor") {
+		t.Error("ListUsersParams should have Cursor *ListUsersCursor field")
+	}
+	if !strings.Contains(codeStr, "CreatedAfter  *time.Time") {
+		t.Error("ListUsersParams should have CreatedAfter *time.Time field")
+	}
+	if !strings.Contains(codeStr, "CreatedBefore *time.Time") {
+		t.Error("ListUsersParams should have CreatedBefore *time.Time field")
+	}
+
+	// Verify result wrapper has Items and NextCursor
+	if !strings.Contains(codeStr, "Items      []ListUsersItem") {
+		t.Error("ListUsersResult should have Items []ListUsersItem field")
+	}
+	if !strings.Contains(codeStr, "NextCursor *ListUsersCursor") {
+		t.Error("ListUsersResult should have NextCursor *ListUsersCursor field")
+	}
+}
+
+func TestIntegration_CursorPagination_RunnerCode(t *testing.T) {
+	// Test that the generated runner code has the right structure
+
+	// Create schema with AddTable-style tables
+	schema := createAddTableSchema("users")
+
+	config := `[database]
+url = sqlite:test.db
+`
+
+	tmpDir := setupTestProject(t, schema, config)
+	cfg, err := LoadConfig(tmpDir)
+	if err != nil {
+		t.Fatalf("LoadConfig failed: %v", err)
+	}
+
+	// Collect tables for CRUD
+	var crudTables []ddl.Table
+	for _, table := range schema.Schema.Tables {
+		crudTables = append(crudTables, table)
+	}
+
+	tableOpts := make(map[string]codegen.CRUDOptions)
+	for _, table := range crudTables {
+		tableOpts[table.Name] = codegen.CRUDOptions{
+			ScopeColumn: cfg.CRUD.GetScopeForTable(table.Name),
+			OrderAsc:    cfg.CRUD.GetOrderForTable(table.Name) == "asc",
+		}
+	}
+
+	crudPlan := &migrate.MigrationPlan{
+		Schema: migrate.Schema{
+			Tables: make(map[string]ddl.Table),
+		},
+	}
+	for _, table := range crudTables {
+		crudPlan.Schema.Tables[table.Name] = table
+	}
+
+	// Generate SQLite runner
+	code, err := codegen.GenerateDialectRunner(nil, crudPlan, "sqlite", "myapp/queries", tableOpts)
+	if err != nil {
+		t.Fatalf("GenerateDialectRunner failed: %v", err)
+	}
+
+	codeStr := string(code)
+
+	// Verify the List method returns the result wrapper type
+	if !strings.Contains(codeStr, "(*queries.ListUsersResult, error)") {
+		t.Error("ListUsers should return (*queries.ListUsersResult, error)")
+	}
+
+	// Verify N+1 fetch strategy
+	if !strings.Contains(codeStr, "params.Limit + 1") && !strings.Contains(codeStr, "params.Limit+1") {
+		t.Error("ListUsers should fetch params.Limit + 1 rows")
+	}
+
+	// Verify dynamic SQL building
+	if !strings.Contains(codeStr, "params.Cursor != nil") {
+		t.Error("ListUsers should check for cursor parameter")
+	}
+	if !strings.Contains(codeStr, "params.CreatedAfter != nil") {
+		t.Error("ListUsers should check for CreatedAfter parameter")
+	}
+
+	// Verify NextCursor construction
+	if !strings.Contains(codeStr, "NextCursor") && !strings.Contains(codeStr, "ListUsersCursor") {
+		t.Error("ListUsers should build NextCursor")
+	}
+}
+
+func TestIntegration_CursorPagination_OrderDirection(t *testing.T) {
+	// Test that order direction config affects SQL generation
+
+	schema := createAddTableSchema("audit_logs")
+
+	config := `[database]
+url = sqlite:test.db
+
+[crud.audit_logs]
+order = asc
+`
+
+	tmpDir := setupTestProject(t, schema, config)
+	cfg, err := LoadConfig(tmpDir)
+	if err != nil {
+		t.Fatalf("LoadConfig failed: %v", err)
+	}
+
+	// Verify order direction is parsed
+	if order := cfg.CRUD.GetOrderForTable("audit_logs"); order != "asc" {
+		t.Errorf("GetOrderForTable('audit_logs') = %q, want 'asc'", order)
+	}
+
+	// Generate SQL and verify ASC order
+	table := schema.Schema.Tables["audit_logs"]
+	opts := codegen.CRUDOptions{
+		OrderAsc: cfg.CRUD.GetOrderForTable("audit_logs") == "asc",
+	}
+
+	sqlSet := codegen.GenerateCRUDSQL(table, codegen.SQLDialectSQLite, opts)
+
+	// Verify ASC order in generated SQL
+	if !strings.Contains(sqlSet.ListSQL, "ASC") {
+		t.Errorf("ListSQL should have ASC order, got: %s", sqlSet.ListSQL)
+	}
+}

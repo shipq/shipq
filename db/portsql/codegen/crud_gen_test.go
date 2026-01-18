@@ -434,3 +434,278 @@ func TestGenerateSharedTypes_CRUD_NullableTypesInParams(t *testing.T) {
 		t.Error("InsertAuthorParams should contain Name field")
 	}
 }
+
+// =============================================================================
+// Cursor-Based Pagination Tests
+// =============================================================================
+
+func TestGenerateSharedTypes_CRUD_ListCursorStruct(t *testing.T) {
+	// Tables with both created_at and public_id should generate a cursor struct
+	table := ddl.Table{
+		Name: "users",
+		Columns: []ddl.ColumnDefinition{
+			{Name: "id", Type: ddl.BigintType, PrimaryKey: true},
+			{Name: "public_id", Type: ddl.StringType},
+			{Name: "name", Type: ddl.StringType},
+			{Name: "created_at", Type: ddl.DatetimeType},
+			{Name: "updated_at", Type: ddl.DatetimeType},
+			{Name: "deleted_at", Type: ddl.DatetimeType, Nullable: true},
+		},
+	}
+
+	code, err := GenerateSharedTypes(nil, tableToMigrationPlan(table), "crud", make(map[string]CRUDOptions))
+	if err != nil {
+		t.Fatalf("GenerateSharedTypes failed: %v", err)
+	}
+
+	codeStr := string(code)
+
+	// Should generate ListUsersCursor struct
+	if !strings.Contains(codeStr, "type ListUsersCursor struct") {
+		t.Error("generated code should contain ListUsersCursor struct")
+	}
+
+	// Find the cursor struct and verify its fields
+	cursorIdx := strings.Index(codeStr, "type ListUsersCursor struct")
+	if cursorIdx == -1 {
+		t.Fatal("ListUsersCursor not found")
+	}
+	endIdx := strings.Index(codeStr[cursorIdx:], "}\n")
+	cursorSection := codeStr[cursorIdx : cursorIdx+endIdx]
+
+	// Should have CreatedAt time.Time
+	if !strings.Contains(cursorSection, "CreatedAt") || !strings.Contains(cursorSection, "time.Time") {
+		t.Errorf("ListUsersCursor should contain CreatedAt time.Time. Section:\n%s", cursorSection)
+	}
+
+	// Should have PublicID string
+	if !strings.Contains(cursorSection, "PublicID") || !strings.Contains(cursorSection, "string") {
+		t.Errorf("ListUsersCursor should contain PublicID string. Section:\n%s", cursorSection)
+	}
+
+	// Verify it's valid Go
+	fset := token.NewFileSet()
+	_, err = parser.ParseFile(fset, "crud.go", code, parser.AllErrors)
+	if err != nil {
+		t.Errorf("generated code should be valid Go: %v\n\nGenerated code:\n%s", err, string(code))
+	}
+}
+
+func TestGenerateSharedTypes_CRUD_ListParamsWithCursor(t *testing.T) {
+	// Tables with created_at and public_id should have cursor-based params
+	table := ddl.Table{
+		Name: "users",
+		Columns: []ddl.ColumnDefinition{
+			{Name: "id", Type: ddl.BigintType, PrimaryKey: true},
+			{Name: "public_id", Type: ddl.StringType},
+			{Name: "name", Type: ddl.StringType},
+			{Name: "created_at", Type: ddl.DatetimeType},
+			{Name: "updated_at", Type: ddl.DatetimeType},
+			{Name: "deleted_at", Type: ddl.DatetimeType, Nullable: true},
+		},
+	}
+
+	code, err := GenerateSharedTypes(nil, tableToMigrationPlan(table), "crud", make(map[string]CRUDOptions))
+	if err != nil {
+		t.Fatalf("GenerateSharedTypes failed: %v", err)
+	}
+
+	codeStr := string(code)
+
+	// Find ListUsersParams
+	listIdx := strings.Index(codeStr, "type ListUsersParams struct")
+	if listIdx == -1 {
+		t.Fatal("ListUsersParams not found")
+	}
+	endIdx := strings.Index(codeStr[listIdx:], "}\n")
+	listSection := codeStr[listIdx : listIdx+endIdx]
+
+	// Should have Limit int
+	if !strings.Contains(listSection, "Limit") {
+		t.Errorf("ListUsersParams should contain Limit. Section:\n%s", listSection)
+	}
+
+	// Should have Cursor *ListUsersCursor (pointer for optional)
+	if !strings.Contains(listSection, "Cursor") || !strings.Contains(listSection, "*ListUsersCursor") {
+		t.Errorf("ListUsersParams should contain Cursor *ListUsersCursor. Section:\n%s", listSection)
+	}
+
+	// Should have CreatedAfter *time.Time
+	if !strings.Contains(listSection, "CreatedAfter") || !strings.Contains(listSection, "*time.Time") {
+		t.Errorf("ListUsersParams should contain CreatedAfter *time.Time. Section:\n%s", listSection)
+	}
+
+	// Should have CreatedBefore *time.Time
+	if !strings.Contains(listSection, "CreatedBefore") {
+		t.Errorf("ListUsersParams should contain CreatedBefore. Section:\n%s", listSection)
+	}
+
+	// Should NOT have Offset (old pagination style)
+	if strings.Contains(listSection, "Offset") {
+		t.Errorf("ListUsersParams should NOT contain Offset (using cursor pagination). Section:\n%s", listSection)
+	}
+}
+
+func TestGenerateSharedTypes_CRUD_ListResultWithNextCursor(t *testing.T) {
+	// Tables with created_at and public_id should wrap result with Items and NextCursor
+	table := ddl.Table{
+		Name: "users",
+		Columns: []ddl.ColumnDefinition{
+			{Name: "id", Type: ddl.BigintType, PrimaryKey: true},
+			{Name: "public_id", Type: ddl.StringType},
+			{Name: "name", Type: ddl.StringType},
+			{Name: "email", Type: ddl.StringType},
+			{Name: "created_at", Type: ddl.DatetimeType},
+			{Name: "updated_at", Type: ddl.DatetimeType},
+			{Name: "deleted_at", Type: ddl.DatetimeType, Nullable: true},
+		},
+	}
+
+	code, err := GenerateSharedTypes(nil, tableToMigrationPlan(table), "crud", make(map[string]CRUDOptions))
+	if err != nil {
+		t.Fatalf("GenerateSharedTypes failed: %v", err)
+	}
+
+	codeStr := string(code)
+
+	// Should generate ListUsersResult as wrapper struct
+	if !strings.Contains(codeStr, "type ListUsersResult struct") {
+		t.Error("generated code should contain ListUsersResult struct")
+	}
+
+	// Find ListUsersResult
+	resultIdx := strings.Index(codeStr, "type ListUsersResult struct")
+	if resultIdx == -1 {
+		t.Fatal("ListUsersResult not found")
+	}
+	endIdx := strings.Index(codeStr[resultIdx:], "}\n")
+	resultSection := codeStr[resultIdx : resultIdx+endIdx]
+
+	// Should have Items []ListUsersItem
+	if !strings.Contains(resultSection, "Items") || !strings.Contains(resultSection, "[]ListUsersItem") {
+		t.Errorf("ListUsersResult should contain Items []ListUsersItem. Section:\n%s", resultSection)
+	}
+
+	// Should have NextCursor *ListUsersCursor
+	if !strings.Contains(resultSection, "NextCursor") || !strings.Contains(resultSection, "*ListUsersCursor") {
+		t.Errorf("ListUsersResult should contain NextCursor *ListUsersCursor. Section:\n%s", resultSection)
+	}
+
+	// Should generate ListUsersItem struct with actual data fields
+	if !strings.Contains(codeStr, "type ListUsersItem struct") {
+		t.Error("generated code should contain ListUsersItem struct")
+	}
+
+	// Find ListUsersItem and verify it has actual columns
+	itemIdx := strings.Index(codeStr, "type ListUsersItem struct")
+	if itemIdx == -1 {
+		t.Fatal("ListUsersItem not found")
+	}
+	itemEndIdx := strings.Index(codeStr[itemIdx:], "}\n")
+	itemSection := codeStr[itemIdx : itemIdx+itemEndIdx]
+
+	// Should have PublicId and Name fields
+	if !strings.Contains(itemSection, "PublicId") {
+		t.Errorf("ListUsersItem should contain PublicId. Section:\n%s", itemSection)
+	}
+	if !strings.Contains(itemSection, "Name") {
+		t.Errorf("ListUsersItem should contain Name. Section:\n%s", itemSection)
+	}
+	if !strings.Contains(itemSection, "CreatedAt") {
+		t.Errorf("ListUsersItem should contain CreatedAt. Section:\n%s", itemSection)
+	}
+
+	// Verify it's valid Go
+	fset := token.NewFileSet()
+	_, err = parser.ParseFile(fset, "crud.go", code, parser.AllErrors)
+	if err != nil {
+		t.Errorf("generated code should be valid Go: %v\n\nGenerated code:\n%s", err, string(code))
+	}
+}
+
+func TestGenerateSharedTypes_CRUD_NoCursorWithoutCreatedAtOrPublicID(t *testing.T) {
+	// Tables without created_at should fall back to offset pagination
+	table := ddl.Table{
+		Name: "settings",
+		Columns: []ddl.ColumnDefinition{
+			{Name: "id", Type: ddl.BigintType, PrimaryKey: true},
+			{Name: "key", Type: ddl.StringType},
+			{Name: "value", Type: ddl.TextType},
+		},
+	}
+
+	code, err := GenerateSharedTypes(nil, tableToMigrationPlan(table), "crud", make(map[string]CRUDOptions))
+	if err != nil {
+		t.Fatalf("GenerateSharedTypes failed: %v", err)
+	}
+
+	codeStr := string(code)
+
+	// Should NOT generate cursor struct (no created_at or public_id)
+	if strings.Contains(codeStr, "ListSettingsCursor") {
+		t.Error("ListSettingsCursor should not be generated for table without created_at")
+	}
+
+	// ListSettingsParams should have Offset (fallback pagination)
+	listIdx := strings.Index(codeStr, "type ListSettingsParams struct")
+	if listIdx == -1 {
+		t.Fatal("ListSettingsParams not found")
+	}
+	endIdx := strings.Index(codeStr[listIdx:], "}\n")
+	listSection := codeStr[listIdx : listIdx+endIdx]
+
+	if !strings.Contains(listSection, "Offset") {
+		t.Errorf("ListSettingsParams should contain Offset for tables without cursor support. Section:\n%s", listSection)
+	}
+}
+
+func TestGenerateSharedTypes_CRUD_CursorWithScopeColumn(t *testing.T) {
+	// Cursor-based params should include scope column when configured
+	table := ddl.Table{
+		Name: "users",
+		Columns: []ddl.ColumnDefinition{
+			{Name: "id", Type: ddl.BigintType, PrimaryKey: true},
+			{Name: "public_id", Type: ddl.StringType},
+			{Name: "org_id", Type: ddl.BigintType},
+			{Name: "name", Type: ddl.StringType},
+			{Name: "created_at", Type: ddl.DatetimeType},
+			{Name: "updated_at", Type: ddl.DatetimeType},
+		},
+	}
+
+	tableOpts := map[string]CRUDOptions{
+		"users": {ScopeColumn: "org_id"},
+	}
+
+	code, err := GenerateSharedTypes(nil, tableToMigrationPlan(table), "crud", tableOpts)
+	if err != nil {
+		t.Fatalf("GenerateSharedTypes failed: %v", err)
+	}
+
+	codeStr := string(code)
+
+	// Find ListUsersParams
+	listIdx := strings.Index(codeStr, "type ListUsersParams struct")
+	if listIdx == -1 {
+		t.Fatal("ListUsersParams not found")
+	}
+	endIdx := strings.Index(codeStr[listIdx:], "}\n")
+	listSection := codeStr[listIdx : listIdx+endIdx]
+
+	// Should have OrgId (scope column)
+	if !strings.Contains(listSection, "OrgId") {
+		t.Errorf("ListUsersParams should contain OrgId when scope is configured. Section:\n%s", listSection)
+	}
+
+	// Should also have cursor fields
+	if !strings.Contains(listSection, "Cursor") {
+		t.Errorf("ListUsersParams should contain Cursor even with scope. Section:\n%s", listSection)
+	}
+
+	// Verify it's valid Go
+	fset := token.NewFileSet()
+	_, err = parser.ParseFile(fset, "crud.go", code, parser.AllErrors)
+	if err != nil {
+		t.Errorf("generated code should be valid Go: %v\n\nGenerated code:\n%s", err, string(code))
+	}
+}

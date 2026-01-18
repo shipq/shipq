@@ -3,7 +3,6 @@ module github.com/shipq/shipq/db/demo
 go 1.25.4
 
 require (
-	github.com/portsql/nanoid v0.0.0-20260111232130-a2286000c3f8
 	github.com/shipq/shipq v0.0.0
 	modernc.org/sqlite v1.43.0
 )

@@ -140,8 +140,13 @@ func generateGetSQL(table ddl.Table, analysis TableAnalysis, dialect SQLDialect,
 	return b.String()
 }
 
-// generateListSQL generates SELECT ... ORDER BY ... LIMIT ? OFFSET ?
+// generateListSQL generates SELECT ... ORDER BY ... LIMIT ?
+// For tables with cursor support (created_at + public_id), uses keyset pagination.
+// For tables without cursor support, falls back to OFFSET pagination.
 func generateListSQL(table ddl.Table, analysis TableAnalysis, dialect SQLDialect, opts CRUDOptions) string {
+	// Check if table supports cursor pagination
+	supportsCursor := analysis.HasCreatedAt && analysis.HasPublicID
+
 	var b strings.Builder
 
 	b.WriteString("SELECT ")
@@ -182,24 +187,41 @@ func generateListSQL(table ddl.Table, analysis TableAnalysis, dialect SQLDialect
 		b.WriteString("1 = 1") // Always true if no deleted_at
 	}
 
-	// Order by created_at DESC if available, otherwise by id
-	b.WriteString(" ORDER BY ")
-	if analysis.HasCreatedAt {
-		b.WriteString(quoteIdentifier("created_at", dialect))
-		b.WriteString(" DESC")
-	} else if analysis.HasPublicID {
-		b.WriteString(quoteIdentifier("public_id", dialect))
-		b.WriteString(" DESC")
-	} else {
-		b.WriteString(quoteIdentifier("id", dialect))
-		b.WriteString(" DESC")
+	// ORDER BY clause
+	orderDir := " DESC"
+	if opts.OrderAsc {
+		orderDir = " ASC"
 	}
 
+	b.WriteString(" ORDER BY ")
+	if supportsCursor {
+		// Composite ORDER BY for cursor pagination (created_at, id for tiebreaker)
+		b.WriteString(quoteIdentifier("created_at", dialect))
+		b.WriteString(orderDir)
+		b.WriteString(", ")
+		b.WriteString(quoteIdentifier("id", dialect))
+		b.WriteString(orderDir)
+	} else if analysis.HasCreatedAt {
+		b.WriteString(quoteIdentifier("created_at", dialect))
+		b.WriteString(orderDir)
+	} else if analysis.HasPublicID {
+		b.WriteString(quoteIdentifier("public_id", dialect))
+		b.WriteString(orderDir)
+	} else {
+		b.WriteString(quoteIdentifier("id", dialect))
+		b.WriteString(orderDir)
+	}
+
+	// LIMIT clause
 	b.WriteString(" LIMIT ")
 	b.WriteString(placeholder(paramIdx, dialect))
 	paramIdx++
-	b.WriteString(" OFFSET ")
-	b.WriteString(placeholder(paramIdx, dialect))
+
+	// OFFSET only for tables without cursor support (fallback)
+	if !supportsCursor {
+		b.WriteString(" OFFSET ")
+		b.WriteString(placeholder(paramIdx, dialect))
+	}
 
 	return b.String()
 }

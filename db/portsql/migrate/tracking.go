@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"strings"
 	"time"
 )
 
@@ -78,16 +79,19 @@ func RecordMigration(ctx context.Context, db *sql.DB, dialect, version, name str
 	var insertSQL string
 	var args []interface{}
 
+	// Always use UTC for consistent timestamps across all dialects
+	nowUTC := time.Now().UTC()
+
 	switch dialect {
 	case Postgres:
 		insertSQL = `INSERT INTO _portsql_migrations (name, version, applied_at) VALUES ($1, $2, $3)`
-		args = []interface{}{name, version, time.Now()}
+		args = []interface{}{name, version, nowUTC}
 	case MySQL:
 		insertSQL = `INSERT INTO _portsql_migrations (name, version, applied_at) VALUES (?, ?, ?)`
-		args = []interface{}{name, version, time.Now()}
+		args = []interface{}{name, version, nowUTC}
 	case Sqlite:
 		insertSQL = `INSERT INTO _portsql_migrations (name, version, applied_at) VALUES (?, ?, ?)`
-		args = []interface{}{name, version, time.Now().Format(time.RFC3339)}
+		args = []interface{}{name, version, nowUTC.Format(time.RFC3339)}
 	default:
 		return fmt.Errorf("unsupported dialect: %s", dialect)
 	}
@@ -106,16 +110,19 @@ func RecordMigrationTx(ctx context.Context, tx *sql.Tx, dialect, version, name s
 	var insertSQL string
 	var args []interface{}
 
+	// Always use UTC for consistent timestamps across all dialects
+	nowUTC := time.Now().UTC()
+
 	switch dialect {
 	case Postgres:
 		insertSQL = `INSERT INTO _portsql_migrations (name, version, applied_at) VALUES ($1, $2, $3)`
-		args = []interface{}{name, version, time.Now()}
+		args = []interface{}{name, version, nowUTC}
 	case MySQL:
 		insertSQL = `INSERT INTO _portsql_migrations (name, version, applied_at) VALUES (?, ?, ?)`
-		args = []interface{}{name, version, time.Now()}
+		args = []interface{}{name, version, nowUTC}
 	case Sqlite:
 		insertSQL = `INSERT INTO _portsql_migrations (name, version, applied_at) VALUES (?, ?, ?)`
-		args = []interface{}{name, version, time.Now().Format(time.RFC3339)}
+		args = []interface{}{name, version, nowUTC.Format(time.RFC3339)}
 	default:
 		return fmt.Errorf("unsupported dialect: %s", dialect)
 	}
@@ -171,6 +178,19 @@ func GetAllTables(ctx context.Context, db *sql.DB, dialect string) ([]string, er
 	return tables, nil
 }
 
+// escapeIdentifier properly escapes an identifier for the given dialect.
+// It handles embedded quote characters by doubling them.
+func escapeIdentifier(name, dialect string) string {
+	switch dialect {
+	case MySQL:
+		// MySQL uses backticks; escape embedded backticks by doubling
+		return "`" + strings.ReplaceAll(name, "`", "``") + "`"
+	default:
+		// Postgres and SQLite use double quotes; escape embedded quotes by doubling
+		return `"` + strings.ReplaceAll(name, `"`, `""`) + `"`
+	}
+}
+
 // DropAllTables drops all tables in the database including the tracking table.
 func DropAllTables(ctx context.Context, db *sql.DB, dialect string) error {
 	tables, err := GetAllTables(ctx, db, dialect)
@@ -179,14 +199,15 @@ func DropAllTables(ctx context.Context, db *sql.DB, dialect string) error {
 	}
 
 	for _, table := range tables {
+		quotedTable := escapeIdentifier(table, dialect)
 		var dropSQL string
 		switch dialect {
 		case Postgres:
-			dropSQL = fmt.Sprintf(`DROP TABLE IF EXISTS %q CASCADE`, table)
+			dropSQL = fmt.Sprintf("DROP TABLE IF EXISTS %s CASCADE", quotedTable)
 		case MySQL:
-			dropSQL = fmt.Sprintf("DROP TABLE IF EXISTS `%s`", table)
+			dropSQL = fmt.Sprintf("DROP TABLE IF EXISTS %s", quotedTable)
 		case Sqlite:
-			dropSQL = fmt.Sprintf(`DROP TABLE IF EXISTS "%s"`, table)
+			dropSQL = fmt.Sprintf("DROP TABLE IF EXISTS %s", quotedTable)
 		default:
 			return fmt.Errorf("unsupported dialect: %s", dialect)
 		}

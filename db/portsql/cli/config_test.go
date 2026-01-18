@@ -418,3 +418,287 @@ scope = organization_id
 		})
 	}
 }
+
+// =============================================================================
+// Order Direction Config Tests
+// =============================================================================
+
+func TestCRUDConfig_OrderDirection_GlobalDefault(t *testing.T) {
+	// Global order direction setting
+	content := `[database]
+url = sqlite:test.db
+
+[crud]
+order = asc
+`
+	tmpDir := t.TempDir()
+	iniPath := filepath.Join(tmpDir, "portsql.ini")
+	if err := os.WriteFile(iniPath, []byte(content), 0644); err != nil {
+		t.Fatalf("failed to write ini file: %v", err)
+	}
+
+	cfg, err := LoadConfig(tmpDir)
+	if err != nil {
+		t.Fatalf("LoadConfig failed: %v", err)
+	}
+
+	// Global order should be "asc"
+	if cfg.CRUD.GlobalOrder != "asc" {
+		t.Errorf("expected GlobalOrder 'asc', got %q", cfg.CRUD.GlobalOrder)
+	}
+
+	// GetOrderForTable should return the global order
+	if order := cfg.CRUD.GetOrderForTable("users"); order != "asc" {
+		t.Errorf("GetOrderForTable('users') = %q, want 'asc'", order)
+	}
+}
+
+func TestCRUDConfig_OrderDirection_PerTableOverride(t *testing.T) {
+	// Per-table order direction override
+	content := `[database]
+url = sqlite:test.db
+
+[crud]
+order = desc
+
+[crud.audit_logs]
+order = asc
+`
+	tmpDir := t.TempDir()
+	iniPath := filepath.Join(tmpDir, "portsql.ini")
+	if err := os.WriteFile(iniPath, []byte(content), 0644); err != nil {
+		t.Fatalf("failed to write ini file: %v", err)
+	}
+
+	cfg, err := LoadConfig(tmpDir)
+	if err != nil {
+		t.Fatalf("LoadConfig failed: %v", err)
+	}
+
+	// Global order should be "desc"
+	if cfg.CRUD.GlobalOrder != "desc" {
+		t.Errorf("expected GlobalOrder 'desc', got %q", cfg.CRUD.GlobalOrder)
+	}
+
+	// audit_logs should use "asc" (override)
+	if order := cfg.CRUD.GetOrderForTable("audit_logs"); order != "asc" {
+		t.Errorf("GetOrderForTable('audit_logs') = %q, want 'asc'", order)
+	}
+
+	// users should use "desc" (global default)
+	if order := cfg.CRUD.GetOrderForTable("users"); order != "desc" {
+		t.Errorf("GetOrderForTable('users') = %q, want 'desc'", order)
+	}
+}
+
+func TestCRUDConfig_OrderDirection_DefaultIsDesc(t *testing.T) {
+	// When no order is specified, default should be desc (newest first)
+	content := `[database]
+url = sqlite:test.db
+`
+	tmpDir := t.TempDir()
+	iniPath := filepath.Join(tmpDir, "portsql.ini")
+	if err := os.WriteFile(iniPath, []byte(content), 0644); err != nil {
+		t.Fatalf("failed to write ini file: %v", err)
+	}
+
+	cfg, err := LoadConfig(tmpDir)
+	if err != nil {
+		t.Fatalf("LoadConfig failed: %v", err)
+	}
+
+	// Default order should be "desc" when not specified
+	if order := cfg.CRUD.GetOrderForTable("users"); order != "desc" {
+		t.Errorf("GetOrderForTable('users') = %q, want 'desc' (default)", order)
+	}
+}
+
+// =============================================================================
+// Dialect Validation Tests
+// =============================================================================
+
+func TestNormalizeDialect_ValidDialects(t *testing.T) {
+	tests := []struct {
+		input    string
+		expected string
+	}{
+		{"postgres", "postgres"},
+		{"mysql", "mysql"},
+		{"sqlite", "sqlite"},
+		// Case normalization
+		{"Postgres", "postgres"},
+		{"POSTGRES", "postgres"},
+		{"MySQL", "mysql"},
+		{"MYSQL", "mysql"},
+		{"SQLite", "sqlite"},
+		{"SQLITE", "sqlite"},
+		// Whitespace handling
+		{" postgres ", "postgres"},
+		{"  mysql  ", "mysql"},
+		{"\tsqlite\t", "sqlite"},
+		// Empty returns empty (for filtering)
+		{"", ""},
+		{"   ", ""},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.input, func(t *testing.T) {
+			got, err := normalizeDialect(tt.input)
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if got != tt.expected {
+				t.Errorf("normalizeDialect(%q) = %q, want %q", tt.input, got, tt.expected)
+			}
+		})
+	}
+}
+
+func TestNormalizeDialect_InvalidDialect(t *testing.T) {
+	tests := []struct {
+		input          string
+		wantErrContain string
+	}{
+		{"postgre", `invalid dialect "postgre"`},
+		{"postgress", `invalid dialect "postgress"`},
+		{"pg", `invalid dialect "pg"`},
+		{"maria", `invalid dialect "maria"`},
+		{"sql", `invalid dialect "sql"`},
+		{"oracle", `invalid dialect "oracle"`},
+		{"mssql", `invalid dialect "mssql"`},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.input, func(t *testing.T) {
+			_, err := normalizeDialect(tt.input)
+			if err == nil {
+				t.Fatalf("expected error for invalid dialect %q, got nil", tt.input)
+			}
+
+			errStr := err.Error()
+
+			// Check error contains the invalid value
+			if !contains(errStr, tt.wantErrContain) {
+				t.Errorf("error should contain %q, got: %s", tt.wantErrContain, errStr)
+			}
+
+			// Check error mentions supported dialects
+			if !contains(errStr, "postgres") || !contains(errStr, "mysql") || !contains(errStr, "sqlite") {
+				t.Errorf("error should list supported dialects, got: %s", errStr)
+			}
+
+			// Check error has helpful hint
+			if !contains(errStr, "Hint:") {
+				t.Errorf("error should contain hint, got: %s", errStr)
+			}
+		})
+	}
+}
+
+func TestLoadConfig_DialectValidation(t *testing.T) {
+	tests := []struct {
+		name           string
+		dialects       string
+		wantDialects   []string
+		wantErr        bool
+		wantErrContain string
+	}{
+		{
+			name:         "valid single dialect",
+			dialects:     "postgres",
+			wantDialects: []string{"postgres"},
+		},
+		{
+			name:         "valid multiple dialects",
+			dialects:     "postgres, mysql, sqlite",
+			wantDialects: []string{"postgres", "mysql", "sqlite"},
+		},
+		{
+			name:         "case normalization",
+			dialects:     "Postgres, MySQL, SQLite",
+			wantDialects: []string{"postgres", "mysql", "sqlite"},
+		},
+		{
+			name:         "trailing comma filtered",
+			dialects:     "postgres, sqlite,",
+			wantDialects: []string{"postgres", "sqlite"},
+		},
+		{
+			name:         "leading comma filtered",
+			dialects:     ", postgres, sqlite",
+			wantDialects: []string{"postgres", "sqlite"},
+		},
+		{
+			name:         "multiple commas filtered",
+			dialects:     "postgres,, ,sqlite",
+			wantDialects: []string{"postgres", "sqlite"},
+		},
+		{
+			name:           "invalid dialect returns error",
+			dialects:       "postgres, postgress",
+			wantErr:        true,
+			wantErrContain: `invalid dialect " postgress"`, // Shows original input including space
+		},
+		{
+			name:           "typo in dialect returns helpful error",
+			dialects:       "sqlit",
+			wantErr:        true,
+			wantErrContain: `invalid dialect "sqlit"`,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			tmpDir := t.TempDir()
+			content := "[database]\n" +
+				"url = sqlite:test.db\n" +
+				"dialects = " + tt.dialects + "\n"
+
+			iniPath := filepath.Join(tmpDir, "portsql.ini")
+			if err := os.WriteFile(iniPath, []byte(content), 0644); err != nil {
+				t.Fatalf("failed to write ini file: %v", err)
+			}
+
+			cfg, err := LoadConfig(tmpDir)
+
+			if tt.wantErr {
+				if err == nil {
+					t.Fatalf("expected error, got nil")
+				}
+				if !contains(err.Error(), tt.wantErrContain) {
+					t.Errorf("error should contain %q, got: %s", tt.wantErrContain, err.Error())
+				}
+				return
+			}
+
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+
+			if len(cfg.Database.Dialects) != len(tt.wantDialects) {
+				t.Fatalf("got %d dialects, want %d: %v", len(cfg.Database.Dialects), len(tt.wantDialects), cfg.Database.Dialects)
+			}
+
+			for i, want := range tt.wantDialects {
+				if cfg.Database.Dialects[i] != want {
+					t.Errorf("dialect[%d] = %q, want %q", i, cfg.Database.Dialects[i], want)
+				}
+			}
+		})
+	}
+}
+
+// contains checks if s contains substr (case-sensitive)
+func contains(s, substr string) bool {
+	return len(s) >= len(substr) && (s == substr || len(substr) == 0 ||
+		(len(s) > 0 && len(substr) > 0 && findSubstring(s, substr)))
+}
+
+func findSubstring(s, substr string) bool {
+	for i := 0; i <= len(s)-len(substr); i++ {
+		if s[i:i+len(substr)] == substr {
+			return true
+		}
+	}
+	return false
+}

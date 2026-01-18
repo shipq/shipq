@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 
 	"github.com/shipq/shipq/db/portsql/codegen"
 	"github.com/shipq/shipq/db/portsql/ddl"
@@ -67,11 +68,16 @@ func Compile(ctx context.Context, config *Config) error {
 			return fmt.Errorf("failed to compile query %s for sqlite: %w", name, err)
 		}
 
+		results, err := codegen.ExtractResultInfo(rq.AST)
+		if err != nil {
+			return fmt.Errorf("failed to extract results for query %s: %w", name, err)
+		}
+
 		cq := codegen.CompiledQuery{
 			Name:       name,
 			SQL:        postgresSQL, // Use Postgres as default for shared types (doesn't matter for types)
 			Params:     codegen.ExtractParamInfo(rq.AST),
-			Results:    codegen.ExtractResultInfo(rq.AST),
+			Results:    results,
 			ReturnType: string(rq.ReturnType),
 		}
 		compiledQueries = append(compiledQueries, cq)
@@ -110,16 +116,26 @@ func Compile(ctx context.Context, config *Config) error {
 		if len(crudTables) > 0 {
 			fmt.Printf("\nFound %d CRUD tables:\n", len(crudTables))
 
-			// Build table options with scope configuration
+			// Build table options with scope and order configuration
 			for _, table := range crudTables {
 				scope := config.CRUD.GetScopeForTable(table.Name)
+				order := config.CRUD.GetOrderForTable(table.Name)
 				opts := codegen.CRUDOptions{
 					ScopeColumn: scope,
+					OrderAsc:    order == "asc",
 				}
 				tableOpts[table.Name] = opts
 
+				// Log configuration
+				var details []string
 				if scope != "" {
-					fmt.Printf("  %s (scope: %s)\n", table.Name, scope)
+					details = append(details, fmt.Sprintf("scope: %s", scope))
+				}
+				if order == "asc" {
+					details = append(details, "order: asc")
+				}
+				if len(details) > 0 {
+					fmt.Printf("  %s (%s)\n", table.Name, strings.Join(details, ", "))
 				} else {
 					fmt.Printf("  %s\n", table.Name)
 				}

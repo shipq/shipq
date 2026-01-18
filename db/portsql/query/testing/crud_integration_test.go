@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/portsql/nanoid"
+	"github.com/shipq/shipq/nanoid"
 )
 
 // =============================================================================
