@@ -1,11 +1,12 @@
 package cli
 
 import (
-	"bufio"
 	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
+
+	"github.com/shipq/shipq/inifile"
 )
 
 // ValidDialects is the list of supported database dialects.
@@ -168,96 +169,68 @@ func LoadConfig(configPath string) (*Config, error) {
 		return cfg, nil
 	}
 
-	file, err := os.Open(iniPath)
+	f, err := inifile.ParseFile(iniPath)
 	if err != nil {
 		return nil, err
 	}
-	defer file.Close()
 
-	section := ""
-	scanner := bufio.NewScanner(file)
-	for scanner.Scan() {
-		line := strings.TrimSpace(scanner.Text())
-
-		// Skip empty lines and comments
-		if line == "" || strings.HasPrefix(line, "#") || strings.HasPrefix(line, ";") {
-			continue
-		}
-
-		// Section header
-		if strings.HasPrefix(line, "[") && strings.HasSuffix(line, "]") {
-			section = strings.ToLower(strings.Trim(line, "[]"))
-			continue
-		}
-
-		// Key-value pair
-		parts := strings.SplitN(line, "=", 2)
-		if len(parts) != 2 {
-			continue
-		}
-
-		key := strings.TrimSpace(strings.ToLower(parts[0]))
-		value := strings.TrimSpace(parts[1])
-
-		switch {
-		case section == "database":
-			switch key {
-			case "url":
-				cfg.Database.URL = value
-			case "dialects":
-				// Parse comma-separated dialect list: "sqlite,postgres"
-				parts := strings.Split(value, ",")
-				var dialects []string
-				for _, part := range parts {
-					d, err := normalizeDialect(part)
-					if err != nil {
-						return nil, err
-					}
-					if d != "" { // Filter out empty entries (e.g., trailing comma)
-						dialects = append(dialects, d)
-					}
-				}
-				cfg.Database.Dialects = dialects
+	// [database] section
+	if url := f.Get("database", "url"); url != "" {
+		cfg.Database.URL = url
+	}
+	if dialectsStr := f.Get("database", "dialects"); dialectsStr != "" {
+		parts := strings.Split(dialectsStr, ",")
+		var dialects []string
+		for _, part := range parts {
+			d, err := normalizeDialect(part)
+			if err != nil {
+				return nil, err
 			}
-		case section == "paths":
-			switch key {
-			case "migrations":
-				cfg.Paths.Migrations = value
-			case "schematypes":
-				cfg.Paths.Schematypes = value
-			case "queries_in":
-				cfg.Paths.QueriesIn = value
-			case "queries_out":
-				cfg.Paths.QueriesOut = value
-			}
-		case section == "crud":
-			// Global CRUD settings
-			switch key {
-			case "scope":
-				cfg.CRUD.GlobalScope = value
-			case "order":
-				cfg.CRUD.GlobalOrder = value
-			}
-		case strings.HasPrefix(section, "crud."):
-			// Per-table CRUD settings: [crud.tablename]
-			tableName := strings.TrimPrefix(section, "crud.")
-			switch key {
-			case "scope":
-				if cfg.CRUD.TableScopes == nil {
-					cfg.CRUD.TableScopes = make(map[string]string)
-				}
-				cfg.CRUD.TableScopes[tableName] = value
-			case "order":
-				if cfg.CRUD.TableOrders == nil {
-					cfg.CRUD.TableOrders = make(map[string]string)
-				}
-				cfg.CRUD.TableOrders[tableName] = value
+			if d != "" { // Filter out empty entries (e.g., trailing comma)
+				dialects = append(dialects, d)
 			}
 		}
+		cfg.Database.Dialects = dialects
 	}
 
-	if err := scanner.Err(); err != nil {
-		return nil, err
+	// [paths] section
+	if v := f.Get("paths", "migrations"); v != "" {
+		cfg.Paths.Migrations = v
+	}
+	if v := f.Get("paths", "schematypes"); v != "" {
+		cfg.Paths.Schematypes = v
+	}
+	if v := f.Get("paths", "queries_in"); v != "" {
+		cfg.Paths.QueriesIn = v
+	}
+	if v := f.Get("paths", "queries_out"); v != "" {
+		cfg.Paths.QueriesOut = v
+	}
+
+	// [crud] section
+	if v := f.Get("crud", "scope"); v != "" {
+		cfg.CRUD.GlobalScope = v
+	}
+	if v := f.Get("crud", "order"); v != "" {
+		cfg.CRUD.GlobalOrder = v
+	}
+
+	// [crud.tablename] sections
+	for _, section := range f.SectionsWithPrefix("crud.") {
+		tableName := strings.TrimPrefix(section.Name, "crud.")
+		// Check if scope key exists (even if empty value)
+		if section.HasKey("scope") {
+			if cfg.CRUD.TableScopes == nil {
+				cfg.CRUD.TableScopes = make(map[string]string)
+			}
+			cfg.CRUD.TableScopes[tableName] = section.Get("scope")
+		}
+		if order := section.Get("order"); order != "" {
+			if cfg.CRUD.TableOrders == nil {
+				cfg.CRUD.TableOrders = make(map[string]string)
+			}
+			cfg.CRUD.TableOrders[tableName] = order
+		}
 	}
 
 	// If database URL is still empty, try DATABASE_URL env var

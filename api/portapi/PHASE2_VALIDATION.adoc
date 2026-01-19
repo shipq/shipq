@@ -1,0 +1,610 @@
+= Phase 2: Handler Signature + Binding Validation
+:toc:
+:toclevels: 3
+
+Implements compile-time validation of handler signatures and request struct bindings. This validation runs during discovery (build-time) via reflection.
+
+== Goal
+
+Catch configuration errors early—before any HTTP code is generated—with clear, actionable error messages.
+
+== Deliverables
+
+- `api/portapi/validate.go` — handler signature + binding validation
+- `api/portapi/validate_test.go` — comprehensive unit tests
+- Property tests for edge cases
+
+== Step 1: Handler signature validation
+
+=== 1.1 Define the four supported handler shapes
+
+Document in code (and test) exactly what shapes are allowed:
+
+[source,go]
+----
+// Shape 1: func(context.Context, Req) (Resp, error)
+// Shape 2: func(context.Context, Req) error
+// Shape 3: func(context.Context) (Resp, error)
+// Shape 4: func(context.Context) error
+----
+
+=== 1.2 Write tests for valid handler signatures
+
+Create `api/portapi/validate_test.go`:
+
+[source,go]
+----
+func TestValidateHandler_ValidShapes(t *testing.T) {
+    type Req struct{ Name string }
+    type Resp struct{ ID string }
+
+    tests := []struct {
+        name    string
+        handler any
+        shape   HandlerShape
+    }{
+        {
+            name:    "ctx+req -> resp+err",
+            handler: func(ctx context.Context, req Req) (Resp, error) { return Resp{}, nil },
+            shape:   ShapeCtxReqRespErr,
+        },
+        {
+            name:    "ctx+req -> err",
+            handler: func(ctx context.Context, req Req) error { return nil },
+            shape:   ShapeCtxReqErr,
+        },
+        {
+            name:    "ctx -> resp+err",
+            handler: func(ctx context.Context) (Resp, error) { return Resp{}, nil },
+            shape:   ShapeCtxRespErr,
+        },
+        {
+            name:    "ctx -> err",
+            handler: func(ctx context.Context) error { return nil },
+            shape:   ShapeCtxErr,
+        },
+        {
+            name:    "pointer request",
+            handler: func(ctx context.Context, req *Req) (Resp, error) { return Resp{}, nil },
+            shape:   ShapeCtxReqRespErr,
+        },
+        {
+            name:    "slice response",
+            handler: func(ctx context.Context) ([]Resp, error) { return nil, nil },
+            shape:   ShapeCtxRespErr,
+        },
+    }
+
+    for _, tt := range tests {
+        t.Run(tt.name, func(t *testing.T) {
+            info, err := ValidateHandler(tt.handler)
+            require.NoError(t, err)
+            assert.Equal(t, tt.shape, info.Shape)
+        })
+    }
+}
+----
+
+=== 1.3 Write tests for invalid handler signatures
+
+[source,go]
+----
+func TestValidateHandler_InvalidShapes(t *testing.T) {
+    tests := []struct {
+        name        string
+        handler     any
+        wantErrCode string
+    }{
+        {
+            name:        "not a function",
+            handler:     "string",
+            wantErrCode: "not_a_function",
+        },
+        {
+            name:        "no args",
+            handler:     func() error { return nil },
+            wantErrCode: "missing_context",
+        },
+        {
+            name:        "first arg not context",
+            handler:     func(s string) error { return nil },
+            wantErrCode: "first_arg_not_context",
+        },
+        {
+            name:        "no returns",
+            handler:     func(ctx context.Context) {},
+            wantErrCode: "missing_error_return",
+        },
+        {
+            name:        "last return not error",
+            handler:     func(ctx context.Context) string { return "" },
+            wantErrCode: "last_return_not_error",
+        },
+        {
+            name:        "too many args",
+            handler:     func(ctx context.Context, a, b string) error { return nil },
+            wantErrCode: "too_many_args",
+        },
+        {
+            name:        "too many returns",
+            handler:     func(ctx context.Context) (string, int, error) { return "", 0, nil },
+            wantErrCode: "too_many_returns",
+        },
+        {
+            name:        "variadic",
+            handler:     func(ctx context.Context, args ...string) error { return nil },
+            wantErrCode: "variadic_not_supported",
+        },
+        {
+            name:        "nil handler",
+            handler:     nil,
+            wantErrCode: "nil_handler",
+        },
+    }
+
+    for _, tt := range tests {
+        t.Run(tt.name, func(t *testing.T) {
+            _, err := ValidateHandler(tt.handler)
+            require.Error(t, err)
+
+            var vErr *ValidationError
+            require.ErrorAs(t, err, &vErr)
+            assert.Equal(t, tt.wantErrCode, vErr.Code)
+        })
+    }
+}
+----
+
+=== 1.4 Implement `ValidateHandler`
+
+Create `api/portapi/validate.go`:
+
+[source,go]
+----
+package portapi
+
+import (
+    "context"
+    "reflect"
+)
+
+type HandlerShape int
+
+const (
+    ShapeCtxReqRespErr HandlerShape = iota + 1
+    ShapeCtxReqErr
+    ShapeCtxRespErr
+    ShapeCtxErr
+)
+
+type HandlerInfo struct {
+    Shape    HandlerShape
+    ReqType  reflect.Type // nil if no request
+    RespType reflect.Type // nil if no response
+}
+
+type ValidationError struct {
+    Code    string
+    Message string
+}
+
+func (e *ValidationError) Error() string { return e.Message }
+
+var contextType = reflect.TypeOf((*context.Context)(nil)).Elem()
+var errorType = reflect.TypeOf((*error)(nil)).Elem()
+
+func ValidateHandler(handler any) (*HandlerInfo, error) {
+    if handler == nil {
+        return nil, &ValidationError{Code: "nil_handler", Message: "handler is nil"}
+    }
+
+    t := reflect.TypeOf(handler)
+    if t.Kind() != reflect.Func {
+        return nil, &ValidationError{Code: "not_a_function", Message: "handler must be a function"}
+    }
+
+    if t.IsVariadic() {
+        return nil, &ValidationError{Code: "variadic_not_supported", Message: "variadic handlers not supported"}
+    }
+
+    // Check args
+    if t.NumIn() == 0 {
+        return nil, &ValidationError{Code: "missing_context", Message: "first arg must be context.Context"}
+    }
+    if !t.In(0).Implements(contextType) {
+        return nil, &ValidationError{Code: "first_arg_not_context", Message: "first arg must be context.Context"}
+    }
+    if t.NumIn() > 2 {
+        return nil, &ValidationError{Code: "too_many_args", Message: "at most 2 args allowed (ctx, req)"}
+    }
+
+    // Check returns
+    if t.NumOut() == 0 {
+        return nil, &ValidationError{Code: "missing_error_return", Message: "must return error"}
+    }
+    if !t.Out(t.NumOut() - 1).Implements(errorType) {
+        return nil, &ValidationError{Code: "last_return_not_error", Message: "last return must be error"}
+    }
+    if t.NumOut() > 2 {
+        return nil, &ValidationError{Code: "too_many_returns", Message: "at most 2 returns allowed (resp, error)"}
+    }
+
+    // Determine shape
+    hasReq := t.NumIn() == 2
+    hasResp := t.NumOut() == 2
+
+    info := &HandlerInfo{}
+    switch {
+    case hasReq && hasResp:
+        info.Shape = ShapeCtxReqRespErr
+        info.ReqType = t.In(1)
+        info.RespType = t.Out(0)
+    case hasReq && !hasResp:
+        info.Shape = ShapeCtxReqErr
+        info.ReqType = t.In(1)
+    case !hasReq && hasResp:
+        info.Shape = ShapeCtxRespErr
+        info.RespType = t.Out(0)
+    default:
+        info.Shape = ShapeCtxErr
+    }
+
+    return info, nil
+}
+----
+
+== Step 2: Request type validation
+
+=== 2.1 Write tests for request type constraints
+
+[source,go]
+----
+func TestValidateRequestType(t *testing.T) {
+    t.Run("struct is valid", func(t *testing.T) {
+        type Req struct{ Name string }
+        err := ValidateRequestType(reflect.TypeOf(Req{}))
+        assert.NoError(t, err)
+    })
+
+    t.Run("pointer to struct is valid", func(t *testing.T) {
+        type Req struct{ Name string }
+        err := ValidateRequestType(reflect.TypeOf(&Req{}))
+        assert.NoError(t, err)
+    })
+
+    t.Run("primitive is invalid", func(t *testing.T) {
+        err := ValidateRequestType(reflect.TypeOf("string"))
+        require.Error(t, err)
+        assert.Contains(t, err.Error(), "must be struct")
+    })
+
+    t.Run("slice is invalid", func(t *testing.T) {
+        err := ValidateRequestType(reflect.TypeOf([]string{}))
+        require.Error(t, err)
+    })
+}
+----
+
+=== 2.2 Implement `ValidateRequestType`
+
+[source,go]
+----
+func ValidateRequestType(t reflect.Type) error {
+    // Unwrap pointer
+    if t.Kind() == reflect.Ptr {
+        t = t.Elem()
+    }
+
+    if t.Kind() != reflect.Struct {
+        return &ValidationError{
+            Code:    "request_not_struct",
+            Message: "request type must be struct or *struct",
+        }
+    }
+
+    return nil
+}
+----
+
+== Step 3: Binding tag validation
+
+=== 3.1 Write tests for path variable binding
+
+[source,go]
+----
+func TestValidateBindings_PathVariables(t *testing.T) {
+    t.Run("path var present in struct", func(t *testing.T) {
+        type Req struct {
+            ID string `path:"id"`
+        }
+        err := ValidateBindings("/pets/{id}", reflect.TypeOf(Req{}))
+        assert.NoError(t, err)
+    })
+
+    t.Run("missing path var in struct", func(t *testing.T) {
+        type Req struct {
+            Name string `json:"name"`
+        }
+        err := ValidateBindings("/pets/{id}", reflect.TypeOf(Req{}))
+        require.Error(t, err)
+        assert.Contains(t, err.Error(), "path variable {id}")
+    })
+
+    t.Run("extra path tag not in route", func(t *testing.T) {
+        type Req struct {
+            ID   string `path:"id"`
+            Slug string `path:"slug"` // not in route
+        }
+        err := ValidateBindings("/pets/{id}", reflect.TypeOf(Req{}))
+        require.Error(t, err)
+        assert.Contains(t, err.Error(), "slug")
+    })
+
+    t.Run("multiple path vars", func(t *testing.T) {
+        type Req struct {
+            UserID string `path:"user_id"`
+            PostID string `path:"post_id"`
+        }
+        err := ValidateBindings("/users/{user_id}/posts/{post_id}", reflect.TypeOf(Req{}))
+        assert.NoError(t, err)
+    })
+
+    t.Run("duplicate path tag", func(t *testing.T) {
+        type Req struct {
+            ID1 string `path:"id"`
+            ID2 string `path:"id"` // duplicate
+        }
+        err := ValidateBindings("/pets/{id}", reflect.TypeOf(Req{}))
+        require.Error(t, err)
+        assert.Contains(t, err.Error(), "duplicate")
+    })
+}
+----
+
+=== 3.2 Write tests for query binding validation
+
+[source,go]
+----
+func TestValidateBindings_QueryParams(t *testing.T) {
+    t.Run("scalar query param", func(t *testing.T) {
+        type Req struct {
+            Limit int `query:"limit"`
+        }
+        err := ValidateBindings("/pets", reflect.TypeOf(Req{}))
+        assert.NoError(t, err)
+    })
+
+    t.Run("slice query param", func(t *testing.T) {
+        type Req struct {
+            Tags []string `query:"tag"`
+        }
+        err := ValidateBindings("/pets", reflect.TypeOf(Req{}))
+        assert.NoError(t, err)
+    })
+
+    t.Run("pointer query param (optional)", func(t *testing.T) {
+        type Req struct {
+            Limit *int `query:"limit"`
+        }
+        err := ValidateBindings("/pets", reflect.TypeOf(Req{}))
+        assert.NoError(t, err)
+    })
+
+    t.Run("unsupported query type", func(t *testing.T) {
+        type Req struct {
+            Data map[string]string `query:"data"`
+        }
+        err := ValidateBindings("/pets", reflect.TypeOf(Req{}))
+        require.Error(t, err)
+        assert.Contains(t, err.Error(), "unsupported")
+    })
+}
+----
+
+=== 3.3 Write tests for header binding validation
+
+[source,go]
+----
+func TestValidateBindings_Headers(t *testing.T) {
+    t.Run("string header", func(t *testing.T) {
+        type Req struct {
+            RequestID string `header:"X-Request-Id"`
+        }
+        err := ValidateBindings("/pets", reflect.TypeOf(Req{}))
+        assert.NoError(t, err)
+    })
+
+    t.Run("optional header", func(t *testing.T) {
+        type Req struct {
+            Trace *string `header:"X-Trace-Id"`
+        }
+        err := ValidateBindings("/pets", reflect.TypeOf(Req{}))
+        assert.NoError(t, err)
+    })
+}
+----
+
+=== 3.4 Write tests for JSON body detection
+
+[source,go]
+----
+func TestValidateBindings_JSONBody(t *testing.T) {
+    t.Run("has json fields means body expected", func(t *testing.T) {
+        type Req struct {
+            Name string `json:"name"`
+            Age  int    `json:"age"`
+        }
+        info, err := AnalyzeBindings("/pets", reflect.TypeOf(Req{}))
+        require.NoError(t, err)
+        assert.True(t, info.HasJSONBody)
+    })
+
+    t.Run("no json fields means no body", func(t *testing.T) {
+        type Req struct {
+            ID string `path:"id"`
+        }
+        info, err := AnalyzeBindings("/pets/{id}", reflect.TypeOf(Req{}))
+        require.NoError(t, err)
+        assert.False(t, info.HasJSONBody)
+    })
+
+    t.Run("mixed tags", func(t *testing.T) {
+        type Req struct {
+            ID    string `path:"id"`
+            Limit int    `query:"limit"`
+            Name  string `json:"name"`
+        }
+        info, err := AnalyzeBindings("/pets/{id}", reflect.TypeOf(Req{}))
+        require.NoError(t, err)
+        assert.True(t, info.HasJSONBody)
+        assert.Len(t, info.PathBindings, 1)
+        assert.Len(t, info.QueryBindings, 1)
+        assert.Len(t, info.JSONBindings, 1)
+    })
+}
+----
+
+=== 3.5 Implement binding validation
+
+[source,go]
+----
+type BindingInfo struct {
+    HasJSONBody   bool
+    PathBindings  []FieldBinding
+    QueryBindings []FieldBinding
+    HeaderBindings []FieldBinding
+    JSONBindings  []FieldBinding
+}
+
+type FieldBinding struct {
+    FieldName string
+    TagValue  string
+    FieldType reflect.Type
+}
+
+func ValidateBindings(path string, reqType reflect.Type) error {
+    _, err := AnalyzeBindings(path, reqType)
+    return err
+}
+
+func AnalyzeBindings(path string, reqType reflect.Type) (*BindingInfo, error) {
+    // 1. Extract path variables from route pattern
+    // 2. Walk struct fields, collect bindings by tag
+    // 3. Validate path bindings match route variables exactly
+    // 4. Validate supported types for query/header bindings
+    // ...
+}
+----
+
+== Step 4: Endpoint validation (combines all)
+
+=== 4.1 Write tests for full endpoint validation
+
+[source,go]
+----
+func TestValidateEndpoint(t *testing.T) {
+    t.Run("valid endpoint", func(t *testing.T) {
+        type Req struct {
+            ID string `path:"id"`
+        }
+        type Resp struct {
+            Name string `json:"name"`
+        }
+        handler := func(ctx context.Context, req Req) (Resp, error) {
+            return Resp{}, nil
+        }
+
+        ep := Endpoint{Method: "GET", Path: "/pets/{id}", Handler: handler}
+        err := ValidateEndpoint(ep)
+        assert.NoError(t, err)
+    })
+
+    t.Run("invalid handler shape", func(t *testing.T) {
+        handler := func() {} // invalid
+        ep := Endpoint{Method: "GET", Path: "/pets", Handler: handler}
+        err := ValidateEndpoint(ep)
+        require.Error(t, err)
+    })
+
+    t.Run("path var mismatch", func(t *testing.T) {
+        type Req struct {
+            Slug string `path:"slug"` // route has {id}
+        }
+        handler := func(ctx context.Context, req Req) error { return nil }
+        ep := Endpoint{Method: "GET", Path: "/pets/{id}", Handler: handler}
+        err := ValidateEndpoint(ep)
+        require.Error(t, err)
+    })
+}
+----
+
+=== 4.2 Implement `ValidateEndpoint`
+
+[source,go]
+----
+func ValidateEndpoint(ep Endpoint) error {
+    // 1. Validate handler signature
+    info, err := ValidateHandler(ep.Handler)
+    if err != nil {
+        return fmt.Errorf("endpoint %s %s: %w", ep.Method, ep.Path, err)
+    }
+
+    // 2. If handler has request type, validate request type and bindings
+    if info.ReqType != nil {
+        if err := ValidateRequestType(info.ReqType); err != nil {
+            return fmt.Errorf("endpoint %s %s: %w", ep.Method, ep.Path, err)
+        }
+        if err := ValidateBindings(ep.Path, info.ReqType); err != nil {
+            return fmt.Errorf("endpoint %s %s: %w", ep.Method, ep.Path, err)
+        }
+    }
+
+    return nil
+}
+----
+
+== Step 5: Property tests
+
+=== 5.1 Property test for error stability
+
+[source,go]
+----
+//go:build property
+
+func TestProperty_ValidationErrors_Stable(t *testing.T) {
+    // For each invalid handler shape, validate twice
+    // Assert error messages are identical
+}
+----
+
+=== 5.2 Property test for supported types
+
+[source,go]
+----
+//go:build property
+
+func TestProperty_SupportedTypes(t *testing.T) {
+    // For supported types (string, int, int64, bool, float64, time.Time),
+    // generate struct fields with query/path/header tags
+    // Assert validation passes
+}
+----
+
+== Verification checklist
+
+After completing Phase 2, verify:
+
+- [ ] `go test ./api/portapi/...` passes
+- [ ] `go test -tags=property ./api/portapi/...` passes
+- [ ] All error messages include endpoint method/path context
+- [ ] Error codes are stable and documented
+- [ ] Coverage > 90% for validate.go
+
+== Files created/modified
+
+----
+api/portapi/
+  validate.go       # NEW
+  validate_test.go  # NEW
+  endpoint.go       # MODIFIED (add HandlerInfo field)
+----

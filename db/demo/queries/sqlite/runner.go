@@ -5,8 +5,8 @@ import (
 	"context"
 	"database/sql"
 
-	"github.com/shipq/shipq/nanoid"
 	"github.com/shipq/shipq/db/demo/queries"
+	"github.com/shipq/shipq/nanoid"
 )
 
 // Querier is the interface for executing queries.
@@ -306,9 +306,7 @@ func (r *QueryRunner) GetUser(ctx context.Context, params queries.GetUserParams)
 
 // ListUsers fetches a paginated list of users.
 func (r *QueryRunner) ListUsers(ctx context.Context, params queries.ListUsersParams) ([]queries.ListUsersResult, error) {
-	r.ListUsers(ctx, queries.ListUsersParams{
-		
-	})
+	r.ListUsers(ctx, queries.ListUsersParams{})
 	var args []any
 	args = append(args, params.Limit, params.Offset)
 

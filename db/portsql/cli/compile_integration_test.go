@@ -435,10 +435,10 @@ queries_out = queries
 
 	// Verify cursor pagination types are generated for tables with created_at + public_id
 	expectedCursorTypes := []string{
-		"ListUsersCursor",       // Cursor struct
-		"ListUsersItem",         // Item struct (actual data)
-		"ListUsersResult",       // Wrapper with Items + NextCursor
-		"ListUsersParams",       // Params with Cursor, CreatedAfter, CreatedBefore
+		"ListUsersCursor", // Cursor struct
+		"ListUsersItem",   // Item struct (actual data)
+		"ListUsersResult", // Wrapper with Items + NextCursor
+		"ListUsersParams", // Params with Cursor, CreatedAfter, CreatedBefore
 	}
 
 	for _, typeName := range expectedCursorTypes {

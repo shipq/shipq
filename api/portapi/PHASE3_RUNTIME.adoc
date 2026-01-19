@@ -1,0 +1,916 @@
+= Phase 3: Runtime HTTP Glue Helpers
+:toc:
+:toclevels: 3
+
+Implements the runtime helpers that generated code calls. This keeps codegen minimal and the core HTTP logic testable.
+
+== Goal
+
+Build the `api/portapi/runtime` package with request binding, response encoding, and handler wrappers—all unit-testable with `httptest`.
+
+== Deliverables
+
+- `api/portapi/runtime/bind.go` — request binding from path/query/header/JSON
+- `api/portapi/runtime/convert.go` — string → typed conversion
+- `api/portapi/runtime/respond.go` — JSON responses + stable error payloads
+- `api/portapi/runtime/wrap.go` — handler wrappers for the 4 shapes
+- Comprehensive unit and property tests
+
+== Step 1: String → typed conversion
+
+=== 1.1 Write tests for string conversion
+
+Create `api/portapi/runtime/convert_test.go`:
+
+[source,go]
+----
+func TestConvertString(t *testing.T) {
+    t.Run("string to string", func(t *testing.T) {
+        v, err := ConvertString("hello", reflect.TypeOf(""))
+        require.NoError(t, err)
+        assert.Equal(t, "hello", v.Interface())
+    })
+
+    t.Run("string to int", func(t *testing.T) {
+        v, err := ConvertString("42", reflect.TypeOf(0))
+        require.NoError(t, err)
+        assert.Equal(t, 42, v.Interface())
+    })
+
+    t.Run("string to int64", func(t *testing.T) {
+        v, err := ConvertString("9223372036854775807", reflect.TypeOf(int64(0)))
+        require.NoError(t, err)
+        assert.Equal(t, int64(9223372036854775807), v.Interface())
+    })
+
+    t.Run("string to bool true", func(t *testing.T) {
+        for _, s := range []string{"true", "True", "TRUE", "1"} {
+            v, err := ConvertString(s, reflect.TypeOf(false))
+            require.NoError(t, err, "input: %s", s)
+            assert.Equal(t, true, v.Interface())
+        }
+    })
+
+    t.Run("string to bool false", func(t *testing.T) {
+        for _, s := range []string{"false", "False", "FALSE", "0"} {
+            v, err := ConvertString(s, reflect.TypeOf(false))
+            require.NoError(t, err, "input: %s", s)
+            assert.Equal(t, false, v.Interface())
+        }
+    })
+
+    t.Run("string to float64", func(t *testing.T) {
+        v, err := ConvertString("3.14159", reflect.TypeOf(float64(0)))
+        require.NoError(t, err)
+        assert.InDelta(t, 3.14159, v.Interface(), 0.00001)
+    })
+
+    t.Run("string to time.Time RFC3339", func(t *testing.T) {
+        v, err := ConvertString("2024-01-15T10:30:00Z", reflect.TypeOf(time.Time{}))
+        require.NoError(t, err)
+        expected, _ := time.Parse(time.RFC3339, "2024-01-15T10:30:00Z")
+        assert.Equal(t, expected, v.Interface())
+    })
+}
+----
+
+=== 1.2 Write tests for conversion errors
+
+[source,go]
+----
+func TestConvertString_Errors(t *testing.T) {
+    t.Run("empty string to int", func(t *testing.T) {
+        _, err := ConvertString("", reflect.TypeOf(0))
+        require.Error(t, err)
+    })
+
+    t.Run("non-numeric to int", func(t *testing.T) {
+        _, err := ConvertString("abc", reflect.TypeOf(0))
+        require.Error(t, err)
+    })
+
+    t.Run("overflow int", func(t *testing.T) {
+        _, err := ConvertString("99999999999999999999", reflect.TypeOf(0))
+        require.Error(t, err)
+    })
+
+    t.Run("invalid bool", func(t *testing.T) {
+        _, err := ConvertString("yes", reflect.TypeOf(false))
+        require.Error(t, err)
+    })
+
+    t.Run("invalid time format", func(t *testing.T) {
+        _, err := ConvertString("2024-01-15", reflect.TypeOf(time.Time{})) // not RFC3339
+        require.Error(t, err)
+    })
+
+    t.Run("unsupported type", func(t *testing.T) {
+        _, err := ConvertString("data", reflect.TypeOf([]byte{}))
+        require.Error(t, err)
+    })
+}
+----
+
+=== 1.3 Write property tests for conversion roundtrip
+
+[source,go]
+----
+//go:build property
+
+func TestProperty_ConvertString_Roundtrip(t *testing.T) {
+    // Generate random int64, convert to string, convert back, assert equal
+    // Generate random float64, convert to string, convert back, assert equal (within epsilon)
+    // Generate random bool, convert to string, convert back, assert equal
+}
+
+func TestProperty_ConvertString_NeverPanics(t *testing.T) {
+    // Generate random strings (including edge cases, empty, unicode, very long)
+    // Attempt conversion to each supported type
+    // Assert no panic (error is acceptable)
+}
+----
+
+=== 1.4 Implement `ConvertString`
+
+Create `api/portapi/runtime/convert.go`:
+
+[source,go]
+----
+package runtime
+
+import (
+    "errors"
+    "reflect"
+    "strconv"
+    "time"
+)
+
+var ErrConversion = errors.New("conversion error")
+
+func ConvertString(s string, targetType reflect.Type) (reflect.Value, error) {
+    switch targetType.Kind() {
+    case reflect.String:
+        return reflect.ValueOf(s), nil
+
+    case reflect.Int:
+        v, err := strconv.Atoi(s)
+        if err != nil {
+            return reflect.Value{}, err
+        }
+        return reflect.ValueOf(v), nil
+
+    case reflect.Int64:
+        v, err := strconv.ParseInt(s, 10, 64)
+        if err != nil {
+            return reflect.Value{}, err
+        }
+        return reflect.ValueOf(v), nil
+
+    case reflect.Bool:
+        switch s {
+        case "true", "True", "TRUE", "1":
+            return reflect.ValueOf(true), nil
+        case "false", "False", "FALSE", "0":
+            return reflect.ValueOf(false), nil
+        default:
+            return reflect.Value{}, errors.New("invalid bool: " + s)
+        }
+
+    case reflect.Float64:
+        v, err := strconv.ParseFloat(s, 64)
+        if err != nil {
+            return reflect.Value{}, err
+        }
+        return reflect.ValueOf(v), nil
+
+    case reflect.Struct:
+        if targetType == reflect.TypeOf(time.Time{}) {
+            t, err := time.Parse(time.RFC3339, s)
+            if err != nil {
+                return reflect.Value{}, err
+            }
+            return reflect.ValueOf(t), nil
+        }
+        fallthrough
+
+    default:
+        return reflect.Value{}, errors.New("unsupported type: " + targetType.String())
+    }
+}
+----
+
+== Step 2: Request binding
+
+=== 2.1 Write tests for path binding
+
+Create `api/portapi/runtime/bind_test.go`:
+
+[source,go]
+----
+func TestBind_PathVariables(t *testing.T) {
+    type Req struct {
+        ID string `path:"id"`
+    }
+
+    t.Run("binds path variable", func(t *testing.T) {
+        r := httptest.NewRequest("GET", "/pets/abc123", nil)
+        r.SetPathValue("id", "abc123")
+
+        var req Req
+        err := Bind(r, &req)
+        require.NoError(t, err)
+        assert.Equal(t, "abc123", req.ID)
+    })
+
+    t.Run("converts path variable to int", func(t *testing.T) {
+        type ReqInt struct {
+            ID int `path:"id"`
+        }
+        r := httptest.NewRequest("GET", "/pets/42", nil)
+        r.SetPathValue("id", "42")
+
+        var req ReqInt
+        err := Bind(r, &req)
+        require.NoError(t, err)
+        assert.Equal(t, 42, req.ID)
+    })
+
+    t.Run("missing path variable", func(t *testing.T) {
+        r := httptest.NewRequest("GET", "/pets/", nil)
+        // No SetPathValue called
+
+        var req Req
+        err := Bind(r, &req)
+        require.Error(t, err)
+        assert.Contains(t, err.Error(), "id")
+    })
+}
+----
+
+=== 2.2 Write tests for query binding
+
+[source,go]
+----
+func TestBind_QueryParams(t *testing.T) {
+    type Req struct {
+        Limit int      `query:"limit"`
+        Tags  []string `query:"tag"`
+    }
+
+    t.Run("binds query params", func(t *testing.T) {
+        r := httptest.NewRequest("GET", "/pets?limit=10&tag=cute&tag=small", nil)
+
+        var req Req
+        err := Bind(r, &req)
+        require.NoError(t, err)
+        assert.Equal(t, 10, req.Limit)
+        assert.Equal(t, []string{"cute", "small"}, req.Tags)
+    })
+
+    t.Run("missing required query param", func(t *testing.T) {
+        type ReqRequired struct {
+            Limit int `query:"limit"`
+        }
+        r := httptest.NewRequest("GET", "/pets", nil)
+
+        var req ReqRequired
+        err := Bind(r, &req)
+        require.Error(t, err)
+    })
+
+    t.Run("optional query param (pointer)", func(t *testing.T) {
+        type ReqOptional struct {
+            Limit *int `query:"limit"`
+        }
+        r := httptest.NewRequest("GET", "/pets", nil)
+
+        var req ReqOptional
+        err := Bind(r, &req)
+        require.NoError(t, err)
+        assert.Nil(t, req.Limit)
+    })
+
+    t.Run("optional query param present", func(t *testing.T) {
+        type ReqOptional struct {
+            Limit *int `query:"limit"`
+        }
+        r := httptest.NewRequest("GET", "/pets?limit=5", nil)
+
+        var req ReqOptional
+        err := Bind(r, &req)
+        require.NoError(t, err)
+        require.NotNil(t, req.Limit)
+        assert.Equal(t, 5, *req.Limit)
+    })
+}
+----
+
+=== 2.3 Write tests for header binding
+
+[source,go]
+----
+func TestBind_Headers(t *testing.T) {
+    type Req struct {
+        RequestID string `header:"X-Request-Id"`
+    }
+
+    t.Run("binds header", func(t *testing.T) {
+        r := httptest.NewRequest("GET", "/pets", nil)
+        r.Header.Set("X-Request-Id", "req-123")
+
+        var req Req
+        err := Bind(r, &req)
+        require.NoError(t, err)
+        assert.Equal(t, "req-123", req.RequestID)
+    })
+
+    t.Run("missing required header", func(t *testing.T) {
+        r := httptest.NewRequest("GET", "/pets", nil)
+
+        var req Req
+        err := Bind(r, &req)
+        require.Error(t, err)
+    })
+
+    t.Run("optional header (pointer)", func(t *testing.T) {
+        type ReqOptional struct {
+            TraceID *string `header:"X-Trace-Id"`
+        }
+        r := httptest.NewRequest("GET", "/pets", nil)
+
+        var req ReqOptional
+        err := Bind(r, &req)
+        require.NoError(t, err)
+        assert.Nil(t, req.TraceID)
+    })
+}
+----
+
+=== 2.4 Write tests for JSON body binding
+
+[source,go]
+----
+func TestBind_JSONBody(t *testing.T) {
+    type Req struct {
+        Name string `json:"name"`
+        Age  int    `json:"age"`
+    }
+
+    t.Run("binds JSON body", func(t *testing.T) {
+        body := strings.NewReader(`{"name":"Fluffy","age":3}`)
+        r := httptest.NewRequest("POST", "/pets", body)
+        r.Header.Set("Content-Type", "application/json")
+
+        var req Req
+        err := Bind(r, &req)
+        require.NoError(t, err)
+        assert.Equal(t, "Fluffy", req.Name)
+        assert.Equal(t, 3, req.Age)
+    })
+
+    t.Run("invalid JSON", func(t *testing.T) {
+        body := strings.NewReader(`{invalid}`)
+        r := httptest.NewRequest("POST", "/pets", body)
+        r.Header.Set("Content-Type", "application/json")
+
+        var req Req
+        err := Bind(r, &req)
+        require.Error(t, err)
+    })
+
+    t.Run("empty body when JSON expected", func(t *testing.T) {
+        r := httptest.NewRequest("POST", "/pets", nil)
+        r.Header.Set("Content-Type", "application/json")
+
+        var req Req
+        err := Bind(r, &req)
+        require.Error(t, err)
+    })
+}
+----
+
+=== 2.5 Write tests for mixed bindings
+
+[source,go]
+----
+func TestBind_Mixed(t *testing.T) {
+    type Req struct {
+        ID    string `path:"id"`
+        Limit int    `query:"limit"`
+        Auth  string `header:"Authorization"`
+        Name  string `json:"name"`
+    }
+
+    t.Run("binds from all sources", func(t *testing.T) {
+        body := strings.NewReader(`{"name":"Fluffy"}`)
+        r := httptest.NewRequest("PUT", "/pets/pet123?limit=10", body)
+        r.SetPathValue("id", "pet123")
+        r.Header.Set("Authorization", "Bearer token")
+        r.Header.Set("Content-Type", "application/json")
+
+        var req Req
+        err := Bind(r, &req)
+        require.NoError(t, err)
+        assert.Equal(t, "pet123", req.ID)
+        assert.Equal(t, 10, req.Limit)
+        assert.Equal(t, "Bearer token", req.Auth)
+        assert.Equal(t, "Fluffy", req.Name)
+    })
+}
+----
+
+=== 2.6 Implement `Bind`
+
+Create `api/portapi/runtime/bind.go`:
+
+[source,go]
+----
+package runtime
+
+import (
+    "encoding/json"
+    "io"
+    "net/http"
+    "reflect"
+)
+
+// Bind populates req from the HTTP request (path, query, header, JSON body).
+func Bind(r *http.Request, req any) error {
+    rv := reflect.ValueOf(req)
+    if rv.Kind() != reflect.Ptr || rv.Elem().Kind() != reflect.Struct {
+        return errors.New("req must be pointer to struct")
+    }
+    rv = rv.Elem()
+    rt := rv.Type()
+
+    hasJSON := false
+
+    for i := 0; i < rt.NumField(); i++ {
+        field := rt.Field(i)
+        fv := rv.Field(i)
+
+        if tag := field.Tag.Get("path"); tag != "" {
+            // Bind from r.PathValue(tag)
+            // ...
+        }
+        if tag := field.Tag.Get("query"); tag != "" {
+            // Bind from r.URL.Query().Get(tag) or GetAll for slices
+            // ...
+        }
+        if tag := field.Tag.Get("header"); tag != "" {
+            // Bind from r.Header.Get(tag)
+            // ...
+        }
+        if tag := field.Tag.Get("json"); tag != "" {
+            hasJSON = true
+        }
+    }
+
+    if hasJSON {
+        // Decode JSON body into req
+        if err := json.NewDecoder(r.Body).Decode(req); err != nil {
+            return &BindError{Source: "body", Err: err}
+        }
+    }
+
+    return nil
+}
+
+type BindError struct {
+    Source string // "path", "query", "header", "body"
+    Field  string
+    Err    error
+}
+
+func (e *BindError) Error() string {
+    if e.Field != "" {
+        return e.Source + " " + e.Field + ": " + e.Err.Error()
+    }
+    return e.Source + ": " + e.Err.Error()
+}
+----
+
+== Step 3: Response encoding
+
+=== 3.1 Write tests for success responses
+
+Create `api/portapi/runtime/respond_test.go`:
+
+[source,go]
+----
+func TestRespondJSON(t *testing.T) {
+    t.Run("encodes struct as JSON", func(t *testing.T) {
+        type Resp struct {
+            ID   string `json:"id"`
+            Name string `json:"name"`
+        }
+        w := httptest.NewRecorder()
+
+        RespondJSON(w, http.StatusOK, Resp{ID: "123", Name: "Fluffy"})
+
+        assert.Equal(t, http.StatusOK, w.Code)
+        assert.Equal(t, "application/json", w.Header().Get("Content-Type"))
+        assert.JSONEq(t, `{"id":"123","name":"Fluffy"}`, w.Body.String())
+    })
+
+    t.Run("encodes slice", func(t *testing.T) {
+        type Item struct{ ID string `json:"id"` }
+        w := httptest.NewRecorder()
+
+        RespondJSON(w, http.StatusOK, []Item{{ID: "1"}, {ID: "2"}})
+
+        assert.JSONEq(t, `[{"id":"1"},{"id":"2"}]`, w.Body.String())
+    })
+
+    t.Run("encodes nil slice as empty array", func(t *testing.T) {
+        type Item struct{ ID string `json:"id"` }
+        w := httptest.NewRecorder()
+
+        RespondJSON(w, http.StatusOK, []Item(nil))
+
+        assert.JSONEq(t, `[]`, w.Body.String())
+    })
+}
+----
+
+=== 3.2 Write tests for no-content response
+
+[source,go]
+----
+func TestRespondNoContent(t *testing.T) {
+    w := httptest.NewRecorder()
+
+    RespondNoContent(w)
+
+    assert.Equal(t, http.StatusNoContent, w.Code)
+    assert.Empty(t, w.Body.String())
+}
+----
+
+=== 3.3 Write tests for error responses
+
+[source,go]
+----
+func TestRespondError(t *testing.T) {
+    t.Run("bind error → 400", func(t *testing.T) {
+        w := httptest.NewRecorder()
+        err := &BindError{Source: "query", Field: "limit", Err: errors.New("invalid")}
+
+        RespondError(w, err)
+
+        assert.Equal(t, http.StatusBadRequest, w.Code)
+        assert.Equal(t, "application/json", w.Header().Get("Content-Type"))
+
+        var resp map[string]any
+        json.Unmarshal(w.Body.Bytes(), &resp)
+        assert.Equal(t, "bad_request", resp["error"].(map[string]any)["code"])
+    })
+
+    t.Run("handler error → 500", func(t *testing.T) {
+        w := httptest.NewRecorder()
+        err := errors.New("something went wrong")
+
+        RespondError(w, err)
+
+        assert.Equal(t, http.StatusInternalServerError, w.Code)
+
+        var resp map[string]any
+        json.Unmarshal(w.Body.Bytes(), &resp)
+        assert.Equal(t, "internal_error", resp["error"].(map[string]any)["code"])
+    })
+}
+----
+
+=== 3.4 Write property tests for error responses
+
+[source,go]
+----
+//go:build property
+
+func TestProperty_RespondError_AlwaysValidJSON(t *testing.T) {
+    // Generate random error messages
+    // Call RespondError
+    // Assert response body is valid JSON
+    // Assert response has "error" key with "code" and "message"
+}
+----
+
+=== 3.5 Implement response helpers
+
+Create `api/portapi/runtime/respond.go`:
+
+[source,go]
+----
+package runtime
+
+import (
+    "encoding/json"
+    "net/http"
+)
+
+func RespondJSON(w http.ResponseWriter, status int, data any) {
+    w.Header().Set("Content-Type", "application/json")
+    w.WriteHeader(status)
+
+    // Handle nil slices
+    if data != nil {
+        rv := reflect.ValueOf(data)
+        if rv.Kind() == reflect.Slice && rv.IsNil() {
+            w.Write([]byte("[]"))
+            return
+        }
+    }
+
+    json.NewEncoder(w).Encode(data)
+}
+
+func RespondNoContent(w http.ResponseWriter) {
+    w.WriteHeader(http.StatusNoContent)
+}
+
+type ErrorResponse struct {
+    Error ErrorDetail `json:"error"`
+}
+
+type ErrorDetail struct {
+    Code    string `json:"code"`
+    Message string `json:"message"`
+}
+
+func RespondError(w http.ResponseWriter, err error) {
+    status := http.StatusInternalServerError
+    code := "internal_error"
+
+    var bindErr *BindError
+    if errors.As(err, &bindErr) {
+        status = http.StatusBadRequest
+        code = "bad_request"
+    }
+
+    w.Header().Set("Content-Type", "application/json")
+    w.WriteHeader(status)
+    json.NewEncoder(w).Encode(ErrorResponse{
+        Error: ErrorDetail{Code: code, Message: err.Error()},
+    })
+}
+----
+
+== Step 4: Handler wrappers
+
+=== 4.1 Write tests for each wrapper shape
+
+Create `api/portapi/runtime/wrap_test.go`:
+
+[source,go]
+----
+func TestWrapCtxReqRespErr(t *testing.T) {
+    type Req struct {
+        ID string `path:"id"`
+    }
+    type Resp struct {
+        Name string `json:"name"`
+    }
+
+    t.Run("success", func(t *testing.T) {
+        handler := func(ctx context.Context, req Req) (Resp, error) {
+            return Resp{Name: "Pet-" + req.ID}, nil
+        }
+
+        wrapped := WrapCtxReqRespErr(handler)
+
+        r := httptest.NewRequest("GET", "/pets/123", nil)
+        r.SetPathValue("id", "123")
+        w := httptest.NewRecorder()
+
+        wrapped.ServeHTTP(w, r)
+
+        assert.Equal(t, http.StatusOK, w.Code)
+        assert.JSONEq(t, `{"name":"Pet-123"}`, w.Body.String())
+    })
+
+    t.Run("bind error", func(t *testing.T) {
+        type ReqInt struct {
+            ID int `path:"id"`
+        }
+        handler := func(ctx context.Context, req ReqInt) (Resp, error) {
+            return Resp{}, nil
+        }
+
+        wrapped := WrapCtxReqRespErr(handler)
+
+        r := httptest.NewRequest("GET", "/pets/notanint", nil)
+        r.SetPathValue("id", "notanint")
+        w := httptest.NewRecorder()
+
+        wrapped.ServeHTTP(w, r)
+
+        assert.Equal(t, http.StatusBadRequest, w.Code)
+    })
+
+    t.Run("handler error", func(t *testing.T) {
+        handler := func(ctx context.Context, req Req) (Resp, error) {
+            return Resp{}, errors.New("db connection failed")
+        }
+
+        wrapped := WrapCtxReqRespErr(handler)
+
+        r := httptest.NewRequest("GET", "/pets/123", nil)
+        r.SetPathValue("id", "123")
+        w := httptest.NewRecorder()
+
+        wrapped.ServeHTTP(w, r)
+
+        assert.Equal(t, http.StatusInternalServerError, w.Code)
+    })
+}
+
+func TestWrapCtxReqErr(t *testing.T) {
+    type Req struct {
+        ID string `path:"id"`
+    }
+
+    t.Run("success → 204", func(t *testing.T) {
+        handler := func(ctx context.Context, req Req) error {
+            return nil
+        }
+
+        wrapped := WrapCtxReqErr(handler)
+
+        r := httptest.NewRequest("DELETE", "/pets/123", nil)
+        r.SetPathValue("id", "123")
+        w := httptest.NewRecorder()
+
+        wrapped.ServeHTTP(w, r)
+
+        assert.Equal(t, http.StatusNoContent, w.Code)
+        assert.Empty(t, w.Body.String())
+    })
+}
+
+func TestWrapCtxRespErr(t *testing.T) {
+    type Resp struct {
+        Items []string `json:"items"`
+    }
+
+    t.Run("success", func(t *testing.T) {
+        handler := func(ctx context.Context) (Resp, error) {
+            return Resp{Items: []string{"a", "b"}}, nil
+        }
+
+        wrapped := WrapCtxRespErr(handler)
+
+        r := httptest.NewRequest("GET", "/items", nil)
+        w := httptest.NewRecorder()
+
+        wrapped.ServeHTTP(w, r)
+
+        assert.Equal(t, http.StatusOK, w.Code)
+        assert.JSONEq(t, `{"items":["a","b"]}`, w.Body.String())
+    })
+}
+
+func TestWrapCtxErr(t *testing.T) {
+    t.Run("success → 204", func(t *testing.T) {
+        handler := func(ctx context.Context) error {
+            return nil
+        }
+
+        wrapped := WrapCtxErr(handler)
+
+        r := httptest.NewRequest("POST", "/ping", nil)
+        w := httptest.NewRecorder()
+
+        wrapped.ServeHTTP(w, r)
+
+        assert.Equal(t, http.StatusNoContent, w.Code)
+    })
+}
+----
+
+=== 4.2 Write tests for context propagation
+
+[source,go]
+----
+func TestWrap_ContextPropagation(t *testing.T) {
+    t.Run("passes request context to handler", func(t *testing.T) {
+        var capturedCtx context.Context
+        handler := func(ctx context.Context) error {
+            capturedCtx = ctx
+            return nil
+        }
+
+        wrapped := WrapCtxErr(handler)
+
+        ctx := context.WithValue(context.Background(), "key", "value")
+        r := httptest.NewRequest("GET", "/", nil).WithContext(ctx)
+        w := httptest.NewRecorder()
+
+        wrapped.ServeHTTP(w, r)
+
+        assert.Equal(t, "value", capturedCtx.Value("key"))
+    })
+}
+----
+
+=== 4.3 Implement wrappers
+
+Create `api/portapi/runtime/wrap.go`:
+
+[source,go]
+----
+package runtime
+
+import (
+    "context"
+    "net/http"
+)
+
+func WrapCtxReqRespErr[Req, Resp any](
+    handler func(context.Context, Req) (Resp, error),
+) http.Handler {
+    return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+        var req Req
+        if err := Bind(r, &req); err != nil {
+            RespondError(w, err)
+            return
+        }
+
+        resp, err := handler(r.Context(), req)
+        if err != nil {
+            RespondError(w, err)
+            return
+        }
+
+        RespondJSON(w, http.StatusOK, resp)
+    })
+}
+
+func WrapCtxReqErr[Req any](
+    handler func(context.Context, Req) error,
+) http.Handler {
+    return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+        var req Req
+        if err := Bind(r, &req); err != nil {
+            RespondError(w, err)
+            return
+        }
+
+        if err := handler(r.Context(), req); err != nil {
+            RespondError(w, err)
+            return
+        }
+
+        RespondNoContent(w)
+    })
+}
+
+func WrapCtxRespErr[Resp any](
+    handler func(context.Context) (Resp, error),
+) http.Handler {
+    return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+        resp, err := handler(r.Context())
+        if err != nil {
+            RespondError(w, err)
+            return
+        }
+
+        RespondJSON(w, http.StatusOK, resp)
+    })
+}
+
+func WrapCtxErr(handler func(context.Context) error) http.Handler {
+    return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+        if err := handler(r.Context()); err != nil {
+            RespondError(w, err)
+            return
+        }
+
+        RespondNoContent(w)
+    })
+}
+----
+
+== Verification checklist
+
+After completing Phase 3, verify:
+
+- [ ] `go test ./api/portapi/runtime/...` passes
+- [ ] `go test -tags=property ./api/portapi/runtime/...` passes
+- [ ] All bind errors produce 400
+- [ ] All handler errors produce 500
+- [ ] Error responses are always valid JSON with stable structure
+- [ ] Coverage > 90% for all runtime files
+
+== Files created
+
+----
+api/portapi/runtime/
+  convert.go
+  convert_test.go
+  bind.go
+  bind_test.go
+  respond.go
+  respond_test.go
+  wrap.go
+  wrap_test.go
+----
