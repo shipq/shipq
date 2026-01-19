@@ -8,4 +8,6 @@ func Register(app *portapi.App) {
 	app.Get("/pets", ListPets)
 	app.Get("/health", HealthCheck)
 	app.Get("/pets/{id}", GetPet)
+	app.Get("/pets/search", SearchPets)
+	app.Put("/pets/{id}", UpdatePet)
 }

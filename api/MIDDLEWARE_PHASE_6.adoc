@@ -1,0 +1,337 @@
+= Middleware Phase 6 (TDD): Generate typed context helpers in the middleware package
+:toc:
+:toclevels: 3
+
+This phase implements generation of `zz_generated_middleware_context.go` into the configured middleware package.
+
+The generator (the “compiler”) consumes the middleware registry declarations (Phase 2/4):
+
+- `Provide(key, TypeOf[T]())`
+
+and emits **typed helpers** for storing and retrieving values from `context.Context` without repeating bindings in every handler request struct.
+
+This phase is intentionally independent of the HTTP pipeline work (Phase 5). It only generates helpers based on `Provide(...)` declarations.
+
+== Scope and acceptance criteria
+
+=== In scope
+
+- Consume manifest fields produced by discovery (Phase 4):
+  - provided context keys: `key` + Go type info (token/type string)
+- Emit a new generated file into the middleware package:
+  - `zz_generated_middleware_context.go`
+- For each provided key:
+  - generate a unique, unexported context key type/value
+  - generate:
+    - `WithX(ctx context.Context, v T) context.Context`
+    - `X(ctx context.Context) (T, bool)`
+    - `MustX(ctx context.Context) T` (optional but recommended; decide and freeze)
+- Enforce deterministic naming and collision rules:
+  - stable mapping from `key` -> identifier `X`
+  - deterministic file ordering
+  - fail generation with clear, stable error codes on collisions or invalid keys/types
+
+=== Out of scope
+
+- Using these helpers in generated HTTP server pipeline (Phase 5 already covers middleware execution; this phase only generates helpers)
+- Auto-inference of keys from middleware code
+- Multiple middleware packages (still exactly one configured package)
+
+=== Acceptance criteria (Phase 6 complete)
+
+- Generator produces `zz_generated_middleware_context.go` in the middleware package when (and only when) `Provide(...)` keys exist.
+- Generated code compiles.
+- Integration tests verify:
+  - helpers exist with correct names and types
+  - setting values via `WithX` can be read via `X(ctx)` and `MustX(ctx)` behaves as specified
+  - two different keys do not collide (unique keying)
+  - collisions are detected deterministically and fail with stable error codes
+- Output is deterministic across runs for the same manifest.
+
+== Public contract (frozen by tests)
+
+These contracts must remain stable once shipped.
+
+1) Type safety
+- `WithX` accepts exactly the declared type `T`.
+- `X(ctx)` returns `(T, bool)` where `bool` indicates presence.
+- The stored value is retrieved using a key that cannot conflict with other packages/keys.
+
+2) Key uniqueness / unforgeability
+- Generated keys must be unique and not based on strings as context keys.
+- Use unexported, unique key types or pointers to unexported variables.
+
+3) Determinism
+- Given the same set of `Provide(...)` declarations, emitted helper names and ordering must be stable.
+- Any map iteration must be sorted before emission.
+
+== Recommended generation shape
+
+The generated file should roughly contain:
+
+- `package <middlewarePackageName>`
+- `import "context"`
+- For each key:
+  - an unexported key type (or variable), unique per provided key
+  - helper functions
+
+Recommended approach (unexported key type + zero value):
+
+- `type zzCtxKeyUser struct{}`
+- use `context.WithValue(ctx, zzCtxKeyUser{}, v)` and `ctx.Value(zzCtxKeyUser{})`
+
+This is safe because:
+- `zzCtxKeyUser{}` is a distinct type (not just a value)
+- it cannot be constructed outside the package (type is unexported)
+
+Alternative approach (unexported pointer key):
+- `var zzCtxKeyUser = &struct{}{}`
+- use `context.WithValue(ctx, zzCtxKeyUser, v)`
+
+Both work. Pick one and freeze it with tests.
+
+== Stable naming rules
+
+You must convert `Provide` keys (e.g. `request_id`) into exported identifier parts (e.g. `RequestID`).
+
+Recommended conversion rules (snake_case -> CamelCase):
+- split on `_`
+- each segment:
+  - if segment is empty: error
+  - title-case the first rune, lower-case the rest *except* preserve all-caps segments? (decide now)
+- special-case common initialisms:
+  - `id` -> `ID`
+  - `url` -> `URL`
+  - `http` -> `HTTP`
+  - `ip` -> `IP`
+  - etc.
+Keep this mapping deterministic and unit-tested.
+
+Generated function names:
+- `With` + CamelCase key: `WithRequestID`
+- getter: `RequestID`
+- must-getter: `MustRequestID`
+
+Also generate the context key type name deterministically, e.g.:
+- `zzCtxKeyRequestID`
+
+Collision rule:
+- If two different keys map to the same CamelCase identifier (e.g. `foo_bar` and `foo__bar` if you ever allowed it), generation must fail with a stable error code (recommended: `context_key_name_collision`).
+
+Note: Phase 2 already enforces key format; still re-check in generator because the manifest is an input boundary.
+
+== Stable error codes (Phase 6)
+
+Add (or reuse) stable codes for generator failures:
+
+- `invalid_context_key` (if manifest contains invalid key)
+- `invalid_context_type` (type token missing/unrenderable)
+- `context_key_name_collision` (two keys map to same generated name)
+- `context_helper_generation_failed` (catch-all with details; avoid if you can be specific)
+
+== TDD plan
+
+== Step 1: Write failing generator integration tests (golden compile + behavior)
+
+These tests should run:
+1) discovery
+2) codegen (including middleware context file emission)
+3) `go test` / compile the resulting packages
+4) run runtime assertions where appropriate
+
+You will need a test fixture (testdata module/packages) with:
+- a middleware package that calls `Provide(...)` for multiple keys of different types
+- at least one endpoint/handler that uses the generated helpers (to verify compile + behavior)
+
+Recommended minimal keys for coverage:
+- `Provide("user", TypeOf[*User]())`
+- `Provide("request_id", TypeOf[string]())`
+- `Provide("retry_count", TypeOf[int]())`
+
+Define `type User struct { ... }` in the middleware package (not the endpoint package), to avoid dependency cycles.
+
+=== Test 1.1: generated file exists and compiles
+
+Arrange:
+- config includes:
+  - `package = ./apiroot_with_middleware`
+  - `middleware_package = ./middleware`
+- middleware package provides keys
+
+Act:
+- run generator
+
+Assert:
+- `zz_generated_middleware_context.go` is emitted into the middleware package directory
+- `go test ./...` (or compilation step) succeeds
+
+=== Test 1.2: With/Get round-trip works
+
+Arrange:
+- in middleware package (or in an endpoint handler), write code that:
+  - uses `WithUser(ctx, u)`
+  - then calls `User(ctx)` and asserts returned pointer equals `u`
+
+Act:
+- run a small unit test in the middleware package (preferred) that does not require the HTTP server.
+
+Assert:
+- getter returns `(value, true)` after set
+- getter returns `(zero, false)` when not set
+
+=== Test 1.3: MustX behavior is frozen
+
+Decide and test one of:
+- MustX panics if missing
+- MustX returns zero value if missing (not recommended)
+- MustX returns value (and panics if type mismatch)
+
+Recommended: MustX panics if missing.
+
+Test:
+- calling `MustUser(context.Background())` panics
+- calling after `WithUser` returns stored value
+
+=== Test 1.4: No cross-key collisions (independence)
+
+Arrange:
+- set `user` and `request_id` in the same context
+
+Assert:
+- reading `User(ctx)` returns user
+- reading `RequestID(ctx)` returns request_id
+- neither overwrites the other
+
+== Step 2: Write failing tests for name generation and collision handling
+
+You want deterministic failure modes, not “it compiles sometimes”.
+
+=== Test 2.1: collision in generated names fails deterministically
+
+Arrange:
+- Create a fixture middleware registry that calls `Provide` with two keys that map to the same generated identifier after normalization.
+- If Phase 2 forbids such keys (due to format rules), construct a collision that passes Phase 2 but collides in CamelCase (examples depend on your exact normalization rules).
+- Alternative (if Phase 2 prevents all realistic collisions): artificially simulate a manifest with colliding keys inside a generator unit test (not full integration).
+
+Act:
+- run generator
+
+Assert:
+- generation fails with stable error code `context_key_name_collision`
+- message includes the colliding keys and the generated name
+
+=== Test 2.2: invalid type info fails with stable code
+
+Arrange:
+- Create a malformed manifest in a generator unit test where a key exists but type rendering is missing/unusable.
+
+Act:
+- run just the context-helper generation routine (unit test)
+
+Assert:
+- fails with `invalid_context_type` and a message referencing the key
+
+== Step 3: Implement a generator unit test for file content
+
+In addition to compile/behavior tests, add a “snapshot” test that asserts exact generated file content for a small fixed set of keys.
+
+This catches regressions in:
+- naming rules
+- ordering
+- key type strategy
+
+Guidance:
+- Keep the snapshot minimal.
+- If you run `gofmt`, snapshot the gofmt’d output.
+
+== Step 4: Implement context helper generation in the generator
+
+Add generator emission for `zz_generated_middleware_context.go`:
+
+Inputs:
+- middleware package path and package name
+- list of provided keys from manifest:
+  - key string
+  - Go type string/descriptor that generator can render in code
+
+Algorithm:
+1) Validate inputs:
+   - keys non-empty
+   - keys sorted deterministically by key for emission
+   - type strings resolvable
+2) For each key:
+   - compute `Name = CamelCase(key)` with initialism handling
+   - check for collisions in generated names:
+     - map Name -> original key
+     - if collision, fail `context_key_name_collision`
+3) Emit file:
+   - header comment (stable; do not include timestamps)
+   - `package ...`
+   - imports
+   - key type definitions
+   - helper functions
+
+== Step 5: Decide and freeze the context key strategy
+
+Pick one and lock it down:
+
+Option A: unexported unique key type (recommended)
+- `type zzCtxKeyRequestID struct{}`
+- `WithRequestID(ctx, v) => context.WithValue(ctx, zzCtxKeyRequestID{}, v)`
+- `RequestID(ctx) => ctx.Value(zzCtxKeyRequestID{})`
+
+Option B: unexported pointer var
+- `var zzCtxKeyRequestID = &struct{}{}`
+- `ctx.Value(zzCtxKeyRequestID)`
+
+Both are valid. Option A yields slightly simpler generation and avoids package-level vars; Option B avoids constructing a new key value each call. In practice both are fine.
+
+If you pick Option A, ensure you always use the exact same key type in With/Get (you will, because it’s generated).
+
+== Step 6: Type assertions and nil handling
+
+Implement getters carefully:
+
+For non-pointer types (e.g. `int`, `string`):
+- When missing:
+  - return `(zeroValue, false)`
+- When present:
+  - do a type assertion:
+    - `v, ok := ctx.Value(key).(T)`
+  - return `(v, ok)`
+
+For pointer types (e.g. `*User`):
+- If stored value is `nil`:
+  - decide whether that counts as present:
+    - Recommended: presence is determined by whether the key exists in context, not by whether the stored pointer is nil.
+  - But `context.Value` cannot distinguish “missing” vs “present but nil” if you store nil.
+  - Therefore: discourage storing nil pointers in WithX, or treat nil as “present but nil” only if you store a typed nil and still can assert.
+  - Type assertion on a typed nil pointer works: `var u *User = nil` stored; `.(**User)` would not; but `.(*User)` is valid. However, `ctx.Value` returns `any`, and type assertion to `*User` will succeed even if the pointer is nil, yielding `(nil, true)`.
+
+So implement getter using type assertion; it naturally supports typed nil pointers.
+
+MustX:
+- if getter returns `ok=false` => panic with a stable message containing the key name
+- if ok=true => return value (even if nil pointer; decide if Must should allow nil pointer; usually yes, because it’s “present”)
+
+== Step 7: Determinism hardening
+
+Ensure:
+- keys are emitted in sorted order by key (or by generated name; pick one and freeze it)
+- imports are stable
+- no timestamps
+- no iteration over maps without sorting
+
+Add/keep the snapshot test from Step 3 to enforce this.
+
+== Deliverables summary
+
+- Generator emits `zz_generated_middleware_context.go` into middleware package:
+  - unique unexported context keys
+  - `WithX`, `X(ctx) (T,bool)`, `MustX(ctx) T`
+- Tests:
+  - integration compile test
+  - runtime behavior test for With/Get/Must
+  - collision and invalid-type failure tests (unit or integration)
+  - optional snapshot test for determinism
+- Stable naming and error codes are frozen and documented here.

@@ -1,0 +1,361 @@
+= Middleware Phase 5 (TDD): Generate middleware-aware HTTP server pipeline
+:toc:
+:toclevels: 3
+
+This phase updates the HTTP code generator to emit a middleware-aware stdlib server pipeline in `zz_generated_http.go`.
+
+The generator is the “compiler” for PortAPI. In this phase, the compiler must:
+- construct a `portapi.Request` view per request (no `net/http` imports required for middleware authors)
+- execute the middleware chain (global + group-local) with “around” semantics
+- run binding + handler inside `next`
+- translate `portapi.HandlerResult` and `portapi.CodedError` into stable HTTP responses
+
+This is codegen-first:
+- no separate reusable runtime pipeline package is required
+- the generated code owns orchestration in a deterministic, debuggable way
+
+== Scope and acceptance criteria
+
+=== In scope
+
+- Generator consumes manifest additions (Phase 4):
+  - global middleware list (declared order)
+  - endpoint group-local middleware list (ordered)
+  - endpoint metadata needed for binding/response (already exists in MVP)
+- Generator emits middleware-aware per-endpoint handler glue:
+  - builds a `*portapi.Request` request view with closures over `*http.Request`
+  - wires `DecodedReq` (post-bind visibility)
+  - wraps bind+handler via middleware `Next` chain
+  - maps results/errors to JSON/no-content responses
+- Deterministic middleware ordering:
+  - `effectiveChain = globalDeclared + endpointGroupLocal`
+  - preserve order exactly, do not sort
+
+=== Out of scope
+
+- Generating `zz_generated_middleware_context.go` (Phase 6)
+- OpenAPI generation
+- Raw body buffering / streaming bodies
+- Non-JSON response shapes beyond no-content
+
+=== Acceptance criteria (Phase 5 complete)
+
+- End-to-end generator integration tests pass:
+  - generated server compiles
+  - middleware runs in correct order (global first, then outer group to inner group, preserving `Use` order)
+  - middleware can short-circuit with typed errors (`portapi.HTTPError`) producing expected status/code
+  - middleware can short-circuit with direct `HandlerResult` (JSON/no-content) and handler is not called
+  - middleware can observe post-bind decoded request via `req.DecodedReq...` after calling `next`
+  - deterministic output: same input produces byte-identical `zz_generated_http.go` (modulo Go formatting if applicable)
+
+== Stable behavioral contracts (must be tested)
+
+These contracts must be enforced by generated code and guarded by tests.
+
+1) Middleware sees request metadata without `net/http`:
+- `req.Method` and `req.Pattern` are stable and correct
+- `req.HeaderValue`, `req.CookieValue`, `req.QueryValues`, `req.PathVar` (or equivalent) return stable results
+
+2) “Around” semantics:
+- middleware can execute code before calling `next`
+- middleware can `defer` work that executes after `next` completes (including bind+handler failures)
+- middleware can short-circuit by returning without calling `next`
+
+3) Post-bind visibility:
+- before binding, `DecodedReq` indicates “not available”
+- after binding (successful), `DecodedReq` returns the concrete request struct as `any`
+- if binding fails, `DecodedReq` should remain unavailable (or documented behavior if you choose to set it before full validation)
+
+4) Result/error mapping:
+- If `err` is non-nil:
+  - if `err` implements `portapi.CodedError`: respond with `StatusCode()` and stable error body containing `ErrorCode()`
+  - else: respond 500 with stable error code `internal_error`
+- If `err` is nil:
+  - interpret `HandlerResult`:
+    - `NoContent` true => status is `Status` if non-zero else 204, empty body
+    - `JSON` non-nil => status is `Status` if non-zero else 200, JSON body
+- Invariant enforcement:
+  - if `HandlerResult` is contradictory (e.g. both `JSON != nil` and `NoContent == true`), treat as internal error (500) with stable error code
+  - if middleware returns both non-zero `HandlerResult` and non-nil `err`, `err` wins (optionally treat as internal error for debug; pick one policy and test it)
+
+== TDD plan
+
+== Step 1: Add (or extend) generator integration test fixtures
+
+Create/extend testdata packages for generator integration tests to exercise runtime behavior via `httptest`.
+
+You need at minimum:
+- an API root package that registers endpoints with groups and middleware
+- a middleware package that declares middleware in `RegisterMiddleware(reg)` and exports middleware functions
+- domain handlers that record execution (e.g. increment counters) and return predictable responses
+
+Recommended fixtures:
+
+1) `apiroot_mw_happy_path`
+- uses:
+  - global middleware: `GlobalA`, `GlobalB`
+  - group middleware: `GroupA`, nested group: `GroupB`
+- includes:
+  - at least one endpoint with request binding (path/query/header/json) so you can test `DecodedReq`
+  - at least one endpoint with no request type (ctx-only) to ensure the pipeline works across shapes
+
+2) `apiroot_mw_short_circuit_error`
+- endpoint protected by middleware that returns `portapi.HTTPError{Status: 401, Code: "unauthorized"}`
+- handler should not run
+
+3) `apiroot_mw_short_circuit_result`
+- middleware returns `HandlerResult{Status: 204, NoContent: true}` (or JSON) and handler should not run
+
+4) `apiroot_mw_post_bind_observer`
+- middleware calls `next`, then reads `req.DecodedReq...` and records that it was present and of expected type
+
+== Step 2: Write failing end-to-end tests (execute generated server)
+
+These tests should:
+- run discovery + codegen
+- compile the generated package(s)
+- create an HTTP handler/mux from generated code
+- send HTTP requests with `httptest`
+- assert on observed effects and HTTP responses
+
+If you already have a generator test harness, reuse it. The tests below describe behavior rather than exact harness API.
+
+=== Test 2.1: Middleware ordering (global + group nesting)
+
+Arrange:
+- middleware functions append their name to a shared slice (in a concurrency-safe way for tests; per-request capture is best)
+- handler appends its name too
+
+Request:
+- call the endpoint in the nested group
+
+Assert:
+- order is exactly:
+  1) GlobalA
+  2) GlobalB
+  3) GroupA (outer group)
+  4) GroupB (inner group)
+  5) handler
+
+Also assert:
+- `req.Pattern` seen by middleware equals the route pattern string used to register the endpoint (e.g. `/pets/{public_id}`)
+- `req.Method` seen by middleware equals the actual method
+
+=== Test 2.2: Short-circuit with typed error (CodedError)
+
+Arrange:
+- auth middleware returns `HTTPError{Status: 401, Code: "unauthorized"}`
+- handler increments a counter
+
+Request:
+- call endpoint
+
+Assert:
+- status is 401
+- JSON error body includes stable code `"unauthorized"`
+- handler counter remains 0
+- middleware “after” logic still runs if it uses `defer` around `next` (depends on middleware implementation; add a middleware that defers and assert it ran even when auth short-circuits)
+
+=== Test 2.3: Short-circuit with direct HandlerResult
+
+Arrange:
+- middleware returns `HandlerResult{Status: 204, NoContent: true}` without calling `next`
+- handler increments a counter
+
+Request:
+- call endpoint
+
+Assert:
+- status is 204
+- body is empty
+- handler counter remains 0
+
+=== Test 2.4: Post-bind visibility via DecodedReq
+
+Arrange:
+- endpoint has a request struct requiring at least one bound field (path var or JSON)
+- middleware:
+  - calls `next(ctx)` first
+  - then calls `req.DecodedReq...` and records:
+    - present flag true
+    - type name matches expected request type
+
+Request:
+- send a request that succeeds binding
+
+Assert:
+- middleware recorded decoded request presence + expected type
+- handler ran and returned expected response
+
+Also add a failure case:
+- send a request that fails binding (missing required field / invalid JSON)
+
+Assert:
+- response is 400 with stable binding error code(s) (per existing design)
+- `DecodedReq` post-bind observer should either:
+  - not run if `next` fails early (because it returns error)
+  - or run but see decoded req unavailable
+Pick the intended behavior and assert it; keep it stable.
+
+=== Test 2.5: Deterministic output snapshot (optional but recommended)
+
+Arrange:
+- run codegen twice on the same inputs
+
+Assert:
+- generated `zz_generated_http.go` is byte-identical
+
+If your generator includes non-deterministic elements (timestamps, map iteration), fix them in Phase 5 while keeping behavior consistent.
+
+== Step 3: Implement generator changes to make tests compile (no behavior yet)
+
+You’ll likely need to adjust templates/emission to include:
+- importing `portapi` types used by middleware signature (`Request`, `Next`, `HandlerResult`, `CodedError`)
+- importing middleware package symbols (when configured)
+- emitting per-endpoint middleware slice construction:
+  - `[]portapi.Middleware{ mw.GlobalA, mw.GlobalB, mw.GroupA, mw.GroupB }`
+
+At this stage:
+- code should compile even if middleware chain execution is not yet correct
+
+== Step 4: Emit a small helper: chain composition (generated code)
+
+In `zz_generated_http.go`, generate a helper that creates the “around” chain.
+
+Conceptual behavior:
+
+- Given:
+  - `reqView *portapi.Request`
+  - `mws []portapi.Middleware` in desired execution order
+  - `final portapi.Next`
+- Produce a `portapi.Next` that, when called, runs:
+  - mws[0] -> mws[1] -> ... -> final
+
+Implementation notes:
+- Wrap in reverse order:
+  - start with `n := final`
+  - for i := len(mws)-1; i>=0; i--:
+    - mw := mws[i]
+    - prev := n
+    - n = func(ctx context.Context) (portapi.HandlerResult, error) {
+        return mw(ctx, reqView, prev)
+      }
+- Determinism:
+  - do not reorder `mws`
+- Safety:
+  - treat nil middleware entries as internal error (500) or skip; pick one and test it (prefer error to catch bugs)
+
+== Step 5: Emit per-endpoint handler glue that uses the chain
+
+For each endpoint, generated code should:
+
+1) Initialize decoded-request storage:
+- `var zzDecoded any`
+- `var zzDecodedOK bool`
+
+2) Construct `reqView := &portapi.Request{ ... }`:
+- `Method: "<METHOD>"`
+- `Pattern: "<PATTERN>"`
+- closure accessors that read from `*http.Request`:
+  - header lookup (canonicalize per net/http rules)
+  - cookie lookup
+  - query lookup
+  - path var lookup (using `r.PathValue("name")` for Go 1.22+ ServeMux patterns)
+- `DecodedReq`:
+  - returns `(zzDecoded, zzDecodedOK)` (or uses nil-safe method patterns from Phase 3)
+
+3) Build `final := func(ctx context.Context) (portapi.HandlerResult, error)`:
+- perform binding into the handler request struct (if any)
+- set:
+  - `zzDecoded = decodedReq`
+  - `zzDecodedOK = true`
+only after successful bind
+- call handler
+- convert handler response to `HandlerResult` (JSON/no-content) and return `(result, nil)` on success
+- if handler returns error:
+  - return `(portapi.HandlerResult{}, err)`
+
+4) Build middleware chain:
+- `mws := []portapi.Middleware{ ...effective chain... }`
+- `next := zzChain(reqView, mws, final)`
+
+5) Execute:
+- `res, err := next(r.Context())`
+
+6) Respond:
+- if err != nil:
+  - map typed errors:
+    - if `err` is `portapi.CodedError`: status=StatusCode, code=ErrorCode
+    - else: status=500, code=`internal_error`
+  - write JSON error body (stable shape)
+- else:
+  - validate/interpret `res` and write JSON/no-content success response
+
+== Step 6: Implement stable JSON error shape in generated code
+
+Pick and freeze the error response JSON shape (if not already frozen in MVP). Recommended minimal:
+
+- `{ "error": { "code": "<code>", "message": "<message>" } }`
+
+Policy:
+- message may be empty or omitted for internal errors; keep stable and avoid leaking sensitive info
+- for `HTTPError.Msg`, include it if present (but do not require it)
+
+Tests:
+- assert at least:
+  - HTTP status
+  - `error.code` field
+- avoid over-asserting exact messages unless you intend to freeze them
+
+== Step 7: Make the tests pass incrementally
+
+Order of implementation to keep feedback tight:
+1) compile-only imports + symbol wiring
+2) generate chain helper and use it (ordering test should start passing)
+3) generate request view fields/closures (pattern/method tests)
+4) implement typed error mapping (401/403 tests)
+5) implement HandlerResult handling (204/JSON short-circuit tests)
+6) wire decoded request storage (post-bind tests)
+7) determinism hardening (snapshot test)
+
+== Step 8: Edge cases and hardening tests (recommended)
+
+Add tests for:
+- middleware panics:
+  - decide policy (recover in generated code or let panic crash)
+  - MVP recommendation: recover panics and return 500 internal_error, but only if you already have a panic-recovery policy in the MVP generator; do not introduce silently unless documented and tested
+- nil middleware:
+  - generator should never emit it, but if it happens treat as internal error
+- multiple middleware packages:
+  - ensure generator imports exactly one (config)
+- endpoints without request type:
+  - ensure decoded request remains “not available”
+- endpoints with different shapes (ctx-only, ctx+req, req+resp, etc.):
+  - ensure the middleware pipeline wraps all shapes uniformly
+
+== Implementation notes (generator responsibilities)
+
+- Middleware package import aliasing must be deterministic.
+- Effective middleware chain must be computed deterministically from manifest:
+  - `effective = globalDeclared + endpointGroupLocal`
+- Keep emission readable:
+  - generate small internal helpers rather than duplicating the chain logic for each endpoint
+- Avoid map iteration nondeterminism:
+  - always sort when iterating maps to emit code/manifest-driven collections
+- Generated code should not expose `net/http` types to middleware:
+  - only closures inside the generated file may touch `*http.Request`
+
+== Deliverables summary
+
+- Generator changes:
+  - `zz_generated_http.go` emits middleware-aware endpoint handlers
+  - emits a deterministic middleware chain helper
+  - maps `CodedError` to status/code and writes stable JSON error responses
+  - supports middleware short-circuit via `HandlerResult`
+  - supports post-bind `DecodedReq` visibility
+- Tests:
+  - ordering (global + group nesting)
+  - typed error short-circuit
+  - direct result short-circuit
+  - post-bind decoded request visibility
+  - optional determinism snapshot

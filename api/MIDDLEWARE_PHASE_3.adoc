@@ -1,0 +1,319 @@
+= Middleware Phase 3 (TDD): `portapi` request view, handler result, and typed errors
+:toc:
+:toclevels: 3
+
+This phase defines the **stable, public runtime surface** that middleware and generated server code share, without exposing `net/http`.
+
+It introduces (in `portsql/api/portapi`):
+
+- `Request`: a read-only request view (metadata + accessors + post-bind decoded request visibility)
+- `HandlerResult`: a minimal “direct response” carrier for middleware short-circuits (JSON / no-content)
+- Typed error mapping primitives:
+  - `CodedError` interface
+  - `HTTPError` convenience struct implementing it
+
+This is explicitly **codegen-first**: the generator will construct concrete `Request` instances (with closures that read from `*http.Request`) and will translate `HandlerResult`/`CodedError` into HTTP responses.
+
+== Scope and acceptance criteria
+
+=== In scope
+
+1) Public types in `portapi`:
+
+- `type Request struct { ... }`
+- `type HandlerResult struct { ... }`
+- `type Next func(ctx context.Context) (HandlerResult, error)`
+- `type Middleware func(ctx context.Context, req *Request, next Next) (HandlerResult, error)`
+- `type CodedError interface { error; StatusCode() int; ErrorCode() string }`
+- `type HTTPError struct { Status int; Code string; Msg string }`
+
+2) Validation / invariants that can be enforced *without* involving `net/http`.
+
+3) Unit tests proving the behavior of these types (and their invariants) is stable and future-proof.
+
+=== Out of scope
+
+- Any generator code changes (Phase 4+)
+- Any middleware chaining helpers (`Chain`) in generated output (Phase 5)
+- Binding/encoding logic (Phase 5)
+- Typed context helper generation (Phase 6)
+- OpenAPI metadata usage (later)
+
+=== Acceptance criteria (Phase 3 complete)
+
+- `portapi` exposes the stable types listed above and they compile.
+- Unit tests cover:
+  - `HTTPError` implements `error` and `CodedError`
+  - `HTTPError.StatusCode()` and `HTTPError.ErrorCode()` return stable values
+  - `HTTPError.Error()` formatting is stable and non-empty, but does not leak implementation surprises
+  - `Request.DecodedReq()` is safe to call when unset (returns `(nil,false)` or equivalent)
+  - `Request` accessors are optional but safe (do not panic if nil; either return “not present” or a documented default)
+  - `HandlerResult` invariants are testable (mutually exclusive success forms)
+- The canonical middleware signature (Phase 1/2) now points at these types (no placeholder runtime package types).
+
+== Design constraints (must not regress)
+
+- Middleware authors must not import `net/http` to implement middleware.
+- Handlers remain “pure domain”: no `net/http`, no `http.ResponseWriter`, no `*http.Request`.
+- The generator can create a `Request` view cheaply and deterministically.
+- Post-bind visibility is supported via `DecodedReq`.
+
+== TDD plan
+
+== Step 1: Write failing tests for typed errors
+
+Create a new `_test.go` under `portsql/api/portapi` focusing on `CodedError` / `HTTPError`.
+
+=== Test 1.1: `HTTPError` implements `error`
+
+Arrange:
+
+- `var err error = portapi.HTTPError{Status: 401, Code: "unauthorized"}`
+
+Assert:
+
+- assignment compiles (compile-time check)
+- `err.Error()` is non-empty
+
+Guidance:
+
+- Keep string assertions conservative; assert non-empty and optionally contains the code, but avoid over-constraining the exact format unless you want it frozen.
+
+=== Test 1.2: `HTTPError` implements `CodedError`
+
+Arrange:
+
+- `var ce portapi.CodedError = portapi.HTTPError{Status: 403, Code: "forbidden"}`
+
+Assert:
+
+- `ce.StatusCode() == 403`
+- `ce.ErrorCode() == "forbidden"`
+
+=== Test 1.3: `HTTPError` defaulting behavior (decide and freeze)
+
+Pick an explicit policy for zero values and test it. Recommended:
+
+- If `Status` is 0, `StatusCode()` returns 500
+- If `Code` is empty, `ErrorCode()` returns `"internal_error"`
+
+Arrange:
+
+- `e := portapi.HTTPError{}`
+- cast to `CodedError`
+
+Assert:
+
+- `StatusCode()` and `ErrorCode()` follow the policy
+
+If you do not want defaults, then test that:
+- `StatusCode()` returns `e.Status`
+- `ErrorCode()` returns `e.Code`
+and rely on generated server to handle missing values. Either way, document and test it now.
+
+== Step 2: Write failing tests for `HandlerResult` invariants
+
+Add tests that enforce the semantic contract even before the generator uses it.
+
+=== Test 2.1: JSON vs NoContent are mutually exclusive (as a contract)
+
+Decide how to represent JSON/no-content. Recommended minimal shape:
+
+- `Status int`
+- `JSON any`
+- `NoContent bool`
+
+Contract:
+
+- On success, exactly one of:
+  - `JSON != nil`
+  - `NoContent == true`
+should be true.
+- Middleware *may* also return “empty success” by returning zero `HandlerResult` and nil error, but that’s usually reserved for generated code; decide and document.
+
+Since Go structs cannot enforce invariants automatically, tests should validate helper methods if you add them.
+
+Option A (recommended): add helper method to validate invariants:
+
+- `func (r HandlerResult) Validate() error`
+
+Test:
+
+- `HandlerResult{JSON: map[string]any{"ok": true}, NoContent: true}` fails validation
+- `HandlerResult{NoContent: true}` passes validation
+- `HandlerResult{JSON: someStruct}` passes validation
+
+Option B: do not add `Validate()`; instead freeze a comment-only contract and test only that the type exists.
+If you choose B, you must ensure Phase 5 generator enforces invariants when writing responses.
+
+== Step 3: Write failing tests for `Request` safety and post-bind visibility
+
+The generator will populate `Request` with closures, but the type must be safe and usable even when some closures are nil (e.g., tests or future partial construction).
+
+=== Test 3.1: `DecodedReq()` is safe when unset
+
+Decide how `Request` represents decoded-req access. Recommended:
+
+- `DecodedReq func() (any, bool)`
+
+Test:
+
+- `req := &portapi.Request{}`
+- calling `req.DecodedReq` directly would panic if nil; so either:
+  - provide a method `func (r *Request) DecodedReqValue() (any, bool)` that is nil-safe, OR
+  - specify that generator always sets it and tests should not call it without initialization
+
+Recommendation: provide nil-safe methods, because it makes the type harder to misuse and improves debugging.
+
+Example method naming (pick one and freeze):
+- `func (r *Request) DecodedReqValue() (any, bool)`
+or
+- `func (r *Request) DecodedReq() (any, bool)` (method, not field)
+
+If you choose method form, do not also choose a field named `DecodedReq`.
+
+Test:
+
+- `req.DecodedReqValue()` returns `(nil, false)` by default
+
+=== Test 3.2: Header/Cookie/Query accessors are safe when unset
+
+Decide whether accessors are fields or methods.
+
+Option A: fields (generator-friendly), plus nil-safe methods:
+
+- `Header func(name string) (string, bool)`
+- `Cookie func(name string) (string, bool)`
+- `Query func(name string) []string`
+- `PathValue func(name string) string`
+- plus methods:
+  - `func (r *Request) HeaderValue(name string) (string, bool)` etc.
+
+Write tests:
+
+- when unset, `HeaderValue("X")` returns `("", false)`
+- when set to closures, methods delegate and return expected values
+
+Option B: methods only, implemented by generator via embedding or wrapper type:
+- more complex; avoid in MVP.
+
+Recommendation: Option A.
+
+== Step 4: Implement minimal production code in `portsql/api/portapi`
+
+Now implement the types and the smallest helper methods required to satisfy tests.
+
+=== Step 4.1: Add canonical middleware signature types
+
+In `portapi`:
+
+- `type Next func(ctx context.Context) (HandlerResult, error)`
+- `type Middleware func(ctx context.Context, req *Request, next Next) (HandlerResult, error)`
+
+These must match Phase 1/2 signature validation expectations.
+
+=== Step 4.2: Add `Request`
+
+Recommended minimal struct:
+
+- `Method string`
+- `Pattern string`
+- accessor fields as closures:
+  - `Header func(name string) (string, bool)`
+  - `Cookie func(name string) (string, bool)`
+  - `Query func(name string) []string`
+  - `PathValue func(name string) string`
+  - decoded request accessor:
+    - `DecodedReq func() (any, bool)` (field) OR a method form
+
+Then add nil-safe convenience methods (highly recommended):
+
+- `func (r *Request) HeaderValue(name string) (string, bool)`
+- `func (r *Request) CookieValue(name string) (string, bool)`
+- `func (r *Request) QueryValues(name string) []string`
+- `func (r *Request) PathVar(name string) string`
+- `func (r *Request) DecodedReqValue() (any, bool)`
+
+These methods should:
+- if `r` is nil: return the “not present” defaults
+- if the underlying closure is nil: return the “not present” defaults
+- otherwise delegate
+
+This makes middleware code simpler and less error-prone, and keeps codegen straightforward.
+
+=== Step 4.3: Add `HandlerResult`
+
+Add:
+
+- `type HandlerResult struct { Status int; JSON any; NoContent bool }`
+
+Optional but recommended:
+- `func (r HandlerResult) Validate() error` to catch invalid combinations early.
+Even if the generator also enforces it, having a reusable validation method makes testing and debugging better.
+
+If you add `Validate()`, define stable error codes/messages (or at least stable error strings) used by tests.
+
+=== Step 4.4: Add typed errors
+
+Define:
+
+- `type CodedError interface { error; StatusCode() int; ErrorCode() string }`
+- `type HTTPError struct { Status int; Code string; Msg string }`
+
+Implement:
+
+- `func (e HTTPError) Error() string`
+- `func (e HTTPError) StatusCode() int`
+- `func (e HTTPError) ErrorCode() string`
+
+Policy recommendation:
+- Provide sensible defaults for zero values (and test them) so middleware authors can do:
+
+- `return portapi.HandlerResult{}, portapi.HTTPError{Status: 401, Code: "unauthorized"}`
+
+without surprises if they accidentally omit fields.
+
+== Step 5: Update Phase 1/2 validation to use these types (compile-only check)
+
+Once the types exist, ensure any middleware signature validation points to:
+
+- `func(context.Context, *portapi.Request, portapi.Next) (portapi.HandlerResult, error)`
+
+If earlier phases referenced placeholders, update them now.
+
+This step should not introduce generator work; it’s purely “keep the compile-time signature consistent”.
+
+== Step 6: Add a small “middleware author ergonomics” example test
+
+Add a test that simulates middleware usage without `net/http`:
+
+- Construct a `Request` with closures that return controlled values
+- Write a middleware that:
+  - reads `HeaderValue("Authorization")`
+  - calls `next`
+  - inspects `DecodedReqValue()` after `next` returns
+
+This test proves the ergonomics and guards against accidental breaking changes in the `Request` API surface.
+
+== Deliverables summary
+
+- Production code in `portsql/api/portapi`:
+  - `Request` + nil-safe helper methods
+  - `HandlerResult` (+ optional `Validate()`)
+  - `Next`, `Middleware`
+  - `CodedError`, `HTTPError`
+- Unit tests in `portsql/api/portapi` covering:
+  - typed error interface behavior
+  - `Request` safety defaults and delegation
+  - `HandlerResult` contract (via `Validate()` or via generator enforcement later, but prefer `Validate()`)
+- Signature consistency:
+  - middleware signature validation (Phase 1/2) aligns exactly with these types
+
+== Notes for later phases
+
+- Phase 5 will generate the actual middleware chain execution and HTTP response encoding. It should:
+  - call middleware with a generated `Request` value
+  - interpret `HandlerResult` and `CodedError` deterministically
+  - enforce invariants even if middleware returns contradictory `HandlerResult` values
+
+- Phase 6 will generate typed context helpers from `Provide(...)` declarations; this phase is intentionally independent of that work.

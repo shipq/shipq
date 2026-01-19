@@ -1,0 +1,383 @@
+= Middleware Phase 4 (TDD): Generator config + discovery runner + manifest + import-graph enforcement
+:toc:
+:toclevels: 3
+
+This phase wires middleware into the **compiler/codegen toolchain** (the “compiler” here is the PortAPI generator + discovery step).
+
+You will:
+
+- extend generator config to accept `[httpgen] middleware_package`
+- update the discovery runner to execute both:
+  - `api.Register(app)`
+  - `middleware.RegisterMiddleware(reg)` (optional, if configured)
+- emit a richer manifest containing:
+  - endpoint group-local middleware refs (ordered)
+  - global middleware declared order
+  - provided context keys/types
+  - middleware metadata from `Describe(...)`
+- enforce the documented dependency rule in the “compiler”:
+  - the middleware package MUST NOT import endpoint packages (directly or transitively)
+
+This phase is written TDD-first: start by writing failing tests against the generator/discovery behavior, then implement the minimum code to pass.
+
+== Scope and acceptance criteria
+
+=== In scope
+
+1) Config
+- Parse optional config value:
+  - `[httpgen] middleware_package = ./path/to/middleware`
+
+2) Discovery runner generation / execution
+- When `middleware_package` is configured:
+  - import it
+  - execute `RegisterMiddleware(reg)`
+  - perform strict validations (Phase 2):
+    - middleware used without registry configured => error
+    - used-but-not-declared => error
+    - registry `Provide`/`Describe` invariants => error
+
+3) Manifest expansion
+- Extend manifest structures to include:
+  - global middleware list (declared order)
+  - context keys (key + type)
+  - middleware metadata keyed by middleware identity
+  - endpoints include their group-local middleware refs (ordered)
+
+4) Import-graph enforcement (“compiler enforcement”)
+- Fail generation/discovery if the configured middleware package imports endpoint packages (directly or transitively).
+- Error must include a stable code and an actionable message including the import chain.
+
+=== Out of scope
+
+- Emitting the middleware-aware HTTP server pipeline (Phase 5)
+- Generating `zz_generated_middleware_context.go` typed context helpers (Phase 6)
+- OpenAPI emission (future)
+
+=== Acceptance criteria (Phase 4 complete)
+
+All of the following have tests and pass:
+
+- Config parsing:
+  - missing `middleware_package` works (no global registry executed)
+  - present `middleware_package` is parsed and used
+- Discovery runner behavior:
+  - if middleware is used via `Group.Use` and `middleware_package` is not configured:
+    - discovery fails with stable error code `middleware_used_without_registry`
+  - if middleware is used but not declared via `reg.Use`:
+    - discovery fails with stable error code `undeclared_middleware`
+  - if `Describe(mw)` references undeclared middleware:
+    - discovery fails with stable error code (per Phase 2)
+- Manifest includes middleware data deterministically:
+  - endpoints contain ordered group-local middleware refs
+  - global declared middleware list appears in `Use` call order
+  - context keys are present with stable type strings
+  - metadata is present and deterministic
+- Import-graph enforcement:
+  - if middleware package imports endpoint packages:
+    - discovery fails with stable error code `middleware_imports_endpoints`
+    - error includes an import chain showing how the forbidden dependency happens
+
+== Required stable error codes (Phase 4)
+
+This phase adds or hardens these error codes (some may already exist from Phase 2/3):
+
+- `middleware_used_without_registry`
+- `undeclared_middleware`
+- `middleware_imports_endpoints`
+- `invalid_config` (if you already have config error codes)
+- `discover_failed` / `runner_failed` (if you already wrap execution failures)
+
+Keep error codes stable; they are part of developer experience and tests.
+
+== TDD plan
+
+== Step 1: Add integration test fixtures (testdata packages)
+
+Create testdata packages used by generator tests. You want small, focused modules/packages that intentionally succeed/fail.
+
+Minimum set of fixtures:
+
+1) `apiroot_no_mw`
+- Defines `Register(app)` with at least one endpoint
+- Uses no groups/middleware
+
+2) `apiroot_group_mw_used`
+- Defines `Register(app)` and uses:
+  - `app.Group(func(g *Group){ g.Use(mw.Logging); g.Get(...); })`
+- Middleware symbol referenced from a middleware package (imported by apiroot or handler packages as needed)
+
+3) `mw_registry_ok`
+- Defines `RegisterMiddleware(reg)` that calls:
+  - `Provide(...)` for at least one key
+  - `Use(...)` for all middleware used by `apiroot_group_mw_used`
+  - `Describe(...)` for at least one middleware
+
+4) `mw_registry_missing_use`
+- Defines `RegisterMiddleware(reg)` that does NOT call `Use` for a middleware used by the API (to trigger `undeclared_middleware`)
+
+5) `mw_registry_imports_endpoints` (for import-graph enforcement)
+- Defines `RegisterMiddleware(reg)` but also imports some endpoint/handler package (directly or indirectly).
+- This fixture must trigger `middleware_imports_endpoints`.
+
+Notes:
+- Keep these fixtures tiny. They exist only to drive discovery/generator behavior.
+- If your repo’s integration tests are structured differently, adapt the fixture naming/placement accordingly, but keep the conceptual cases.
+
+== Step 2: Write failing tests for config parsing
+
+Target: `cmd/portsql-api-httpgen` config parsing.
+
+=== Test 2.1: missing `middleware_package` parses as empty/absent
+
+Arrange:
+- Provide INI content containing:
+  - `[httpgen] package = ./some/apiroot`
+  - no `middleware_package`
+
+Act:
+- Parse config
+
+Assert:
+- `MiddlewarePackage` (or equivalent) is empty/absent
+- No error
+
+=== Test 2.2: present `middleware_package` parses
+
+Arrange:
+- INI content includes:
+  - `middleware_package = ./some/mw`
+
+Act:
+- Parse config
+
+Assert:
+- config contains the expected value
+
+Implementation detail:
+- Normalize module-relative paths consistently with the rest of your tool (do not introduce a one-off normalization only for middleware).
+
+== Step 3: Write failing tests for discovery runner behavior (no import graph yet)
+
+Target: discovery step end-to-end (runner generation + execution + manifest decode).
+
+These are integration tests: they should run discovery and inspect the resulting manifest or error.
+
+=== Test 3.1: middleware used but middleware_package missing => strict error
+
+Arrange:
+- Config points to `apiroot_group_mw_used`
+- No `middleware_package`
+
+Act:
+- Run discovery
+
+Assert:
+- discovery fails with error code `middleware_used_without_registry`
+
+Also assert:
+- error message mentions `[httpgen] middleware_package`
+
+=== Test 3.2: middleware used but undeclared => strict error
+
+Arrange:
+- Config points to `apiroot_group_mw_used`
+- `middleware_package` points to `mw_registry_missing_use`
+
+Act:
+- Run discovery
+
+Assert:
+- error code `undeclared_middleware`
+- includes identity of missing middleware (package + name)
+
+=== Test 3.3: middleware used + declared => success and manifest contains data
+
+Arrange:
+- Config points to `apiroot_group_mw_used`
+- `middleware_package` points to `mw_registry_ok`
+
+Act:
+- Run discovery and parse manifest
+
+Assert:
+- endpoints include group-local middleware refs in correct order
+- manifest includes global middleware list in registry `Use` order
+- manifest includes provided context keys (key names) and type strings
+- manifest includes metadata for described middleware
+
+Determinism checks (important):
+- If manifest includes maps, ensure they are serialized deterministically.
+- Write assertions that do not depend on map ordering; instead assert on sorted slices or exact ordered slices where order is defined (e.g., `Use` order).
+
+== Step 4: Implement generator changes to pass tests (config + runner + manifest)
+
+Implement only what is needed to make Step 2 and Step 3 pass.
+
+=== Step 4.1: Config struct and parsing
+
+Update generator config struct to include optional middleware package.
+
+Rules:
+- If missing => treat as “no registry configured”.
+- Do not silently pick defaults from arbitrary packages.
+
+=== Step 4.2: Discovery runner codegen: call both registrations
+
+Update runner template to:
+
+- always:
+  - create `app := &portapi.App{}`
+  - call `api.Register(app)`
+- if middleware package configured:
+  - create `reg := &portapi.MiddlewareRegistry{}`
+  - call `mw.RegisterMiddleware(reg)`
+
+Then validate:
+- handler signatures (existing)
+- middleware signatures (Phase 1/3 types)
+- strictness (Phase 2):
+  - if app endpoints include middleware and registry not configured => error
+  - else require used ⊆ declared
+
+Finally emit manifest JSON including the expanded fields.
+
+Notes:
+- Keep runner’s output stable. If you print errors, they should be structured and stable.
+- Prefer a structured error payload that includes code/message rather than raw panic text.
+
+=== Step 4.3: Manifest structs expanded
+
+Extend manifest types (in generator code) to include:
+
+- Global declared middleware list:
+  - in deterministic `Use` order
+- Endpoint middleware list:
+  - group-local, in deterministic group order
+- Provided context keys:
+  - include type string representation stable enough for codegen
+- Middleware metadata:
+  - keyed by middleware identity
+  - store deterministic lists (or sort at serialization time)
+
+Type string representation:
+- Prefer a canonical Go type string that your generator can later import and render correctly.
+- If you already have a “type rendering” routine in the generator, reuse it here.
+
+== Step 5: Add import-graph enforcement tests (failing)
+
+Now write tests that the “compiler” rejects forbidden imports.
+
+=== Test 5.1: middleware_package imports endpoint packages => error
+
+Arrange:
+- Config points to `apiroot_group_mw_used`
+- `middleware_package` points to `mw_registry_imports_endpoints`
+
+Act:
+- Run discovery
+
+Assert:
+- error code `middleware_imports_endpoints`
+- error message includes:
+  - middleware package path
+  - offending endpoint package path (or the api root path)
+  - an import chain (A imports B imports C) showing how it happened
+
+=== Test 5.2: middleware_package does NOT import endpoints => ok
+
+Arrange:
+- `middleware_package = mw_registry_ok` (does not import endpoints)
+- Run discovery
+
+Assert:
+- success (same as Test 3.3)
+
+== Step 6: Implement import-graph enforcement
+
+Implement this in the discovery/generator step (before code emission). This is the “enforce it in the compiler” part.
+
+=== Step 6.1: Define what counts as “endpoint packages”
+
+You need a precise definition that can be enforced:
+
+Option A (recommended for MVP):
+- Treat the configured API root package (from `[httpgen] package`) and its module-relative subtree as “endpoint packages”.
+
+Rule:
+- `middleware_package` MUST NOT import (directly or transitively) the API root package, nor any package under that subtree.
+
+This matches the intent: prevent cycles and coupling where middleware depends on endpoints.
+
+Option B:
+- Identify endpoint packages by “contains registrations/handlers”.
+- This is harder without AST analysis; avoid in MVP.
+
+Pick Option A now and document it in the error message.
+
+=== Step 6.2: Build import graph rooted at middleware package
+
+Implementation requirements:
+- Use Go package loading/build tooling that can load imports reliably in the generator environment.
+- Build the transitive import closure of the middleware package.
+
+Then check:
+- If any imported package path falls under API root subtree => fail.
+
+Include chain:
+- Record parent pointers during graph traversal so you can reconstruct an import path:
+  - `mwPkg -> ... -> offendingPkg`
+
+Error format recommendation:
+- Code: `middleware_imports_endpoints`
+- Message includes:
+  - `middleware_package: <path>`
+  - `endpoint_package: <path>`
+  - `import_chain: <mw> -> <...> -> <endpoint>`
+
+Determinism:
+- When multiple offending packages exist, pick one deterministically:
+  - sort offending package paths and choose the first
+  - reconstruct the corresponding chain deterministically (BFS with sorted neighbors is a good approach)
+
+=== Step 6.3: Integrate the check into discovery flow
+
+Where to run it:
+- Before executing `RegisterMiddleware` and before emitting manifest.
+- This makes failures faster and avoids confusing Go import cycle errors.
+
+Also ensure:
+- If `middleware_package` is not configured, skip the check.
+
+== Step 7: Determinism hardening test (optional but recommended)
+
+Write a test that runs discovery twice and compares the manifest bytes for equality.
+
+Arrange:
+- same config (with middleware_package)
+- run discovery twice in separate processes (or separate invocations)
+
+Assert:
+- manifest output identical
+
+If your discovery includes timestamps or environment-dependent fields, remove them or normalize them.
+
+== Deliverables summary
+
+- Generator config supports `[httpgen] middleware_package`
+- Discovery runner:
+  - executes `Register(app)` and optional `RegisterMiddleware(reg)`
+  - enforces strict mode (Phase 2)
+  - emits manifest with middleware + context keys + metadata
+- Import-graph enforcement:
+  - middleware package cannot import API root subtree
+  - errors are stable, actionable, include import chain
+- Tests:
+  - config parsing tests
+  - discovery integration tests for strictness and manifest shape
+  - import-graph enforcement tests
+  - optional determinism snapshot test
+
+== Notes for Phase 5
+
+Phase 5 will consume the new manifest fields to generate the actual middleware-aware server pipeline in `zz_generated_http.go`. Phase 4 must ensure the manifest contains everything Phase 5 needs, deterministically.

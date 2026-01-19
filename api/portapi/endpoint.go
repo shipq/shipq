@@ -2,18 +2,61 @@ package portapi
 
 import (
 	"errors"
+	"reflect"
 	"regexp"
+	"runtime"
 	"strings"
 )
 
+// MiddlewareRef represents a stable identity reference to a middleware function.
+type MiddlewareRef struct {
+	Pkg  string // import path of the package containing the middleware
+	Name string // symbol name of the middleware function
+	Fn   any    // the actual middleware function value
+}
+
 // Endpoint represents a registered HTTP endpoint.
 type Endpoint struct {
-	Method      string       // normalized: GET, POST, PUT, DELETE
-	Path        string       // e.g. "/pets/{id}"
-	HandlerPkg  string       // import path, e.g. "example.com/app/pets"
-	HandlerName string       // symbol name, e.g. "CreatePet"
-	Handler     any          // the actual handler value (used during discovery)
-	HandlerInfo *HandlerInfo // validated handler metadata (populated during validation)
+	Method      string          // normalized: GET, POST, PUT, DELETE
+	Path        string          // e.g. "/pets/{id}"
+	HandlerPkg  string          // import path, e.g. "example.com/app/pets"
+	HandlerName string          // symbol name, e.g. "CreatePet"
+	Handler     any             // the actual handler value (used during discovery)
+	HandlerInfo *HandlerInfo    // validated handler metadata (populated during validation)
+	Middlewares []MiddlewareRef // ordered list of middleware applied to this endpoint
+}
+
+// newMiddlewareRef creates a MiddlewareRef from a middleware function.
+func newMiddlewareRef(fn any) MiddlewareRef {
+	if fn == nil {
+		panic("middleware function cannot be nil")
+	}
+
+	fnVal := reflect.ValueOf(fn)
+	ptr := fnVal.Pointer()
+	fnInfo := runtime.FuncForPC(ptr)
+
+	fullName := fnInfo.Name()
+	// Extract package path and function name
+	// Format is typically: "path/to/package.FuncName" or "path/to/package.(*Type).Method"
+	lastSlash := strings.LastIndex(fullName, "/")
+	lastDot := strings.LastIndex(fullName, ".")
+
+	var pkg, name string
+	if lastDot > lastSlash {
+		pkg = fullName[:lastDot]
+		name = fullName[lastDot+1:]
+	} else {
+		// No package path (e.g., main package or builtin)
+		pkg = ""
+		name = fullName
+	}
+
+	return MiddlewareRef{
+		Pkg:  pkg,
+		Name: name,
+		Fn:   fn,
+	}
 }
 
 var allowedMethods = map[string]bool{

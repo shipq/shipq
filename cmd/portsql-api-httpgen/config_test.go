@@ -191,3 +191,55 @@ func TestFindConfig(t *testing.T) {
 		}
 	})
 }
+
+func TestLoadConfig_MiddlewarePackage(t *testing.T) {
+	t.Run("missing middleware_package is valid", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		cfgPath := filepath.Join(tmpDir, "test.ini")
+		if err := os.WriteFile(cfgPath, []byte("[httpgen]\npackage = ./api\n"), 0644); err != nil {
+			t.Fatalf("failed to write config: %v", err)
+		}
+
+		cfg, err := LoadConfig(cfgPath)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if cfg.MiddlewarePackage != "" {
+			t.Errorf("got MiddlewarePackage %q, want empty string", cfg.MiddlewarePackage)
+		}
+	})
+
+	t.Run("present middleware_package is parsed", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		cfgPath := filepath.Join(tmpDir, "test.ini")
+		cfgContent := "[httpgen]\npackage = ./api\nmiddleware_package = ./middleware\n"
+		if err := os.WriteFile(cfgPath, []byte(cfgContent), 0644); err != nil {
+			t.Fatalf("failed to write config: %v", err)
+		}
+
+		cfg, err := LoadConfig(cfgPath)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if cfg.MiddlewarePackage != "./middleware" {
+			t.Errorf("got MiddlewarePackage %q, want %q", cfg.MiddlewarePackage, "./middleware")
+		}
+	})
+
+	t.Run("middleware_package trims whitespace", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		cfgPath := filepath.Join(tmpDir, "test.ini")
+		cfgContent := "[httpgen]\npackage = ./api\nmiddleware_package =   ./mw  \n"
+		if err := os.WriteFile(cfgPath, []byte(cfgContent), 0644); err != nil {
+			t.Fatalf("failed to write config: %v", err)
+		}
+
+		cfg, err := LoadConfig(cfgPath)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if cfg.MiddlewarePackage != "./mw" {
+			t.Errorf("got MiddlewarePackage %q, want %q", cfg.MiddlewarePackage, "./mw")
+		}
+	})
+}

@@ -1,0 +1,320 @@
+= Middleware Phase 2 (TDD): Global middleware registry + strict mode validation
+:toc:
+:toclevels: 3
+
+This phase implements the discovery-time **global middleware registry** and **strict mode** validation described in `@MIDDLEWARE_DESIGN.adoc` and `@MIDDLEWARE_PLAN.adoc`.
+
+The key idea:
+
+- Middleware is attached to endpoints via groups (`Group.Use`).
+- The generator/discovery step must also execute exactly one configured middleware package’s `RegisterMiddleware(reg)`.
+- In **strict mode**, any middleware used via `Group.Use` MUST be declared in that registry via `reg.Use(mw)`.
+- If middleware is used but `middleware_package` is not configured, generation/discovery must fail early with a clear error.
+
+This phase is written TDD-first: start by writing failing tests against the desired API and behavior, then implement the minimum code to make them pass.
+
+== Scope and acceptance criteria
+
+=== In scope
+
+- `MiddlewareRegistry` discovery-time type in `portsql/api/portapi`
+- `TypeToken` + `TypeOf[T]()` helper for `Provide`
+- `MiddlewareDescriptor` / metadata builder returned by `Describe(mw)`
+- Strict mode validation logic:
+  - middleware usage requires configured middleware registry package
+  - all used middleware must be declared in `RegisterMiddleware` via `reg.Use`
+  - `Describe(mw)` must only reference middleware that was `Use`’d
+  - `Provide` keys must be unique and valid
+
+=== Out of scope
+
+- Generator config parsing / discovery runner changes (Phase 4)
+- Generated server pipeline execution of middleware (Phase 5)
+- Generating typed context helpers in the middleware package (Phase 6)
+- Import graph enforcement (“middleware package must not import endpoints”) — that policy is noted in the overall plan; implement in a later generator/discovery phase once package loading is in place.
+
+=== Acceptance criteria (Phase 2 complete)
+
+All of the following have unit tests and pass:
+
+- `Provide`:
+  - rejects empty keys
+  - rejects invalid key format (conservative pattern)
+  - rejects duplicate keys (same key, same type)
+  - rejects duplicate keys (same key, different type)
+- `Use`:
+  - preserves call order deterministically
+  - produces stable middleware identity refs compatible with endpoint middleware refs (Phase 1)
+- `Describe`:
+  - fails if describing middleware that was not previously `Use`’d (or, if you choose to allow out-of-order calls, a final validation step rejects it deterministically)
+  - metadata is attached to middleware identity and is stable/deterministic
+- Strict mode validation:
+  - if any endpoint uses middleware and middleware registry is not configured => error `middleware_used_without_registry`
+  - if any endpoint uses middleware not declared via `reg.Use` => error `undeclared_middleware`
+  - error messages include enough detail for the user to fix the issue (at minimum middleware identity)
+- Determinism:
+  - registry → manifest-like output order is stable (no map iteration nondeterminism)
+
+== TDD plan
+
+== Step 1: Write failing tests for `MiddlewareRegistry`
+
+Create a new unit test file under `portsql/api/portapi` focused on registry behavior.
+
+You’ll need some test middleware functions that match the canonical signature. Define them in the test package to avoid import churn.
+
+=== Test 1.1: `Use` preserves ordering
+
+Arrange:
+
+- `reg := &portapi.MiddlewareRegistry{}`
+- call `reg.Use(MW1)`, `reg.Use(MW2)`, `reg.Use(MW3)` in that order
+
+Assert:
+
+- `reg.Middlewares()` (or exposed field/iterator) returns `[MW1, MW2, MW3]` in that exact order
+- identities are stable and match the same identity derivation used for endpoint middleware refs (Phase 1)
+
+Notes:
+
+- If the registry stores `[]MiddlewareRef`, assert on `Pkg` and `Name` fields rather than function pointer values.
+
+=== Test 1.2: `Provide` rejects empty key
+
+Arrange:
+
+- `reg := &portapi.MiddlewareRegistry{}`
+- call `reg.Provide("", portapi.TypeOf[string]())`
+
+Assert:
+
+- returns an error with a stable code (recommend `invalid_context_key`) and a clear message
+
+=== Test 1.3: `Provide` rejects invalid key format
+
+Decide on a conservative key pattern (recommended):
+
+- `[a-z][a-z0-9_]*`
+
+Arrange:
+
+- `Provide("User", TypeOf[*User]())`
+- `Provide("user-id", TypeOf[string]())`
+- `Provide("_user", TypeOf[string]())`
+
+Assert:
+
+- each returns an `invalid_context_key` (or equivalent) error
+
+=== Test 1.4: `Provide` rejects duplicates (same key, same type)
+
+Arrange:
+
+- `Provide("user", TypeOf[*User]())`
+- `Provide("user", TypeOf[*User]())`
+
+Assert:
+
+- returns error with stable code (recommend `duplicate_context_key`)
+- message includes key name
+
+=== Test 1.5: `Provide` rejects duplicates (same key, different type)
+
+Arrange:
+
+- `Provide("user", TypeOf[*User]())`
+- `Provide("user", TypeOf[string]())`
+
+Assert:
+
+- returns error with stable code (recommend `duplicate_context_key_type_mismatch`)
+- message includes key name and both types (or at least indicates mismatch)
+
+== Step 2: Write failing tests for `Describe(mw)` behavior
+
+=== Test 2.1: `Describe` fails if middleware not declared via `Use`
+
+Arrange:
+
+- `reg := &portapi.MiddlewareRegistry{}`
+- call `reg.Describe(MW1).RequireHeader("Authorization")` without calling `reg.Use(MW1)` first
+
+Assert:
+
+- returns error with stable code (recommend `describe_undeclared_middleware`)
+- message includes middleware identity
+
+Implementation note:
+
+- You can enforce this either at `Describe` call time (preferred for clear errors) or during a final `reg.Validate()` call, but the design doc expects `Describe` to require `Use`.
+
+=== Test 2.2: `Describe` attaches metadata
+
+Arrange:
+
+- `reg.Use(MW1)`
+- `reg.Describe(MW1).RequireHeader("Authorization").Security("bearerAuth").MayReturn(401,"unauthorized")`
+
+Assert:
+
+- registry contains metadata for MW1 identity:
+  - required headers includes `Authorization`
+  - security includes `bearerAuth`
+  - may-return includes `(401, "unauthorized")`
+
+Determinism requirement:
+
+- if metadata uses slices, preserve append order
+- if metadata uses sets/maps, sort when exporting/serializing; for tests, assert on normalized sorted output or use deterministic slice append semantics
+
+== Step 3: Implement minimal `MiddlewareRegistry` to make tests compile
+
+Add the production code in `portsql/api/portapi`.
+
+Recommended structure:
+
+- `type MiddlewareRegistry struct { ... }`
+  - `mws []MiddlewareRef` in `Use` call order
+  - `provided map[string]reflect.Type`
+  - `meta map[MiddlewareKey]*MiddlewareMetadata`
+
+Supporting types:
+
+- `type TypeToken struct { t reflect.Type }`
+- `func TypeOf[T any]() TypeToken`
+- `type MiddlewareDescriptor struct { ... }`
+  - holds pointer back to registry + middleware key
+  - builder methods mutate registry metadata in place
+
+Identity model:
+
+- Reuse `MiddlewareRef` / `MiddlewareKey` approach from Phase 1.
+- Ensure identity derivation is exactly consistent so strict mode can compare used vs declared.
+
+== Step 4: Write failing tests for strict mode validation
+
+This step verifies policy means something even before generator wiring exists.
+
+You’ll need a way to build endpoints with attached middleware refs. In Phase 1 those refs should already exist on endpoints created via groups; reuse that.
+
+=== Test 4.1: middleware used but registry package not configured
+
+Arrange:
+
+- create an app, create a group, `g.Use(MW1)`, register an endpoint.
+- do not create/execute a registry (or pass `nil` / configured=false to validation).
+
+Act:
+
+- call strict validation function with `middlewarePackageConfigured=false`
+
+Assert:
+
+- fails with stable error code `middleware_used_without_registry`
+- message suggests configuring `[httpgen] middleware_package`
+
+=== Test 4.2: middleware used but not declared via `reg.Use`
+
+Arrange:
+
+- endpoint uses `MW1`
+- registry exists but only declares `MW2` via `reg.Use(MW2)`
+
+Act:
+
+- run strict validation
+
+Assert:
+
+- fails with stable error code `undeclared_middleware`
+- includes MW1 identity in error message
+
+=== Test 4.3: middleware used and properly declared
+
+Arrange:
+
+- endpoint uses `MW1`, `MW2`
+- registry declares `MW1`, `MW2` via `Use` (order can be independent; strictness is set membership for declaration, not ordering)
+
+Act:
+
+- run strict validation
+
+Assert:
+
+- succeeds (nil error)
+
+== Step 5: Implement strict mode validation function
+
+Add a production function in `portsql/api/portapi`, for example:
+
+- `ValidateStrictMiddlewareDeclaration(endpoints []Endpoint, reg *MiddlewareRegistry, middlewarePackageConfigured bool) error`
+
+Rules to implement:
+
+1. Detect whether middleware is used:
+   - any endpoint has `len(endpoint.Middlewares) > 0`
+
+2. If middleware is used and `middlewarePackageConfigured == false`:
+   - return error code `middleware_used_without_registry`
+
+3. If middleware is used:
+   - build set of used middleware identities from endpoints
+   - build set of declared middleware identities from registry `Use`
+   - compute `used - declared`
+   - if non-empty, return `undeclared_middleware` with a deterministic ordering in the error message (sort by `pkg/name`)
+
+4. Also validate registry internal invariants (if not already validated on call-time):
+   - all `Describe` entries refer to `Use`’d middleware
+   - provided keys unique/valid
+
+Determinism requirements:
+
+- sort any set differences before error formatting
+- avoid map iteration ordering leaks
+
+== Step 6: Add one “golden determinism” test
+
+The main source of nondeterminism in Go is map iteration.
+
+Create a test that:
+
+- registers `Provide` keys and metadata in a different insertion order across runs (or using a map in the test)
+- exports registry state into a normalized “manifest-like” struct (or uses registry’s own export method)
+- asserts the exported representation is stable (sorted) and matches expected ordering
+
+If you don’t yet have an export method, introduce a small internal helper just for tests that returns:
+
+- declared middleware list in `Use` order
+- provided keys sorted by key
+- metadata sorted by middleware identity, and within each metadata entry sort headers/cookies/schemes as necessary
+
+== Suggested error codes (keep stable)
+
+Define a small set of stable error codes for this phase:
+
+- `invalid_context_key`
+- `duplicate_context_key`
+- `duplicate_context_key_type_mismatch`
+- `describe_undeclared_middleware`
+- `middleware_used_without_registry`
+- `undeclared_middleware`
+
+If you already have a structured error type for discovery-time validation errors, use it. If not, introduce a small internal error type that includes:
+
+- `Code string`
+- `Message string`
+- optional `Details map[string]string` (ensure deterministic formatting)
+
+== Deliverables summary
+
+- Unit tests:
+  - registry `Use` order
+  - `Provide` validation and collisions
+  - `Describe` constraints and metadata capture
+  - strict mode: missing registry package, undeclared middleware, success case
+  - (optional) determinism export test
+- Production code:
+  - `MiddlewareRegistry` + `TypeOf` + `TypeToken`
+  - `MiddlewareDescriptor` metadata builder
+  - strict mode validation function with stable error codes/messages

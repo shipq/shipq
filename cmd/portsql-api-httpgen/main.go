@@ -53,26 +53,78 @@ func run() error {
 		outputPath = localPath
 	}
 
-	// 3. Discover endpoints
-	manifest, err := Discover(pkgPath)
+	// 3. Resolve middleware package path (if configured)
+	middlewarePkgPath := ""
+	if cfg.MiddlewarePackage != "" {
+		if strings.HasPrefix(cfg.MiddlewarePackage, "./") || strings.HasPrefix(cfg.MiddlewarePackage, "../") {
+			// Relative path - convert to full module path
+			resolved, err := resolvePackagePath(cfg.MiddlewarePackage)
+			if err != nil {
+				return fmt.Errorf("resolving middleware package path %s: %w", cfg.MiddlewarePackage, err)
+			}
+			middlewarePkgPath = resolved
+		} else {
+			// Already a full module path
+			middlewarePkgPath = cfg.MiddlewarePackage
+		}
+	}
+
+	// 4. Discover endpoints
+	manifest, err := Discover(pkgPath, middlewarePkgPath)
 	if err != nil {
 		return fmt.Errorf("discovering endpoints: %w", err)
 	}
 
-	// 4. Generate code
+	// 5. Generate code
 	pkgName := filepath.Base(outputPath)
-	code, err := Generate(*manifest, pkgName)
+	code, err := Generate(*manifest, pkgName, pkgPath)
 	if err != nil {
 		return fmt.Errorf("generating code: %w", err)
 	}
 
-	// 5. Write output
+	// 6. Write output
 	outPath := filepath.Join(outputPath, "zz_generated_http.go")
 	if err := os.WriteFile(outPath, []byte(code), 0644); err != nil {
 		return fmt.Errorf("writing output %s: %w", outPath, err)
 	}
 
 	fmt.Printf("Generated %s with %d endpoint(s)\n", outPath, len(manifest.Endpoints))
+
+	// 7. Generate middleware context helpers if context keys are provided
+	if len(manifest.ContextKeys) > 0 && middlewarePkgPath != "" {
+		// Resolve local path for middleware package
+		middlewareLocalPath := ""
+		if strings.HasPrefix(cfg.MiddlewarePackage, "./") || strings.HasPrefix(cfg.MiddlewarePackage, "../") {
+			// Relative path
+			absPath, err := filepath.Abs(cfg.MiddlewarePackage)
+			if err != nil {
+				return fmt.Errorf("resolving middleware package path: %w", err)
+			}
+			middlewareLocalPath = absPath
+		} else {
+			// Full module path - resolve to local
+			localPath, err := resolveLocalPath(middlewarePkgPath)
+			if err != nil {
+				return fmt.Errorf("resolving local path for middleware package: %w", err)
+			}
+			middlewareLocalPath = localPath
+		}
+
+		middlewarePkgName := filepath.Base(middlewareLocalPath)
+		contextCode, err := generateMiddlewareContextFile(middlewarePkgName, manifest.ContextKeys)
+		if err != nil {
+			return fmt.Errorf("generating middleware context helpers: %w", err)
+		}
+
+		if contextCode != "" {
+			contextOutPath := filepath.Join(middlewareLocalPath, "zz_generated_middleware_context.go")
+			if err := os.WriteFile(contextOutPath, []byte(contextCode), 0644); err != nil {
+				return fmt.Errorf("writing middleware context output %s: %w", contextOutPath, err)
+			}
+			fmt.Printf("Generated %s with %d context helper(s)\n", contextOutPath, len(manifest.ContextKeys))
+		}
+	}
+
 	return nil
 }
 

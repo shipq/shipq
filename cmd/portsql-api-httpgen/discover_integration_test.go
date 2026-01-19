@@ -98,7 +98,7 @@ func Health(ctx context.Context) error {
 		t.Fatalf("failed to change directory: %v", err)
 	}
 
-	manifest, err := Discover("example.com/testapp/api")
+	manifest, err := Discover("example.com/testapp/api", "")
 	if err != nil {
 		t.Fatalf("Discover failed: %v", err)
 	}
@@ -229,7 +229,7 @@ func BadHandler(ctx context.Context) string {
 	}
 
 	// 3. Assert error with clear message
-	_, err = Discover("example.com/testapp/api")
+	_, err = Discover("example.com/testapp/api", "")
 	if err == nil {
 		t.Fatal("expected error, got nil")
 	}
@@ -317,7 +317,7 @@ func GetPet(ctx context.Context, req GetPetRequest) (Pet, error) {
 		t.Fatalf("failed to change directory: %v", err)
 	}
 
-	manifest, err := Discover("example.com/testapp/api")
+	manifest, err := Discover("example.com/testapp/api", "")
 	if err != nil {
 		t.Fatalf("Discover failed: %v", err)
 	}

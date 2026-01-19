@@ -210,8 +210,21 @@ func isSupportedHeaderType(t reflect.Type) bool {
 		t = t.Elem()
 	}
 
-	// Headers are typically strings
-	return t.Kind() == reflect.String
+	// Supported scalar types for headers
+	switch t.Kind() {
+	case reflect.String, reflect.Bool,
+		reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64,
+		reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64,
+		reflect.Float32, reflect.Float64:
+		return true
+	}
+
+	// time.Time is also supported
+	if t.String() == "time.Time" {
+		return true
+	}
+
+	return false
 }
 
 // isSupportedPathType checks if a type can be used for path variable binding.

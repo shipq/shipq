@@ -9,7 +9,8 @@ import (
 
 // Config holds the parsed configuration for portsql-api-httpgen.
 type Config struct {
-	Package string // e.g. "./api"
+	Package           string // e.g. "./api"
+	MiddlewarePackage string // e.g. "./middleware" (optional)
 }
 
 // FindConfig locates the configuration file.
@@ -37,5 +38,11 @@ func LoadConfig(path string) (*Config, error) {
 		return nil, errors.New("missing [httpgen] section with 'package' key")
 	}
 
-	return &Config{Package: pkg}, nil
+	// Optional middleware package
+	mwPkg := f.Get("httpgen", "middleware_package")
+
+	return &Config{
+		Package:           pkg,
+		MiddlewarePackage: mwPkg,
+	}, nil
 }

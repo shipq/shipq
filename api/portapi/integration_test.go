@@ -9,30 +9,22 @@ import (
 	"testing"
 
 	"github.com/shipq/shipq/api/portapi"
-	"github.com/shipq/shipq/api/portapi/runtime"
+	"github.com/shipq/shipq/api/portapi/gen"
 	"github.com/shipq/shipq/api/portapi/testdata/exampleapi"
 )
 
-// buildTestMux creates a mux using the example API handlers.
-// This simulates what the generator produces.
+// buildTestMux creates a mux using the generated handlers.
 func buildTestMux() *http.ServeMux {
 	mux := http.NewServeMux()
 
-	// Register all endpoints with their appropriate wrappers
-	// Shape 1: ctx + req → resp + err
-	mux.Handle("POST /pets", runtime.WrapCtxReqRespErr[exampleapi.CreatePetReq, exampleapi.CreatePetResp](exampleapi.CreatePet))
-
-	// Shape 2: ctx + req → err
-	mux.Handle("DELETE /pets/{id}", runtime.WrapCtxReqErr[exampleapi.DeletePetReq](exampleapi.DeletePet))
-
-	// Shape 3: ctx → resp + err
-	mux.Handle("GET /pets", runtime.WrapCtxRespErr[exampleapi.ListPetsResp](exampleapi.ListPets))
-
-	// Shape 4: ctx → err
-	mux.Handle("GET /health", runtime.WrapCtxErr(exampleapi.HealthCheck))
-
-	// Mixed bindings: path + query + header
-	mux.Handle("GET /pets/{id}", runtime.WrapCtxReqRespErr[exampleapi.GetPetReq, exampleapi.GetPetResp](exampleapi.GetPet))
+	// Register all endpoints with generated handlers
+	mux.Handle("POST /pets", gen.HandleCreatePet(exampleapi.CreatePet))
+	mux.Handle("DELETE /pets/{id}", gen.HandleDeletePet(exampleapi.DeletePet))
+	mux.Handle("GET /pets", gen.HandleListPets(exampleapi.ListPets))
+	mux.Handle("GET /health", gen.HandleHealthCheck(exampleapi.HealthCheck))
+	mux.Handle("GET /pets/{id}", gen.HandleGetPet(exampleapi.GetPet))
+	mux.Handle("GET /pets/search", gen.HandleSearchPets(exampleapi.SearchPets))
+	mux.Handle("PUT /pets/{id}", gen.HandleUpdatePet(exampleapi.UpdatePet))
 
 	return mux
 }
@@ -54,6 +46,8 @@ func TestIntegration_Routing(t *testing.T) {
 		{"GET", "/health", "", nil, 204},
 		{"GET", "/notfound", "", nil, 404},
 		{"POST", "/health", "", nil, 405}, // method not allowed
+		{"GET", "/pets/search?limit=10", "", nil, 200},
+		{"PUT", "/pets/123", `{"name":"Updated"}`, map[string]string{"Content-Type": "application/json"}, 200},
 	}
 
 	for _, tt := range tests {
@@ -72,7 +66,7 @@ func TestIntegration_Routing(t *testing.T) {
 			mux.ServeHTTP(w, r)
 
 			if w.Code != tt.want {
-				t.Errorf("got status %d, want %d", w.Code, tt.want)
+				t.Errorf("got status %d, want %d; body: %s", w.Code, tt.want, w.Body.String())
 			}
 		})
 	}
@@ -144,7 +138,7 @@ func TestIntegration_PathVariables(t *testing.T) {
 		if w.Code != 200 {
 			t.Errorf("got status %d, want 200", w.Code)
 		}
-		var resp map[string]string
+		var resp map[string]any
 		if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
 			t.Fatalf("failed to unmarshal response: %v", err)
 		}
@@ -161,6 +155,32 @@ func TestIntegration_PathVariables(t *testing.T) {
 
 		if w.Code != 204 {
 			t.Errorf("got status %d, want 204", w.Code)
+		}
+	})
+
+	t.Run("binds path variable for update with JSON body", func(t *testing.T) {
+		body := strings.NewReader(`{"name":"UpdatedName","age":5}`)
+		r := httptest.NewRequest("PUT", "/pets/pet-999", body)
+		r.Header.Set("Content-Type", "application/json")
+		w := httptest.NewRecorder()
+
+		mux.ServeHTTP(w, r)
+
+		if w.Code != 200 {
+			t.Errorf("got status %d, want 200; body: %s", w.Code, w.Body.String())
+		}
+		var resp map[string]any
+		if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+			t.Fatalf("failed to unmarshal response: %v", err)
+		}
+		if resp["id"] != "pet-999" {
+			t.Errorf("got id %q, want %q", resp["id"], "pet-999")
+		}
+		if resp["name"] != "UpdatedName" {
+			t.Errorf("got name %q, want %q", resp["name"], "UpdatedName")
+		}
+		if resp["age"] != float64(5) {
+			t.Errorf("got age %v, want %v", resp["age"], 5)
 		}
 	})
 }
@@ -190,6 +210,128 @@ func TestIntegration_QueryParams(t *testing.T) {
 		if w.Code != 200 {
 			t.Errorf("got status %d, want 200", w.Code)
 		}
+		var resp map[string]any
+		if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+			t.Fatalf("failed to unmarshal response: %v", err)
+		}
+		if resp["verbose"] != true {
+			t.Errorf("got verbose %v, want true", resp["verbose"])
+		}
+	})
+
+	t.Run("required scalar query param missing returns 400", func(t *testing.T) {
+		r := httptest.NewRequest("GET", "/pets/search", nil)
+		w := httptest.NewRecorder()
+
+		mux.ServeHTTP(w, r)
+
+		if w.Code != 400 {
+			t.Errorf("got status %d, want 400", w.Code)
+		}
+		// Verify error mentions query limit
+		var resp map[string]any
+		if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+			t.Fatalf("failed to unmarshal response: %v", err)
+		}
+		errObj := resp["error"].(map[string]any)
+		if errObj["code"] != "bad_request" {
+			t.Errorf("got error code %q, want %q", errObj["code"], "bad_request")
+		}
+		msg := errObj["message"].(string)
+		if !strings.Contains(msg, "query") || !strings.Contains(msg, "limit") {
+			t.Errorf("error message %q should mention query and limit", msg)
+		}
+	})
+
+	t.Run("required scalar query param present", func(t *testing.T) {
+		r := httptest.NewRequest("GET", "/pets/search?limit=25", nil)
+		w := httptest.NewRecorder()
+
+		mux.ServeHTTP(w, r)
+
+		if w.Code != 200 {
+			t.Errorf("got status %d, want 200; body: %s", w.Code, w.Body.String())
+		}
+		var resp map[string]any
+		if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+			t.Fatalf("failed to unmarshal response: %v", err)
+		}
+		if resp["limit"] != float64(25) {
+			t.Errorf("got limit %v, want 25", resp["limit"])
+		}
+	})
+
+	t.Run("invalid query param value returns 400", func(t *testing.T) {
+		r := httptest.NewRequest("GET", "/pets/search?limit=abc", nil)
+		w := httptest.NewRecorder()
+
+		mux.ServeHTTP(w, r)
+
+		if w.Code != 400 {
+			t.Errorf("got status %d, want 400", w.Code)
+		}
+	})
+
+	t.Run("slice query param multi-value", func(t *testing.T) {
+		r := httptest.NewRequest("GET", "/pets/search?limit=10&tag=cat&tag=dog&tag=bird", nil)
+		w := httptest.NewRecorder()
+
+		mux.ServeHTTP(w, r)
+
+		if w.Code != 200 {
+			t.Errorf("got status %d, want 200; body: %s", w.Code, w.Body.String())
+		}
+		var resp map[string]any
+		if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+			t.Fatalf("failed to unmarshal response: %v", err)
+		}
+		tags := resp["tags"].([]any)
+		if len(tags) != 3 {
+			t.Errorf("got %d tags, want 3", len(tags))
+		}
+		if tags[0] != "cat" || tags[1] != "dog" || tags[2] != "bird" {
+			t.Errorf("got tags %v, want [cat, dog, bird]", tags)
+		}
+	})
+
+	t.Run("slice query param absent is empty", func(t *testing.T) {
+		r := httptest.NewRequest("GET", "/pets/search?limit=10", nil)
+		w := httptest.NewRecorder()
+
+		mux.ServeHTTP(w, r)
+
+		if w.Code != 200 {
+			t.Errorf("got status %d, want 200", w.Code)
+		}
+		var resp map[string]any
+		if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+			t.Fatalf("failed to unmarshal response: %v", err)
+		}
+		// tags should be null or empty
+		if resp["tags"] != nil {
+			tags := resp["tags"].([]any)
+			if len(tags) != 0 {
+				t.Errorf("got tags %v, want empty", tags)
+			}
+		}
+	})
+
+	t.Run("optional pointer query param", func(t *testing.T) {
+		r := httptest.NewRequest("GET", "/pets/search?limit=10&cursor=abc123", nil)
+		w := httptest.NewRecorder()
+
+		mux.ServeHTTP(w, r)
+
+		if w.Code != 200 {
+			t.Errorf("got status %d, want 200", w.Code)
+		}
+		var resp map[string]any
+		if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+			t.Fatalf("failed to unmarshal response: %v", err)
+		}
+		if resp["cursor"] != "abc123" {
+			t.Errorf("got cursor %v, want abc123", resp["cursor"])
+		}
 	})
 }
 
@@ -217,6 +359,45 @@ func TestIntegration_Headers(t *testing.T) {
 
 		if w.Code != 200 {
 			t.Errorf("got status %d, want 200", w.Code)
+		}
+	})
+
+	t.Run("optional header absent", func(t *testing.T) {
+		r := httptest.NewRequest("GET", "/pets/search?limit=10", nil)
+		// No Authorization header (it's optional for SearchPets)
+		w := httptest.NewRecorder()
+
+		mux.ServeHTTP(w, r)
+
+		if w.Code != 200 {
+			t.Errorf("got status %d, want 200", w.Code)
+		}
+		var resp map[string]any
+		if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+			t.Fatalf("failed to unmarshal response: %v", err)
+		}
+		// auth should be empty string or not present
+		if auth, ok := resp["auth"]; ok && auth != "" {
+			t.Errorf("got auth %v, want empty", auth)
+		}
+	})
+
+	t.Run("optional header present", func(t *testing.T) {
+		r := httptest.NewRequest("GET", "/pets/search?limit=10", nil)
+		r.Header.Set("Authorization", "Bearer optionaltoken")
+		w := httptest.NewRecorder()
+
+		mux.ServeHTTP(w, r)
+
+		if w.Code != 200 {
+			t.Errorf("got status %d, want 200", w.Code)
+		}
+		var resp map[string]any
+		if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+			t.Fatalf("failed to unmarshal response: %v", err)
+		}
+		if resp["auth"] != "Bearer optionaltoken" {
+			t.Errorf("got auth %v, want Bearer optionaltoken", resp["auth"])
 		}
 	})
 }
@@ -272,6 +453,30 @@ func TestIntegration_ErrorResponses(t *testing.T) {
 		}
 		if resp.Error.Message == "" {
 			t.Error("expected non-empty error message")
+		}
+	})
+
+	t.Run("bind error has code bad_request", func(t *testing.T) {
+		r := httptest.NewRequest("GET", "/pets/search", nil) // missing required limit
+		w := httptest.NewRecorder()
+
+		mux.ServeHTTP(w, r)
+
+		if w.Code != 400 {
+			t.Errorf("got status %d, want 400", w.Code)
+		}
+
+		var resp struct {
+			Error struct {
+				Code    string `json:"code"`
+				Message string `json:"message"`
+			} `json:"error"`
+		}
+		if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+			t.Fatalf("failed to unmarshal response: %v", err)
+		}
+		if resp.Error.Code != "bad_request" {
+			t.Errorf("got error code %q, want %q", resp.Error.Code, "bad_request")
 		}
 	})
 }
@@ -384,8 +589,8 @@ func TestIntegration_GeneratorOutputMatchesManualMux(t *testing.T) {
 	endpoints := app.Endpoints()
 
 	// Verify we have all expected endpoints
-	if len(endpoints) != 5 {
-		t.Errorf("got %d endpoints, want 5", len(endpoints))
+	if len(endpoints) != 7 {
+		t.Errorf("got %d endpoints, want 7", len(endpoints))
 	}
 
 	// Verify each endpoint validates successfully
@@ -448,6 +653,8 @@ func TestIntegration_EndpointValidationDetails(t *testing.T) {
 		"GET /pets":         "ctx_resp_err",
 		"GET /health":       "ctx_err",
 		"GET /pets/{id}":    "ctx_req_resp_err",
+		"GET /pets/search":  "ctx_req_resp_err",
+		"PUT /pets/{id}":    "ctx_req_resp_err",
 	}
 
 	// Verify each endpoint matches expected pattern
@@ -476,4 +683,66 @@ func TestIntegration_EndpointValidationDetails(t *testing.T) {
 			t.Errorf("expected endpoint not registered: %s", pattern)
 		}
 	}
+}
+
+func TestIntegration_BoolParsing(t *testing.T) {
+	mux := buildTestMux()
+
+	// Test all accepted bool values
+	boolTests := []struct {
+		value string
+		want  bool
+	}{
+		{"true", true},
+		{"True", true},
+		{"TRUE", true},
+		{"1", true},
+		{"false", false},
+		{"False", false},
+		{"FALSE", false},
+		{"0", false},
+	}
+
+	for _, tt := range boolTests {
+		t.Run("verbose="+tt.value, func(t *testing.T) {
+			r := httptest.NewRequest("GET", "/pets/123?verbose="+tt.value, nil)
+			r.Header.Set("Authorization", "Bearer token")
+			w := httptest.NewRecorder()
+
+			mux.ServeHTTP(w, r)
+
+			if w.Code != 200 {
+				t.Errorf("got status %d, want 200; body: %s", w.Code, w.Body.String())
+				return
+			}
+			var resp map[string]any
+			if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+				t.Fatalf("failed to unmarshal response: %v", err)
+			}
+			// Note: verbose has omitempty, so false values are omitted from JSON
+			got, ok := resp["verbose"]
+			if tt.want {
+				if !ok || got != true {
+					t.Errorf("got verbose %v, want true", got)
+				}
+			} else {
+				// For false, omitempty means the field is absent (nil) or false
+				if ok && got != false {
+					t.Errorf("got verbose %v, want false or absent", got)
+				}
+			}
+		})
+	}
+
+	t.Run("invalid bool returns 400", func(t *testing.T) {
+		r := httptest.NewRequest("GET", "/pets/123?verbose=invalid", nil)
+		r.Header.Set("Authorization", "Bearer token")
+		w := httptest.NewRecorder()
+
+		mux.ServeHTTP(w, r)
+
+		if w.Code != 400 {
+			t.Errorf("got status %d, want 400", w.Code)
+		}
+	})
 }

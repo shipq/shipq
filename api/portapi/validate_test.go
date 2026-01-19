@@ -505,13 +505,84 @@ func TestValidateBindings_Headers(t *testing.T) {
 		}
 	})
 
-	t.Run("unsupported header type - int", func(t *testing.T) {
+	t.Run("int header", func(t *testing.T) {
 		type Req struct {
 			Count int `header:"X-Count"`
 		}
 		err := ValidateBindings("/pets", reflect.TypeOf(Req{}))
+		if err != nil {
+			t.Errorf("unexpected error: %v", err)
+		}
+	})
+
+	t.Run("int64 header", func(t *testing.T) {
+		type Req struct {
+			Size int64 `header:"X-Size"`
+		}
+		err := ValidateBindings("/pets", reflect.TypeOf(Req{}))
+		if err != nil {
+			t.Errorf("unexpected error: %v", err)
+		}
+	})
+
+	t.Run("bool header", func(t *testing.T) {
+		type Req struct {
+			Enabled bool `header:"X-Enabled"`
+		}
+		err := ValidateBindings("/pets", reflect.TypeOf(Req{}))
+		if err != nil {
+			t.Errorf("unexpected error: %v", err)
+		}
+	})
+
+	t.Run("float64 header", func(t *testing.T) {
+		type Req struct {
+			Rate float64 `header:"X-Rate"`
+		}
+		err := ValidateBindings("/pets", reflect.TypeOf(Req{}))
+		if err != nil {
+			t.Errorf("unexpected error: %v", err)
+		}
+	})
+
+	t.Run("time.Time header", func(t *testing.T) {
+		type Req struct {
+			Timestamp time.Time `header:"X-Timestamp"`
+		}
+		err := ValidateBindings("/pets", reflect.TypeOf(Req{}))
+		if err != nil {
+			t.Errorf("unexpected error: %v", err)
+		}
+	})
+
+	t.Run("optional int header", func(t *testing.T) {
+		type Req struct {
+			Count *int `header:"X-Count"`
+		}
+		err := ValidateBindings("/pets", reflect.TypeOf(Req{}))
+		if err != nil {
+			t.Errorf("unexpected error: %v", err)
+		}
+	})
+
+	t.Run("unsupported header type - map", func(t *testing.T) {
+		type Req struct {
+			Data map[string]string `header:"X-Data"`
+		}
+		err := ValidateBindings("/pets", reflect.TypeOf(Req{}))
 		if err == nil {
-			t.Fatal("expected error, got nil")
+			t.Fatal("expected error for unsupported map header type")
+		}
+	})
+
+	t.Run("unsupported header type - struct", func(t *testing.T) {
+		type Inner struct{ V int }
+		type Req struct {
+			Data Inner `header:"X-Data"`
+		}
+		err := ValidateBindings("/pets", reflect.TypeOf(Req{}))
+		if err == nil {
+			t.Fatal("expected error for unsupported struct header type")
 		}
 	})
 }

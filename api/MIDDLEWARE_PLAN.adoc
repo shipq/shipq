@@ -1,0 +1,537 @@
+= Middleware Implementation Plan (Codegen-first)
+:toc:
+:toclevels: 3
+
+This plan implements middleware as described in `@MIDDLEWARE_DESIGN.adoc`, updated for the **codegen-first** architecture.
+
+Key update vs earlier plans:
+- Do not introduce or rely on a separate reusable “runtime pipeline” package for middleware orchestration.
+- The generator emits the concrete pipeline per endpoint (stdlib `net/http` + `http.ServeMux`), including middleware chain execution.
+- Middleware remains decoupled from `net/http` via a small, stable function signature + a generated request view.
+
+== Goals (MVP+)
+
+Implement:
+
+- Group-scoped middleware: `app.Group(func(g *Group){ ... })`, `g.Use(mw)`
+- Optional global middleware registry package configured in INI: `middleware_package`
+- Strict mode:
+  - If any `Group.Use` is used, `middleware_package` must be configured
+  - Any middleware used via `Group.Use` must be declared in `RegisterMiddleware(reg)` via `reg.Use(mw)`
+- Typed context keys:
+  - `Provide(key, TypeOf[T]())` in registry
+  - generator emits typed context helpers into the middleware package
+- “Around” middleware:
+  - middleware can run code before/after `next`
+  - can short-circuit
+  - can observe binding + handler outcome (status/error)
+- Per-middleware metadata hooks (stored in discovery manifest; OpenAPI emission later):
+  - `Describe(mw).RequireHeader(...).RequireCookie(...).Security(...).MayReturn(...)`
+
+Non-goals for initial implementation:
+- emitting OpenAPI
+- streaming responses/files/websockets
+- raw-body middleware access (leave a future extension point)
+
+== Current structure (assumed)
+
+This plan is written against the current PortSQL layout:
+
+- Discovery-time registry: `portsql/api/portapi`
+  - `App`, endpoint registration, validation
+- Generator: `portsql/cmd/portsql-api-httpgen`
+  - INI config parsing
+  - discovery runner generation and manifest decoding
+  - codegen of `zz_generated_http.go`
+
+This plan intentionally avoids adding a new runtime package for middleware chaining. If there is an existing runtime helper package today, treat it as an implementation detail; the new middleware path should work without it.
+
+== Phase 0: Confirm constraints and invariants
+
+0.0 Enforce the middleware-package dependency rule in compile-time checks (import graph)
+
+In addition to being a documented policy, enforce at “compile-time” for the generator/discovery step by validating the import graph:
+
+- The configured `middleware_package` MUST NOT import (directly or transitively) any endpoint packages.
+- The root API package MUST be allowed to import the middleware package (typical usage).
+- If a forbidden import is detected, fail generation with a clear, stable error code (e.g. `middleware_imports_endpoints`) including the offending import chain.
+
+Implementation note (generator/discovery):
+- Build the import graph rooted at `middleware_package` and check for edges into any package that contains endpoint registrations/handlers (or into the configured API root package subtree if that is the project’s definition of “endpoint packages”).
+- This is enforced during discovery/generation, before emitting code, so users get fast feedback and no confusing Go cycle errors later.
+
+0.1 Confirm “pure handler” contract
+- Handlers must not import `net/http`.
+- Middleware must not import `net/http`.
+
+0.2 Confirm determinism requirements
+- Discovery produces a deterministic manifest given the same input registrations.
+- Generated output stable for the same manifest.
+- Middleware order must match:
+  - global registry `reg.Use` order
+  - group `Use` order with nesting (outer before inner)
+
+0.3 Confirm Go version/runtime routing patterns
+- Generated server uses stdlib `http.ServeMux` patterns (Go 1.22+).
+
+Deliverable:
+- No code changes; this is a re-check to keep later phases aligned.
+
+== Phase 1: Discovery-time grouping + per-endpoint middleware capture (in `portapi`)
+
+This phase adds grouping + `Use` to the discovery registry and records middleware identity on endpoints.
+
+=== Step 1.1: Define stable middleware surface types in `portapi`
+
+Add minimal types in `portsql/api/portapi` (discovery + generated server will use these types):
+
+- `type Next func(ctx context.Context) (HandlerResult, error)`
+- `type Middleware func(ctx context.Context, req *Request, next Next) (HandlerResult, error)`
+- `type Request struct { ... }` (request view; see Step 3.1 for runtime shape)
+- `type HandlerResult struct { ... }`
+
+Notes:
+- These types are part of the public PortAPI surface.
+- They must not depend on `net/http`.
+- The generated server code can import them to type-check middleware and `HandlerResult`.
+
+Deliverable:
+- Canonical signature types available for:
+  - `g.Use(mw)`
+  - signature validation during discovery/generation
+  - generated server implementation
+
+=== Step 1.2: Add `Group` and `App.Group`
+
+Implement:
+
+- `func (a *App) Group(fn func(g *Group))`
+
+Define:
+
+- `type Group struct { ... }`
+
+Group methods:
+
+- `Use(mw Middleware)`
+- `Group(fn func(g2 *Group))`
+- `Get/Post/Put/Delete(path string, handler any)` (mirrors `App` registration API)
+
+Execution rules:
+- `Use` appends to group’s middleware slice.
+- Nested groups inherit parent middleware slice; child `Use` appends after inherited list.
+- Group does not add a path prefix; route paths remain explicit.
+
+Deliverable:
+- Discovery registry supports groups and `Use` composition.
+
+=== Step 1.3: Extend endpoint model to include middleware identity list
+
+Update endpoint model to carry an ordered list of middleware references for that endpoint (group-local chain only at this stage).
+
+Recommended model:
+
+- `Endpoint.Middlewares []MiddlewareRef`
+
+Where `MiddlewareRef` includes at least:
+- stable identity fields: middleware package import path + symbol name
+- optionally store the raw value for validation
+
+Identity derivation:
+- Use the same technique already used for handler identity today (typically `runtime.FuncForPC(reflect.ValueOf(fn).Pointer())`), but normalize it to a stable (package import path, symbol) form used in the manifest.
+
+Determinism:
+- Middleware list order must match `Use` call order + nesting semantics; do not sort.
+
+Deliverable:
+- Endpoints produced by discovery carry middleware identity list.
+
+=== Step 1.4: Add middleware signature validation
+
+Add validation logic in `portsql/api/portapi`:
+
+- `ValidateMiddleware(mw any) (MiddlewareInfo, error)` (shape checks)
+- Validate:
+  - non-nil
+  - is a function
+  - non-variadic
+  - has expected params/returns matching the canonical middleware signature
+- Emit stable error codes/messages similar to handler validation.
+
+Deliverable:
+- Discovery (or generator) can fail fast with a clear error if middleware signature is wrong.
+
+=== Step 1.5: Unit tests (portapi)
+
+Add tests verifying:
+- group inheritance produces correct order
+- middleware slice is copied (no shared backing slice bugs across nested groups)
+- endpoints registered inside group have middleware attached
+- endpoints registered outside groups remain supported (if currently supported)
+
+Deliverable:
+- Confidence that the discovery-time model is correct and deterministic.
+
+== Phase 2: Global middleware registry + strict mode (in `portapi`)
+
+This phase adds the global `MiddlewareRegistry` executed from a single configured package, plus strict validation.
+
+=== Step 2.1: Implement `MiddlewareRegistry`
+
+Create discovery-only type in `portsql/api/portapi`:
+
+- `type MiddlewareRegistry struct { ... }`
+
+API:
+
+- `Use(mw Middleware)`
+  - declares middleware in deterministic global order
+- `Provide(key string, typ TypeToken)`
+  - declares typed context keys for generated helpers
+- `Describe(mw Middleware) *MiddlewareDescriptor`
+  - attaches metadata for later OpenAPI generation
+
+Supporting types:
+
+- `TypeToken` wrapping `reflect.Type`
+- `func TypeOf[T any]() TypeToken`
+
+Metadata model (minimal but extensible):
+- required headers
+- required cookies
+- security scheme names (logical names)
+- possible error outcomes: `(status, code)`
+
+Validation within registry:
+- `Provide` key non-empty, matches conservative pattern (recommend `[a-z][a-z0-9_]*`)
+- `Provide` key collision is an error
+- `Describe(mw)` must reference a middleware previously registered via `Use(mw)` (or record then validate later; MVP: validate immediately for clearer error)
+
+Determinism:
+- Preserve `Use` call order exactly.
+- Any map iteration must be sorted when emitting manifest.
+
+Deliverable:
+- A deterministic registry suitable for discovery/manifest generation.
+
+=== Step 2.2: Strict mode validation function
+
+Add a function (in `portapi` or generator, but prefer `portapi` so runner can reuse it):
+
+- `ValidateStrictMiddlewareDeclaration(endpoints []Endpoint, reg *MiddlewareRegistry, middlewarePackageConfigured bool) error`
+
+Rules:
+- If any endpoint has one or more `Middlewares`:
+  - `middlewarePackageConfigured` must be true; otherwise error:
+    - code: `middleware_used_without_registry`
+- Compute the set of middleware identities used by endpoints (from `Endpoint.Middlewares`).
+- Compute the set of identities declared via `reg.Use`.
+- If any used-but-not-declared:
+  - error code: `undeclared_middleware`
+  - include identity details in message
+
+Also validate:
+- all `Describe` entries refer to a `Use`’d middleware
+- provided keys collision/format (if not already enforced at call time)
+
+Deliverable:
+- A single “strictness gate” used by the discovery runner.
+
+=== Step 2.3: Tests (portapi)
+
+Add tests verifying:
+- strict mode catches undeclared middleware used in a group
+- strict mode errors when middleware is used but no registry package is configured
+- `Provide` collisions are rejected
+- `Describe` referencing undeclared middleware errors
+
+Deliverable:
+- Strictness behavior is stable and well-specified.
+
+== Phase 3: Define the runtime request view + result types (in `portapi`)
+
+This phase defines the “no net/http” runtime-visible types that middleware uses. The actual implementation will be produced in generated code.
+
+=== Step 3.1: Define `portapi.Request`
+
+Add a minimal request view struct in `portsql/api/portapi`:
+
+Fields (recommended conceptual shape):
+
+- `Method string`
+- `Pattern string`
+
+Accessors (function fields or methods; function fields are easiest for codegen to set up):
+
+- `Header(name string) (string, bool)`
+- `Cookie(name string) (string, bool)`
+- `Query(name string) []string`
+- `PathValue(name string) string`
+- `DecodedReq() (any, bool)` (post-bind visibility)
+
+Notes:
+- This is a read-only view.
+- `DecodedReq` should be safe before binding (returns `(nil,false)`).
+- Do not include raw body in MVP.
+
+Deliverable:
+- Middleware authors can access request metadata without importing `net/http`.
+
+=== Step 3.2: Define `portapi.HandlerResult`
+
+Define a minimal result type used by middleware to short-circuit (and potentially by generated pipeline internally):
+
+- `Status int` (optional; 0 means “use default”)
+- `JSON any`
+- `NoContent bool`
+
+Rules:
+- `JSON` and `NoContent` are mutually exclusive for success paths (generator should enforce or treat as internal error).
+
+Deliverable:
+- A stable “direct response” escape hatch.
+
+=== Step 3.3: Define typed error interface
+
+Define in `portsql/api/portapi`:
+
+- `type CodedError interface { error; StatusCode() int; ErrorCode() string }`
+- `type HTTPError struct { Status int; Code string; Msg string }` implementing `CodedError`
+
+Deliverable:
+- Middleware and handlers can return typed errors without net/http coupling.
+
+== Phase 4: Generator config + discovery runner changes
+
+This phase updates `portsql/cmd/portsql-api-httpgen` discovery to execute both API registration and middleware registry registration, then emits a manifest containing middleware + context keys + metadata.
+
+=== Step 4.1: Extend INI config
+
+Update config parsing to include:
+
+- `[httpgen] middleware_package = ./path/to/middleware` (optional)
+
+Semantics:
+- If missing: no global middleware is applied.
+- If missing and any middleware is used via `Group.Use`: strictness error (see Phase 2).
+
+Deliverable:
+- Generator knows where to import `RegisterMiddleware`.
+
+=== Step 4.2: Extend discovery runner generation
+
+Update the generated discovery runner to:
+
+1) Construct `app := &portapi.App{}`
+2) Call `apiPkg.Register(app)`
+3) If `middleware_package` configured:
+   - construct `reg := &portapi.MiddlewareRegistry{}`
+   - call `mwPkg.RegisterMiddleware(reg)`
+4) Validate endpoints and strictness:
+   - handler validation (existing)
+   - middleware signature validation for all used middlewares
+   - strictness validation:
+     - middleware usage requires registry package
+     - all used middleware are declared via `reg.Use`
+5) Emit manifest including:
+   - endpoints + their group middleware identities (ordered)
+   - global middleware declared identities (ordered)
+   - provided context keys + types
+   - middleware metadata keyed by middleware identity
+
+Deliverable:
+- Discovery output now contains all data needed for codegen.
+
+=== Step 4.3: Extend manifest structures
+
+Update `manifest.go` to include fields for:
+
+- Global middleware list (declared order)
+- Per-endpoint middleware list (group-local order)
+- Provided context keys (key + Go type string)
+- Middleware metadata (requirements/outcomes/security)
+
+Recommendation:
+- Store per-endpoint middleware as the group-local chain only.
+- Store global declared middleware separately.
+- Generator combines effective chain as:
+  - `effective = globalDeclared + endpointGroupLocal`
+
+Rationale:
+- Preserves the semantic boundary (global vs group)
+- Keeps “no middleware package” cases simpler
+- Leaves room for later capabilities that might change global application semantics
+
+Deliverable:
+- Manifest captures middleware inputs deterministically.
+
+== Phase 5: Code generation for middleware-aware server pipeline
+
+This phase updates `zz_generated_http.go` emission to:
+- build the middleware chain per endpoint
+- execute the chain around binding + handler
+- map results/errors to HTTP responses
+
+No separate runtime package is required; generated code owns the orchestration.
+
+=== Step 5.1: Decide where “shared helpers” live
+
+To avoid duplicating logic across endpoints, generate internal helpers inside `zz_generated_http.go`, e.g.:
+
+- `type zzNext = portapi.Next`
+- `type zzMiddleware = portapi.Middleware`
+- `func zzChain(req *portapi.Request, mws []portapi.Middleware, final portapi.Next) portapi.Next`
+
+`zzChain` should wrap in reverse order so middleware executes in declared order.
+
+Deliverable:
+- Deterministic, readable generated middleware invocation.
+
+=== Step 5.2: Generate per-endpoint handler wrapper
+
+For each endpoint, generate an `http.HandlerFunc` that:
+
+1) Initializes a `decodedReq any` var + `decodedOK bool` (or a typed pointer) and wires `req.DecodedReq` to read it.
+2) Constructs `reqView := &portapi.Request{ Method: "...", Pattern: "...", Header: ..., Cookie: ..., Query: ..., PathValue: ..., DecodedReq: ... }`
+   - Implement accessors using closures over `*http.Request` (kept inside generated code).
+3) Constructs `final := func(ctx context.Context) (portapi.HandlerResult, error)` that:
+   - performs binding into the handler request type (if any)
+   - stores decoded value into `decodedReq`
+   - calls the domain handler
+   - converts success to `HandlerResult` and returns nil error
+4) Builds the effective middleware chain:
+   - from manifest global declared list (if configured)
+   - plus endpoint’s group-local list
+   - references middleware functions from the middleware package import
+5) Calls `wrapped := zzChain(reqView, effectiveMws, final)`
+6) Executes: `res, err := wrapped(r.Context())`
+7) Respond:
+   - if err != nil:
+     - if `portapi.CodedError`: use `StatusCode()` and `ErrorCode()`
+     - else: 500 + `internal_error`
+   - else encode `res`:
+     - `NoContent`: write status (default 204 if Status==0)
+     - `JSON`: write status (default 200 if Status==0) and JSON encode
+
+Deliverable:
+- Middleware runs around bind+handler for every endpoint, without net/http visible to middleware authors.
+
+=== Step 5.3: Enforce internal invariants in generated code
+
+In generated code, treat contradictory results as internal errors, e.g.:
+- `res.NoContent && res.JSON != nil`
+- both `res` (non-zero) and `err != nil` (if you choose to detect)
+
+Deliverable:
+- Predictable behavior and easier debugging.
+
+=== Step 5.4: Ensure determinism and stable imports
+
+Generator must:
+- generate stable import aliases
+- sort endpoints as already done (method + pattern + handler identity)
+- not reorder middleware within a chain:
+  - global registry order preserved
+  - group-local order preserved
+
+Deliverable:
+- Stable output across runs.
+
+== Phase 6: Generate typed context helpers into middleware package
+
+This phase emits `zz_generated_middleware_context.go` into the configured middleware package.
+
+=== Step 6.1: File contents
+
+Generate:
+
+- package declaration for middleware package
+- imports: `context`
+- for each provided key:
+  - private, unique key type (unexported) e.g. `type zzCtxKeyUser struct{}`
+  - `func WithUser(ctx context.Context, v *User) context.Context`
+  - `func User(ctx context.Context) (*User, bool)`
+  - `func MustUser(ctx context.Context) *User` (optional but useful)
+
+Name generation:
+- derive `User` from `user` key by converting snake_case to CamelCase
+- ensure deterministic and collision-free; if collisions occur (e.g. `foo_bar` vs `FooBar`), fail generation with a clear error
+
+Deliverable:
+- Middleware and handlers share a typed API over `context.Context` without AST inference.
+
+=== Step 6.2: Do not generate OpenAPI output yet
+
+Metadata (`Describe`) should be preserved in the manifest, but no code emission is required in MVP.
+
+Deliverable:
+- Future OpenAPI work has the inputs it needs.
+
+== Phase 7: Tests and verification
+
+=== Step 7.1: Generator integration tests
+
+Create testdata packages:
+- API root package using:
+  - `app.Group`
+  - `g.Use(mw.Logging)`
+  - a couple endpoints with nested groups
+- Middleware package implementing:
+  - `RegisterMiddleware(reg)` calling `Provide`, `Use`, and `Describe`
+  - a couple middleware functions conforming to signature
+
+Test assertions:
+- discovery fails if middleware is used but `middleware_package` omitted
+- discovery fails if `g.Use(mwX)` not declared via `reg.Use(mwX)`
+- generated server compiles
+- generated output stable (golden file or snapshot)
+
+Deliverable:
+- End-to-end confidence from discovery -> codegen -> compile.
+
+=== Step 7.2: Behavioral tests (httptest)
+
+Add tests that:
+- verify middleware order (outer before inner, within-group order)
+- verify short-circuit:
+  - middleware returns `HTTPError{Status:401, Code:"unauthorized"}` and handler is not called
+- verify context injection:
+  - middleware uses generated `WithUser` and handler reads `User(ctx)`
+- verify post-bind visibility:
+  - middleware calls `next` then reads `req.DecodedReq()` and can log/validate based on it
+
+Deliverable:
+- Runtime correctness independent of OpenAPI.
+
+== Phase 8: Migration notes
+
+- Existing code registering endpoints directly on `*portapi.App` remains supported.
+- Middleware requires `app.Group` + `g.Use`.
+- If middleware is used, a `middleware_package` must be configured (strict mode).
+- The middleware package must not import endpoint packages to avoid cycles.
+
+== Deliverables checklist
+
+1) `portapi` (discovery + public surface):
+- `App.Group`, `Group.Use`, nested groups
+- endpoint model carries ordered middleware refs
+- `MiddlewareRegistry` with `Use`, `Provide`, `Describe`
+- strict validation: middleware usage requires configured registry package; all used middleware declared
+- public types: `Request`, `HandlerResult`, `Middleware`, `Next`, `CodedError`, `HTTPError`
+
+2) Generator:
+- config parses `middleware_package`
+- discovery runner calls `Register` + `RegisterMiddleware` (optional)
+- manifest includes middleware declarations + endpoint middleware + context keys + metadata
+- codegen emits:
+  - middleware chain execution around bind+handler
+  - request view closures
+  - typed error mapping
+
+3) Middleware package generation:
+- `zz_generated_middleware_context.go` with typed context helpers
+
+4) Tests:
+- unit tests for grouping/registry/strictness
+- integration tests for discovery + codegen
+- behavior tests via `httptest` for ordering/short-circuit/context/decoded-req visibility

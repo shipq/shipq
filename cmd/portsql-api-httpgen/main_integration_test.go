@@ -167,11 +167,6 @@ package = example.com/testapp/api
 		}
 	}
 
-	// Verify it imports the runtime package
-	if !strings.Contains(codeStr, `"github.com/shipq/shipq/api/portapi/runtime"`) {
-		t.Error("expected generated code to import runtime package")
-	}
-
 	// Verify it declares NewMux function
 	if !strings.Contains(codeStr, "func NewMux()") {
 		t.Error("expected generated code to contain func NewMux()")

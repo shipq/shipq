@@ -1,0 +1,532 @@
+= Middleware API Quick Reference
+:toc:
+:toclevels: 2
+
+== Overview
+
+This document provides a quick reference for the middleware API implemented in Phase 1 and Phase 2.
+
+== Phase 1: Endpoint Registration with Middleware Groups
+
+=== Basic Group Usage
+
+[source,go]
+----
+app := &portapi.App{}
+
+app.Group(func(g *portapi.Group) {
+    g.Use(middlewareFunc1)
+    g.Use(middlewareFunc2)
+
+    g.Get("/path", handlerFunc)
+    g.Post("/path", handlerFunc)
+    g.Put("/path", handlerFunc)
+    g.Delete("/path", handlerFunc)
+})
+----
+
+=== Nested Groups
+
+Middleware from outer groups is applied before inner group middleware:
+
+[source,go]
+----
+app.Group(func(outer *portapi.Group) {
+    outer.Use(authMiddleware)  // Applied first
+
+    outer.Group(func(inner *portapi.Group) {
+        inner.Use(adminMiddleware)  // Applied second
+
+        inner.Get("/admin/users", getUsers)
+        // This endpoint has: [authMiddleware, adminMiddleware]
+    })
+
+    outer.Get("/profile", getProfile)
+    // This endpoint has: [authMiddleware]
+})
+----
+
+=== Direct Registration (No Middleware)
+
+Endpoints can still be registered directly on the app without groups:
+
+[source,go]
+----
+app.Get("/public", publicHandler)
+// This endpoint has no middleware
+----
+
+=== Middleware Signature
+
+Middleware functions should follow this canonical signature:
+
+[source,go]
+----
+func MyMiddleware(next func()) func() {
+    return func() {
+        // Pre-processing logic
+
+        next() // Call the next middleware or handler
+
+        // Post-processing logic
+    }
+}
+----
+
+== Phase 2: Middleware Registry and Validation
+
+=== Registry Setup
+
+[source,go]
+----
+func RegisterMiddleware(reg *portapi.MiddlewareRegistry) {
+    // Step 1: Declare all middleware
+    reg.Use(middleware.Auth)
+    reg.Use(middleware.RateLimit)
+    reg.Use(middleware.Logging)
+
+    // Step 2: Describe middleware metadata
+    desc, _ := reg.Describe(middleware.Auth)
+    desc.RequireHeader("Authorization").
+         Security("bearerAuth").
+         MayReturn(401, "unauthorized")
+
+    // Step 3: Declare context keys
+    reg.Provide("user_id", portapi.TypeOf[string]())
+    reg.Provide("user", portapi.TypeOf[*User]())
+}
+----
+
+=== Registry.Use
+
+Declares middleware in the registry. Must be called before `Describe()`.
+
+[source,go]
+----
+reg.Use(middlewareFunc)
+----
+
+=== Registry.Provide
+
+Declares a context key that middleware may provide to handlers.
+
+**Signature:**
+[source,go]
+----
+func (r *MiddlewareRegistry) Provide(key string, typ TypeToken) *RegistryError
+----
+
+**Key Requirements:**
+- Must match pattern: `[a-z][a-z0-9_]*`
+- Must be unique across all keys
+- Cannot conflict with existing keys (same name, different type)
+
+**Valid Keys:**
+- `user`
+- `user_id`
+- `session_token`
+- `current_user`
+
+**Invalid Keys:**
+- `User` (uppercase start)
+- `user-id` (dash separator)
+- `_user` (underscore start)
+- `userId` (camelCase)
+
+**Example:**
+[source,go]
+----
+// Declare a context key for user ID
+err := reg.Provide("user_id", portapi.TypeOf[string]())
+if err != nil {
+    // Handle validation error
+}
+
+// Declare a context key for user object
+err = reg.Provide("user", portapi.TypeOf[*User]())
+if err != nil {
+    // Handle validation error
+}
+----
+
+=== Registry.Describe
+
+Attaches metadata to middleware. Middleware must be declared via `Use()` first.
+
+[source,go]
+----
+desc, err := reg.Describe(middlewareFunc)
+if err != nil {
+    // Handle error: middleware not declared
+}
+
+// Chain builder methods
+desc.RequireHeader("Authorization").
+     RequireCookie("session").
+     Security("bearerAuth").
+     MayReturn(401, "unauthorized").
+     MayReturn(403, "forbidden")
+----
+
+=== MiddlewareDescriptor Builder Methods
+
+==== RequireHeader
+
+Declares that middleware requires a specific HTTP header.
+
+[source,go]
+----
+desc.RequireHeader("Authorization")
+desc.RequireHeader("X-API-Key")
+----
+
+==== RequireCookie
+
+Declares that middleware requires a specific cookie.
+
+[source,go]
+----
+desc.RequireCookie("session")
+desc.RequireCookie("csrf_token")
+----
+
+==== Security
+
+Declares a security scheme used by the middleware.
+
+[source,go]
+----
+desc.Security("bearerAuth")
+desc.Security("apiKey")
+----
+
+==== MayReturn
+
+Declares a status code and description that the middleware may return.
+
+[source,go]
+----
+desc.MayReturn(401, "unauthorized")
+desc.MayReturn(403, "forbidden")
+desc.MayReturn(429, "rate limit exceeded")
+----
+
+=== TypeOf Helper
+
+Generic helper for type-safe context key declarations.
+
+[source,go]
+----
+// Basic types
+portapi.TypeOf[string]()
+portapi.TypeOf[int]()
+portapi.TypeOf[bool]()
+
+// Pointer types
+portapi.TypeOf[*User]()
+portapi.TypeOf[*Session]()
+
+// Slice types
+portapi.TypeOf[[]string]()
+
+// Map types
+portapi.TypeOf[map[string]any]()
+----
+
+=== Strict Mode Validation
+
+Validates that all middleware used by endpoints is properly declared.
+
+**Signature:**
+[source,go]
+----
+func ValidateStrictMiddlewareDeclaration(
+    endpoints []Endpoint,
+    reg *MiddlewareRegistry,
+    middlewarePackageConfigured bool,
+) *RegistryError
+----
+
+**Example:**
+[source,go]
+----
+endpoints := app.Endpoints()
+registry := createAndConfigureRegistry()
+
+err := portapi.ValidateStrictMiddlewareDeclaration(
+    endpoints,
+    registry,
+    true, // middleware package is configured
+)
+
+if err != nil {
+    log.Fatalf("Middleware validation failed: %v", err)
+}
+----
+
+== Error Codes
+
+=== Registry Errors
+
+[cols="1,3"]
+|===
+| Code | Description
+
+| `invalid_context_key`
+| Context key is empty or doesn't match pattern `[a-z][a-z0-9_]*`
+
+| `duplicate_context_key`
+| Same key declared twice with the same type
+
+| `duplicate_context_key_type_mismatch`
+| Same key declared twice with different types
+
+| `describe_undeclared_middleware`
+| Attempting to describe middleware not declared via `Use()`
+|===
+
+=== Strict Mode Errors
+
+[cols="1,3"]
+|===
+| Code | Description
+
+| `middleware_used_without_registry`
+| Middleware is used by endpoints but no registry package is configured
+
+| `undeclared_middleware`
+| Middleware is used by endpoints but not declared in `RegisterMiddleware()`
+|===
+
+=== RegistryError Type
+
+[source,go]
+----
+type RegistryError struct {
+    Code    string  // Stable error code
+    Message string  // Human-readable message
+}
+
+// Implements error interface
+func (e *RegistryError) Error() string
+----
+
+== Complete Example
+
+[source,go]
+----
+package main
+
+import "github.com/shipq/shipq/api/portapi"
+
+// Step 1: Define middleware functions
+func authMiddleware(next func()) func() {
+    return func() {
+        // Check authentication
+        next()
+    }
+}
+
+func rateLimitMiddleware(next func()) func() {
+    return func() {
+        // Check rate limits
+        next()
+    }
+}
+
+// Step 2: Register endpoints with groups
+func setupEndpoints() *portapi.App {
+    app := &portapi.App{}
+
+    // Public endpoints (no middleware)
+    app.Get("/health", healthCheck)
+
+    // Protected endpoints
+    app.Group(func(g *portapi.Group) {
+        g.Use(authMiddleware)
+        g.Use(rateLimitMiddleware)
+
+        g.Get("/profile", getProfile)
+        g.Put("/profile", updateProfile)
+
+        // Admin-only endpoints
+        g.Group(func(admin *portapi.Group) {
+            admin.Use(adminMiddleware)
+
+            admin.Get("/admin/users", listUsers)
+            admin.Post("/admin/users", createUser)
+        })
+    })
+
+    return app
+}
+
+// Step 3: Configure middleware registry
+func RegisterMiddleware(reg *portapi.MiddlewareRegistry) {
+    // Declare all middleware
+    reg.Use(authMiddleware)
+    reg.Use(rateLimitMiddleware)
+    reg.Use(adminMiddleware)
+
+    // Describe auth middleware
+    reg.Describe(authMiddleware).
+        RequireHeader("Authorization").
+        Security("bearerAuth").
+        MayReturn(401, "unauthorized")
+
+    // Describe rate limit middleware
+    reg.Describe(rateLimitMiddleware).
+        MayReturn(429, "rate limit exceeded")
+
+    // Describe admin middleware
+    reg.Describe(adminMiddleware).
+        MayReturn(403, "forbidden")
+
+    // Declare context keys
+    reg.Provide("user_id", portapi.TypeOf[string]())
+    reg.Provide("user", portapi.TypeOf[*User]())
+    reg.Provide("is_admin", portapi.TypeOf[bool]())
+}
+
+// Step 4: Validate (during discovery/generation)
+func validate() error {
+    app := setupEndpoints()
+    reg := &portapi.MiddlewareRegistry{}
+    RegisterMiddleware(reg)
+
+    endpoints := app.Endpoints()
+    err := portapi.ValidateStrictMiddlewareDeclaration(
+        endpoints,
+        reg,
+        true,
+    )
+
+    return err
+}
+----
+
+== Best Practices
+
+=== Middleware Declaration Order
+
+The order of `Use()` calls in groups determines middleware execution order:
+
+[source,go]
+----
+g.Use(logging)      // Runs first (outermost)
+g.Use(auth)         // Runs second
+g.Use(rateLimit)    // Runs third (innermost)
+----
+
+=== Context Key Naming
+
+Use snake_case for context keys:
+
+✅ Good:
+- `user_id`
+- `session_token`
+- `current_user`
+
+❌ Bad:
+- `userId` (camelCase)
+- `user-id` (kebab-case)
+- `UserID` (PascalCase)
+
+=== Middleware Registration
+
+Always declare middleware in the registry before describing it:
+
+[source,go]
+----
+// ✅ Correct
+reg.Use(authMiddleware)
+reg.Describe(authMiddleware).RequireHeader("Authorization")
+
+// ❌ Wrong - will return error
+reg.Describe(authMiddleware).RequireHeader("Authorization")
+reg.Use(authMiddleware)
+----
+
+=== Metadata Ordering
+
+Metadata methods preserve call order, so order matters:
+
+[source,go]
+----
+// Headers will be validated in this order
+desc.RequireHeader("Authorization").
+     RequireHeader("X-API-Key").
+     RequireHeader("X-Request-ID")
+----
+
+=== Registry Independence
+
+The registry can declare more middleware than is currently used (forward compatibility):
+
+[source,go]
+----
+// Valid: Registry declares middleware A, B, C
+// but only A and B are used by endpoints
+reg.Use(middlewareA)
+reg.Use(middlewareB)
+reg.Use(middlewareC)  // Not used yet, but valid
+----
+
+== Migration Guide
+
+=== Adding Middleware to Existing Endpoints
+
+[source,go]
+----
+// Before (Phase 0)
+app.Get("/protected", protectedHandler)
+
+// After (Phase 1)
+app.Group(func(g *portapi.Group) {
+    g.Use(authMiddleware)
+    g.Get("/protected", protectedHandler)
+})
+----
+
+=== No Breaking Changes
+
+Existing code continues to work:
+
+[source,go]
+----
+// Still valid - endpoints without groups
+app.Get("/public", publicHandler)
+app.Post("/public", publicHandler)
+----
+
+== Troubleshooting
+
+=== Error: middleware_used_without_registry
+
+**Cause:** Endpoints use middleware but no registry package is configured.
+
+**Solution:** Configure `middleware_package` in your generator config.
+
+=== Error: undeclared_middleware
+
+**Cause:** Middleware is used by endpoints but not declared in `RegisterMiddleware()`.
+
+**Solution:** Add `reg.Use(middlewareFunc)` to your `RegisterMiddleware()` function.
+
+=== Error: describe_undeclared_middleware
+
+**Cause:** Calling `reg.Describe()` before `reg.Use()`.
+
+**Solution:** Call `reg.Use(middlewareFunc)` before `reg.Describe(middlewareFunc)`.
+
+=== Error: invalid_context_key
+
+**Cause:** Context key doesn't match pattern `[a-z][a-z0-9_]*`.
+
+**Solution:** Use snake_case lowercase keys (e.g., `user_id` instead of `userId`).
+
+=== Error: duplicate_context_key
+
+**Cause:** Same key declared twice.
+
+**Solution:** Remove duplicate `Provide()` calls or use different key names.

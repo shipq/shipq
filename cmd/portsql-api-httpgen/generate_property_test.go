@@ -101,8 +101,8 @@ func TestProperty_Generate_Deterministic(t *testing.T) {
 		m := randomManifest(rng, 10)
 
 		// Generate code twice
-		code1, err1 := Generate(m, "testpkg")
-		code2, err2 := Generate(m, "testpkg")
+		code1, err1 := Generate(m, "testpkg", "")
+		code2, err2 := Generate(m, "testpkg", "")
 
 		// Both should succeed or both should fail
 		if err1 != nil || err2 != nil {
@@ -130,7 +130,7 @@ func TestProperty_Generate_AlwaysParses(t *testing.T) {
 		rng := rand.New(rand.NewSource(seed + int64(i)))
 		m := randomManifest(rng, 10)
 
-		code, err := Generate(m, "testpkg")
+		code, err := Generate(m, "testpkg", "")
 		if err != nil {
 			// Generation failure is acceptable for some invalid manifests
 			continue
@@ -164,7 +164,7 @@ func TestProperty_Generate_DifferentOrderSameOutput(t *testing.T) {
 		m2 := Manifest{Endpoints: shuffled}
 
 		// Generate code for both orderings
-		code1, err1 := Generate(m, "testpkg")
+		code1, err1 := Generate(m, "testpkg", "")
 		code2, err2 := Generate(m2, "testpkg")
 
 		if err1 != nil || err2 != nil {
