@@ -177,16 +177,29 @@ middleware_package = example.com/testapp/api/middleware
 		}
 	}
 
-	// Verify it contains context key types
+	// Verify it uses the new portapi store pattern (not the old zzCtxKey types)
+	if !strings.Contains(codeStr, "portapi.WithTyped") {
+		t.Error("expected generated code to use portapi.WithTyped")
+	}
+	if !strings.Contains(codeStr, "portapi.GetTyped") {
+		t.Error("expected generated code to use portapi.GetTyped")
+	}
+
+	// Verify it does NOT contain old-style context key types
+	if strings.Contains(codeStr, "type zzCtxKey") {
+		t.Error("should not generate per-key context types anymore")
+	}
+
+	// Verify it uses the exact key strings for portapi calls
 	expectedKeys := []string{
-		"type zzCtxKeyCurrentUser struct{}",
-		"type zzCtxKeyRequestID struct{}",
-		"type zzCtxKeyRetryCount struct{}",
+		`"current_user"`,
+		`"request_id"`,
+		`"retry_count"`,
 	}
 
 	for _, expected := range expectedKeys {
 		if !strings.Contains(codeStr, expected) {
-			t.Errorf("expected generated code to contain %q", expected)
+			t.Errorf("expected generated code to contain key string %s", expected)
 		}
 	}
 

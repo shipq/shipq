@@ -59,6 +59,10 @@ func TestMiddlewareRegistry_ProvideRejectsInvalidKeyFormat(t *testing.T) {
 		{"camelCase", "userId"},
 		{"with space", "user id"},
 		{"with dot", "user.id"},
+		{"consecutive underscores", "user__id"},
+		{"trailing underscore", "user_"},
+		{"multiple consecutive underscores", "user___id"},
+		{"trailing with consecutive", "user__"},
 	}
 
 	for _, tc := range testCases {
@@ -127,7 +131,7 @@ func TestMiddlewareRegistry_ProvideRejectsDuplicateDifferentType(t *testing.T) {
 }
 
 // TestMiddlewareRegistry_ProvideAcceptsValidKeys verifies that valid keys
-// following the pattern [a-z][a-z0-9_]* are accepted.
+// following the pattern [a-z][a-z0-9_]* are accepted (no consecutive or trailing underscores).
 func TestMiddlewareRegistry_ProvideAcceptsValidKeys(t *testing.T) {
 	reg := &MiddlewareRegistry{}
 
@@ -138,6 +142,9 @@ func TestMiddlewareRegistry_ProvideAcceptsValidKeys(t *testing.T) {
 		"a",
 		"current_user",
 		"session_token",
+		"request_id",
+		"tenant_id",
+		"a_b_c_d",
 	}
 
 	for _, key := range validKeys {

@@ -2,29 +2,28 @@
 
 package middleware
 
-import "context"
+import (
+	"context"
 
-// zzCtxKeyCurrentUser is the unexported key type for CurrentUser.
-type zzCtxKeyCurrentUser struct{}
+	"github.com/shipq/shipq/api/portapi"
+)
 
 // WithCurrentUser returns a new context with the given value stored.
+// Uses the stable portapi context store for interoperability with capability tokens.
 func WithCurrentUser(ctx context.Context, v *User) context.Context {
-	return context.WithValue(ctx, zzCtxKeyCurrentUser{}, v)
+	return portapi.WithTyped(ctx, "current_user", v)
 }
 
 // CurrentUser retrieves the value from the context.
 // Returns (value, true) if present, or (zero, false) if not present.
+// Uses the stable portapi context store for interoperability with capability tokens.
 func CurrentUser(ctx context.Context) (*User, bool) {
-	v, ok := ctx.Value(zzCtxKeyCurrentUser{}).(*User)
-	return v, ok
+	return portapi.GetTyped[*User](ctx, "current_user")
 }
 
 // MustCurrentUser retrieves the value from the context.
 // Panics if the value is not present.
+// Uses the stable portapi context store for interoperability with capability tokens.
 func MustCurrentUser(ctx context.Context) *User {
-	v, ok := CurrentUser(ctx)
-	if !ok {
-		panic("context key CurrentUser not found")
-	}
-	return v
+	return portapi.MustTyped[*User](ctx, "current_user")
 }

@@ -125,6 +125,71 @@ func run() error {
 		}
 	}
 
+	// 8. Generate OpenAPI JSON if enabled
+	if cfg.OpenAPIEnabled {
+		openapiBytes, err := BuildOpenAPI(cfg, manifest)
+		if err != nil {
+			return fmt.Errorf("building OpenAPI: %w", err)
+		}
+
+		openapiPath := filepath.Join(outputPath, cfg.OpenAPIOutput)
+		if err := os.WriteFile(openapiPath, openapiBytes, 0644); err != nil {
+			return fmt.Errorf("writing OpenAPI %s: %w", openapiPath, err)
+		}
+
+		fmt.Printf("Generated %s\n", openapiPath)
+	}
+
+	// 9. Generate Docs UI if enabled
+	if cfg.DocsUIEnabled {
+		// Write docs assets to target directory
+		if err := writeDocsAssets(outputPath); err != nil {
+			return fmt.Errorf("writing docs assets: %w", err)
+		}
+
+		// Generate docs UI code
+		docsCode, err := GenerateDocsUIWithPackage(cfg, manifest, pkgName)
+		if err != nil {
+			return fmt.Errorf("generating docs UI: %w", err)
+		}
+
+		if docsCode != "" {
+			docsPath := filepath.Join(outputPath, "zz_generated_openapi.go")
+			if err := os.WriteFile(docsPath, []byte(docsCode), 0644); err != nil {
+				return fmt.Errorf("writing docs UI %s: %w", docsPath, err)
+			}
+			fmt.Printf("Generated %s\n", docsPath)
+		}
+	}
+
+	return nil
+}
+
+// writeDocsAssets writes the embedded docs assets to the target directory.
+func writeDocsAssets(targetDir string) error {
+	assets, err := GetDocsAssets()
+	if err != nil {
+		return err
+	}
+
+	assetsDir := filepath.Join(targetDir, "zz_generated_docs_assets")
+
+	// Write each asset
+	for relPath, content := range assets {
+		fullPath := filepath.Join(assetsDir, relPath)
+
+		// Ensure directory exists
+		dir := filepath.Dir(fullPath)
+		if err := os.MkdirAll(dir, 0755); err != nil {
+			return fmt.Errorf("creating directory %s: %w", dir, err)
+		}
+
+		// Write file
+		if err := os.WriteFile(fullPath, content, 0644); err != nil {
+			return fmt.Errorf("writing asset %s: %w", fullPath, err)
+		}
+	}
+
 	return nil
 }
 

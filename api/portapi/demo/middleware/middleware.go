@@ -40,6 +40,13 @@ type User struct {
 // Keys defined in the middleware package (typed, stable, non-generated).
 var currentUserKey = portapi.NewContextKey[*User]("current_user")
 
+// Exported middleware variables for use in handler endpoint definitions.
+// These are initialized in RegisterMiddleware and capture capability tokens.
+var (
+	AuthOptional portapi.Middleware
+	AuthRequired portapi.Middleware
+)
+
 // RegisterMiddleware registers all middleware functions and context keys.
 func RegisterMiddleware(reg *portapi.MiddlewareRegistry) {
 	// Declare provided context keys and obtain capabilities.
@@ -59,8 +66,14 @@ func RegisterMiddleware(reg *portapi.MiddlewareRegistry) {
 	// to generated helpers.
 	reg.Use(RequestLogger)
 	reg.Use(RateLimiter)
-	reg.Use(NewAuthOptional(currentUser))
-	reg.Use(NewAuthRequired(currentUser))
+
+	// Initialize exported middleware variables with capability tokens.
+	// These can be referenced by handler endpoint definitions.
+	AuthOptional = NewAuthOptional(currentUser)
+	AuthRequired = NewAuthRequired(currentUser)
+
+	reg.Use(AuthOptional)
+	reg.Use(AuthRequired)
 }
 
 // RequestLogger logs incoming requests.
@@ -137,7 +150,7 @@ func (r *simpleRateLimiter) Allow(clientID string) bool {
 }
 
 // NewAuthOptional extracts user from Authorization header if present, but doesn't require it.
-func NewAuthOptional(currentUser portapi.Cap[*User]) any {
+func NewAuthOptional(currentUser portapi.Cap[*User]) portapi.Middleware {
 	return func(ctx context.Context, req *portapi.Request, next portapi.Next) (portapi.HandlerResult, error) {
 		authHeader, ok := req.HeaderValue("Authorization")
 		if ok && authHeader != "" {
@@ -151,7 +164,7 @@ func NewAuthOptional(currentUser portapi.Cap[*User]) any {
 }
 
 // NewAuthRequired requires a valid Authorization header and extracts the user.
-func NewAuthRequired(currentUser portapi.Cap[*User]) any {
+func NewAuthRequired(currentUser portapi.Cap[*User]) portapi.Middleware {
 	return func(ctx context.Context, req *portapi.Request, next portapi.Next) (portapi.HandlerResult, error) {
 		authHeader, ok := req.HeaderValue("Authorization")
 		if !ok || authHeader == "" {

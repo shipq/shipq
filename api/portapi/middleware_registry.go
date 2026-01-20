@@ -5,6 +5,7 @@ import (
 	"reflect"
 	"regexp"
 	"sort"
+	"strings"
 )
 
 // TypeToken represents a type for use in the middleware registry.
@@ -65,7 +66,8 @@ func (r *MiddlewareRegistry) Middlewares() []MiddlewareRef {
 }
 
 // Provide declares a context key that middleware may provide to handlers.
-// Keys must follow the pattern [a-z][a-z0-9_]* and be unique.
+// Keys must follow the pattern [a-z][a-z0-9_]*, cannot contain consecutive
+// underscores, and cannot end with an underscore. Keys must be unique.
 func (r *MiddlewareRegistry) Provide(key string, typ TypeToken) *RegistryError {
 	if key == "" {
 		return &RegistryError{
@@ -78,6 +80,22 @@ func (r *MiddlewareRegistry) Provide(key string, typ TypeToken) *RegistryError {
 		return &RegistryError{
 			Code:    "invalid_context_key",
 			Message: fmt.Sprintf("context key %q must match pattern [a-z][a-z0-9_]*", key),
+		}
+	}
+
+	// Reject consecutive underscores (e.g., "user__id")
+	if strings.Contains(key, "__") {
+		return &RegistryError{
+			Code:    "invalid_context_key",
+			Message: fmt.Sprintf("context key %q cannot contain consecutive underscores", key),
+		}
+	}
+
+	// Reject trailing underscore (e.g., "user_")
+	if strings.HasSuffix(key, "_") {
+		return &RegistryError{
+			Code:    "invalid_context_key",
+			Message: fmt.Sprintf("context key %q cannot end with underscore", key),
 		}
 	}
 

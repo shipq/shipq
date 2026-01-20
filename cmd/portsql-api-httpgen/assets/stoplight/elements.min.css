@@ -1,0 +1,23 @@
+/* Stoplight Elements CSS - Vendored Version */
+/* This is a placeholder for the actual @stoplight/elements CSS bundle */
+/* In production, replace with: https://unpkg.com/@stoplight/elements/styles.min.css */
+
+:root {
+    --color-primary: #3b82f6;
+    --color-background: #ffffff;
+    --color-text: #1f2937;
+}
+
+.sl-elements {
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+    line-height: 1.5;
+    color: var(--color-text);
+    background: var(--color-background);
+}
+
+.sl-elements-api {
+    display: block;
+    min-height: 100vh;
+}
+
+/* Placeholder styles - actual bundle is ~200KB */

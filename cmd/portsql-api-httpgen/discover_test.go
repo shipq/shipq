@@ -91,3 +91,94 @@ func TestGenerateRunnerCode(t *testing.T) {
 		}
 	})
 }
+
+// =============================================================================
+// OpenAPI Step 2 Tests: Runner code generation for Types and Docs
+// =============================================================================
+
+func TestGenerateRunnerCode_TypeGraph(t *testing.T) {
+	t.Run("includes ManifestType struct", func(t *testing.T) {
+		code := GenerateRunnerCode("example.com/app/api", "")
+
+		if !strings.Contains(code, "type ManifestType struct") {
+			t.Error("expected code to contain ManifestType struct")
+		}
+	})
+
+	t.Run("includes ManifestField struct", func(t *testing.T) {
+		code := GenerateRunnerCode("example.com/app/api", "")
+
+		if !strings.Contains(code, "type ManifestField struct") {
+			t.Error("expected code to contain ManifestField struct")
+		}
+	})
+
+	t.Run("includes ManifestDoc struct", func(t *testing.T) {
+		code := GenerateRunnerCode("example.com/app/api", "")
+
+		if !strings.Contains(code, "type ManifestDoc struct") {
+			t.Error("expected code to contain ManifestDoc struct")
+		}
+	})
+
+	t.Run("manifest has Types field", func(t *testing.T) {
+		code := GenerateRunnerCode("example.com/app/api", "")
+
+		if !strings.Contains(code, "Types") && !strings.Contains(code, `"types"`) {
+			t.Error("expected Manifest to have Types field")
+		}
+	})
+
+	t.Run("manifest has EndpointDocs field", func(t *testing.T) {
+		code := GenerateRunnerCode("example.com/app/api", "")
+
+		if !strings.Contains(code, "EndpointDocs") && !strings.Contains(code, `"endpoint_docs"`) {
+			t.Error("expected Manifest to have EndpointDocs field")
+		}
+	})
+
+	t.Run("includes type collection function", func(t *testing.T) {
+		code := GenerateRunnerCode("example.com/app/api", "")
+
+		if !strings.Contains(code, "collectTypes") {
+			t.Error("expected code to contain collectTypes function")
+		}
+	})
+
+	t.Run("includes doc extraction function", func(t *testing.T) {
+		code := GenerateRunnerCode("example.com/app/api", "")
+
+		if !strings.Contains(code, "extractDocs") {
+			t.Error("expected code to contain extractDocs function")
+		}
+	})
+
+	t.Run("imports go/packages for doc extraction", func(t *testing.T) {
+		code := GenerateRunnerCode("example.com/app/api", "")
+
+		if !strings.Contains(code, `"golang.org/x/tools/go/packages"`) {
+			t.Error("expected code to import go/packages")
+		}
+	})
+}
+
+func TestGenerateRunnerCode_TypeID(t *testing.T) {
+	t.Run("includes getTypeID function", func(t *testing.T) {
+		code := GenerateRunnerCode("example.com/app/api", "")
+
+		if !strings.Contains(code, "getTypeID") {
+			t.Error("expected code to contain getTypeID helper function")
+		}
+	})
+}
+
+func TestGenerateRunnerCode_ValidationForConflictingBindings(t *testing.T) {
+	t.Run("includes binding conflict validation", func(t *testing.T) {
+		code := GenerateRunnerCode("example.com/app/api", "")
+
+		// Should validate that fields don't have multiple binding sources
+		if !strings.Contains(code, "validateBindingConflicts") && !strings.Contains(code, "multiple binding") {
+			t.Error("expected code to validate binding conflicts")
+		}
+	})
+}

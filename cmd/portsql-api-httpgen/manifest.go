@@ -6,6 +6,39 @@ type Manifest struct {
 	Middlewares        []ManifestMiddleware                   `json:"middlewares,omitempty"`
 	ContextKeys        []ManifestContextKey                   `json:"context_keys,omitempty"`
 	MiddlewareMetadata map[string]*ManifestMiddlewareMetadata `json:"middleware_metadata,omitempty"`
+
+	// OpenAPI extensions (Step 2)
+	Types        []ManifestType         `json:"types,omitempty"`
+	EndpointDocs map[string]ManifestDoc `json:"endpoint_docs,omitempty"`
+}
+
+// ManifestType represents a type in the type graph for OpenAPI schema generation.
+type ManifestType struct {
+	ID       string          `json:"id"`                 // Stable unique ID (e.g., "github.com/example/pkg.TypeName")
+	GoType   string          `json:"go_type"`            // Original Go type string for debugging
+	Kind     string          `json:"kind"`               // "struct", "slice", "map", "pointer", "string", "int", "bool", "time", "bytes", "unknown", etc.
+	Nullable bool            `json:"nullable,omitempty"` // True for pointer types
+	Fields   []ManifestField `json:"fields,omitempty"`   // For struct types
+	Elem     string          `json:"elem,omitempty"`     // Element type ID for slices/arrays/pointers
+	Key      string          `json:"key,omitempty"`      // Key type ID for maps
+	Value    string          `json:"value,omitempty"`    // Value type ID for maps
+	Doc      string          `json:"doc,omitempty"`      // Doc comment for named types
+	Warnings []string        `json:"warnings,omitempty"` // Warnings for unsupported features
+}
+
+// ManifestField represents a struct field in the type graph.
+type ManifestField struct {
+	GoName   string `json:"go_name"`             // Go struct field name
+	JSONName string `json:"json_name,omitempty"` // JSON field name (empty if not serialized)
+	TypeID   string `json:"type_id"`             // Reference to type in the type graph
+	Required bool   `json:"required"`            // True if field is required (no omitempty, not pointer)
+	Doc      string `json:"doc,omitempty"`       // Doc comment for field
+}
+
+// ManifestDoc represents documentation for a handler or type.
+type ManifestDoc struct {
+	Summary     string `json:"summary,omitempty"`     // First line/sentence of doc comment
+	Description string `json:"description,omitempty"` // Full doc comment text
 }
 
 // ManifestMiddleware represents a declared middleware function.

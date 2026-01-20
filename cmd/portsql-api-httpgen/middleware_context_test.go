@@ -1,6 +1,7 @@
 package main
 
 import (
+	"strings"
 	"testing"
 )
 
@@ -225,27 +226,36 @@ func TestDetectContextKeyCollisions(t *testing.T) {
 	}
 }
 
-// TestGenerateContextKeyType tests the generation of context key type names.
-func TestGenerateContextKeyType(t *testing.T) {
+// TestGenerateFunctionNames tests the generation of function names from context keys.
+// Note: We no longer generate zzCtxKey types; this test verifies CamelCase naming for functions.
+func TestGenerateFunctionNames(t *testing.T) {
 	tests := []struct {
-		name     string
-		key      string
-		expected string
+		name         string
+		key          string
+		expectedWith string
+		expectedGet  string
+		expectedMust string
 	}{
 		{
-			name:     "simple key",
-			key:      "user",
-			expected: "zzCtxKeyUser",
+			name:         "simple key",
+			key:          "user",
+			expectedWith: "WithUser",
+			expectedGet:  "User",
+			expectedMust: "MustUser",
 		},
 		{
-			name:     "snake_case key",
-			key:      "request_id",
-			expected: "zzCtxKeyRequestID",
+			name:         "snake_case key",
+			key:          "request_id",
+			expectedWith: "WithRequestID",
+			expectedGet:  "RequestID",
+			expectedMust: "MustRequestID",
 		},
 		{
-			name:     "multiple parts",
-			key:      "user_auth_token",
-			expected: "zzCtxKeyUserAuthToken",
+			name:         "multiple parts",
+			key:          "user_auth_token",
+			expectedWith: "WithUserAuthToken",
+			expectedGet:  "UserAuthToken",
+			expectedMust: "MustUserAuthToken",
 		},
 	}
 
@@ -255,9 +265,18 @@ func TestGenerateContextKeyType(t *testing.T) {
 			if err != nil {
 				t.Fatalf("unexpected error: %v", err)
 			}
-			result := "zzCtxKey" + camelCase
-			if result != tt.expected {
-				t.Errorf("context key type for %q = %q, want %q", tt.key, result, tt.expected)
+			withFunc := "With" + camelCase
+			getFunc := camelCase
+			mustFunc := "Must" + camelCase
+
+			if withFunc != tt.expectedWith {
+				t.Errorf("With function for %q = %q, want %q", tt.key, withFunc, tt.expectedWith)
+			}
+			if getFunc != tt.expectedGet {
+				t.Errorf("Get function for %q = %q, want %q", tt.key, getFunc, tt.expectedGet)
+			}
+			if mustFunc != tt.expectedMust {
+				t.Errorf("Must function for %q = %q, want %q", tt.key, mustFunc, tt.expectedMust)
 			}
 		})
 	}
@@ -356,15 +375,12 @@ func TestGenerateMiddlewareContextFile_WithKeys(t *testing.T) {
 		t.Error("expected context import")
 	}
 
-	// Verify it contains key types
-	if !contains(content, "type zzCtxKeyUser struct{}") {
-		t.Error("expected zzCtxKeyUser type")
-	}
-	if !contains(content, "type zzCtxKeyRequestID struct{}") {
-		t.Error("expected zzCtxKeyRequestID type")
+	// Verify it uses portapi (not per-key context types)
+	if !contains(content, `"github.com/shipq/shipq/api/portapi"`) {
+		t.Error("expected portapi import")
 	}
 
-	// Verify it contains functions
+	// Verify it contains functions using portapi
 	if !contains(content, "func WithUser(ctx context.Context, v *User) context.Context") {
 		t.Error("expected WithUser function")
 	}
@@ -373,6 +389,12 @@ func TestGenerateMiddlewareContextFile_WithKeys(t *testing.T) {
 	}
 	if !contains(content, "func MustUser(ctx context.Context) *User") {
 		t.Error("expected MustUser function")
+	}
+	if !contains(content, "portapi.WithTyped") {
+		t.Error("expected portapi.WithTyped usage")
+	}
+	if !contains(content, "portapi.GetTyped") {
+		t.Error("expected portapi.GetTyped usage")
 	}
 }
 
@@ -388,4 +410,72 @@ func containsAt(s, substr string) bool {
 		}
 	}
 	return false
+}
+
+// TestGenerateMiddlewareContextFile_UsesPortapiStore verifies that generated helpers
+// use the stable portapi store (portapi.WithTyped/GetTyped) instead of per-key context types.
+// This ensures interoperability between generated helpers and capability tokens.
+func TestGenerateMiddlewareContextFile_UsesPortapiStore(t *testing.T) {
+	keys := []ManifestContextKey{
+		{Key: "request_id", Type: "string"},
+	}
+
+	content, err := generateMiddlewareContextFile("middleware", keys)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// Should import portapi
+	if !strings.Contains(content, `"github.com/shipq/shipq/api/portapi"`) {
+		t.Error("expected portapi import")
+	}
+
+	// Should use portapi.WithTyped for With functions
+	if !strings.Contains(content, "portapi.WithTyped") {
+		t.Error("expected WithRequestID to use portapi.WithTyped")
+	}
+
+	// Should use portapi.GetTyped for Get functions
+	if !strings.Contains(content, "portapi.GetTyped") {
+		t.Error("expected RequestID to use portapi.GetTyped")
+	}
+
+	// Should NOT contain per-key context types (the old pattern)
+	if strings.Contains(content, "type zzCtxKey") {
+		t.Error("should not generate per-key context types anymore")
+	}
+
+	// Should NOT use context.WithValue directly
+	if strings.Contains(content, "context.WithValue") {
+		t.Error("should not use context.WithValue directly")
+	}
+
+	// Should NOT use ctx.Value directly
+	if strings.Contains(content, "ctx.Value(") {
+		t.Error("should not use ctx.Value directly")
+	}
+}
+
+// TestGenerateMiddlewareContextFile_PortapiInterop verifies that the generated code
+// would interoperate with capability tokens by using the same key strings.
+func TestGenerateMiddlewareContextFile_PortapiInterop(t *testing.T) {
+	keys := []ManifestContextKey{
+		{Key: "current_user", Type: "*User"},
+		{Key: "tenant_id", Type: "string"},
+	}
+
+	content, err := generateMiddlewareContextFile("middleware", keys)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// The generated code should use the exact key strings for portapi calls
+	// This ensures that Cap[T].With(ctx, "current_user", ...) and WithCurrentUser(ctx, ...)
+	// write to the same location.
+	if !strings.Contains(content, `"current_user"`) {
+		t.Error("expected generated code to use exact key string \"current_user\"")
+	}
+	if !strings.Contains(content, `"tenant_id"`) {
+		t.Error("expected generated code to use exact key string \"tenant_id\"")
+	}
 }

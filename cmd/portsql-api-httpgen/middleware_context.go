@@ -130,7 +130,7 @@ func detectContextKeyCollisions(keys []ManifestContextKey) error {
 
 // contextHelperData holds data for generating a single context helper.
 type contextHelperData struct {
-	KeyType      string // e.g., "zzCtxKeyUser"
+	KeyName      string // e.g., "request_id" (the original snake_case key)
 	CamelName    string // e.g., "User"
 	GoType       string // e.g., "*User" or "string"
 	WithFuncName string // e.g., "WithUser"
@@ -142,32 +142,31 @@ var contextFileTmpl = template.Must(template.New("contextFile").Parse(`// Code g
 
 package {{.PackageName}}
 
-import "context"
+import (
+	"context"
+
+	"github.com/shipq/shipq/api/portapi"
+)
 
 {{range .Helpers}}
-// {{.KeyType}} is the unexported key type for {{.GetFuncName}}.
-type {{.KeyType}} struct{}
-
 // {{.WithFuncName}} returns a new context with the given value stored.
+// Uses the stable portapi context store for interoperability with capability tokens.
 func {{.WithFuncName}}(ctx context.Context, v {{.GoType}}) context.Context {
-	return context.WithValue(ctx, {{.KeyType}}{}, v)
+	return portapi.WithTyped(ctx, "{{.KeyName}}", v)
 }
 
 // {{.GetFuncName}} retrieves the value from the context.
 // Returns (value, true) if present, or (zero, false) if not present.
+// Uses the stable portapi context store for interoperability with capability tokens.
 func {{.GetFuncName}}(ctx context.Context) ({{.GoType}}, bool) {
-	v, ok := ctx.Value({{.KeyType}}{}).({{.GoType}})
-	return v, ok
+	return portapi.GetTyped[{{.GoType}}](ctx, "{{.KeyName}}")
 }
 
 // {{.MustFuncName}} retrieves the value from the context.
 // Panics if the value is not present.
+// Uses the stable portapi context store for interoperability with capability tokens.
 func {{.MustFuncName}}(ctx context.Context) {{.GoType}} {
-	v, ok := {{.GetFuncName}}(ctx)
-	if !ok {
-		panic("context key {{.GetFuncName}} not found")
-	}
-	return v
+	return portapi.MustTyped[{{.GoType}}](ctx, "{{.KeyName}}")
 }
 
 {{end}}
@@ -247,7 +246,7 @@ func generateMiddlewareContextFile(pkgName string, contextKeys []ManifestContext
 		goType := stripPackagePrefix(key.Type, pkgName)
 
 		helper := contextHelperData{
-			KeyType:      "zzCtxKey" + camelName,
+			KeyName:      key.Key,
 			CamelName:    camelName,
 			GoType:       goType,
 			WithFuncName: "With" + camelName,

@@ -6,6 +6,8 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
+	"sort"
 	"strings"
 	"testing"
 )
@@ -338,5 +340,431 @@ func GetPet(ctx context.Context, req GetPetRequest) (Pet, error) {
 	}
 	if ep.Shape != "ctx_req_resp_err" {
 		t.Errorf("shape: got %q, want %q", ep.Shape, "ctx_req_resp_err")
+	}
+}
+
+// =============================================================================
+// OpenAPI Step 2 Tests: Type Graph and Docstrings
+// =============================================================================
+
+// Test Group A: Manifest schema extensions exist and parse
+
+func TestDiscover_ManifestHasTypesAndEndpointDocs(t *testing.T) {
+	// Test A1: Manifest JSON includes Types and EndpointDocs (empty when none)
+	// Use existing testdata that has endpoints without special doc comments
+	modDir := getModuleDir(t)
+
+	origDir, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("failed to get working directory: %v", err)
+	}
+	defer os.Chdir(origDir)
+
+	if err := os.Chdir(modDir); err != nil {
+		t.Fatalf("failed to change directory: %v", err)
+	}
+
+	manifest, err := Discover("github.com/shipq/shipq/cmd/portsql-api-httpgen/testdata/apiroot_mw_happy_path", "github.com/shipq/shipq/cmd/portsql-api-httpgen/testdata/apiroot_mw_happy_path/middleware")
+	if err != nil {
+		t.Fatalf("Discover failed: %v", err)
+	}
+
+	// Types should be non-nil (may be empty slice or populated)
+	if manifest.Types == nil {
+		t.Error("manifest.Types should be non-nil")
+	}
+
+	// EndpointDocs should be non-nil map
+	if manifest.EndpointDocs == nil {
+		t.Error("manifest.EndpointDocs should be non-nil")
+	}
+
+	// Should have endpoints
+	if len(manifest.Endpoints) == 0 {
+		t.Error("expected at least one endpoint")
+	}
+}
+
+// Test Group B: Type graph generation (happy path)
+
+func TestDiscover_TypeGraphHappyPath(t *testing.T) {
+	modDir := getModuleDir(t)
+
+	origDir, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("failed to get working directory: %v", err)
+	}
+	defer os.Chdir(origDir)
+
+	if err := os.Chdir(modDir); err != nil {
+		t.Fatalf("failed to change directory: %v", err)
+	}
+
+	manifest, err := Discover("github.com/shipq/shipq/cmd/portsql-api-httpgen/testdata/openapi_types_happy", "")
+	if err != nil {
+		t.Fatalf("Discover failed: %v", err)
+	}
+
+	// B1: Type graph includes named types referenced by req/resp
+	t.Run("includes_named_types", func(t *testing.T) {
+		if len(manifest.Types) == 0 {
+			t.Fatal("expected types in manifest")
+		}
+
+		// Build a map for easier lookup
+		typesByID := make(map[string]ManifestType)
+		for _, mt := range manifest.Types {
+			typesByID[mt.ID] = mt
+		}
+
+		// Should have GetThingResp
+		var foundResp bool
+		for id := range typesByID {
+			if strings.HasSuffix(id, "GetThingResp") {
+				foundResp = true
+				break
+			}
+		}
+		if !foundResp {
+			t.Error("expected type graph to include GetThingResp")
+		}
+
+		// Should have nested Address type
+		var foundAddress bool
+		for id := range typesByID {
+			if strings.HasSuffix(id, "Address") {
+				foundAddress = true
+				break
+			}
+		}
+		if !foundAddress {
+			t.Error("expected type graph to include nested Address type")
+		}
+
+		// Should have Tag type (used in []Tag)
+		var foundTag bool
+		for id := range typesByID {
+			if strings.HasSuffix(id, "Tag") {
+				foundTag = true
+				break
+			}
+		}
+		if !foundTag {
+			t.Error("expected type graph to include Tag type")
+		}
+	})
+
+	t.Run("struct_fields_have_correct_json_names", func(t *testing.T) {
+		// Find GetThingResp type (must be a struct, not a slice of it)
+		var respType *ManifestType
+		for i := range manifest.Types {
+			if strings.HasSuffix(manifest.Types[i].ID, "GetThingResp") && manifest.Types[i].Kind == "struct" {
+				respType = &manifest.Types[i]
+				break
+			}
+		}
+		if respType == nil {
+			t.Fatal("GetThingResp type not found")
+		}
+
+		if respType.Kind != "struct" {
+			t.Errorf("expected kind 'struct', got %q", respType.Kind)
+		}
+
+		// Check fields
+		fieldsByJSON := make(map[string]ManifestField)
+		for _, f := range respType.Fields {
+			if f.JSONName != "" {
+				fieldsByJSON[f.JSONName] = f
+			}
+		}
+
+		// Check required field "id"
+		if f, ok := fieldsByJSON["id"]; !ok {
+			t.Error("expected 'id' field")
+		} else if !f.Required {
+			t.Error("'id' field should be required (no omitempty, not pointer)")
+		}
+
+		// Check optional field "description" (pointer with omitempty)
+		if f, ok := fieldsByJSON["description"]; !ok {
+			t.Error("expected 'description' field")
+		} else if f.Required {
+			t.Error("'description' field should not be required (pointer with omitempty)")
+		}
+
+		// Check "created_at" field exists
+		if _, ok := fieldsByJSON["created_at"]; !ok {
+			t.Error("expected 'created_at' field")
+		}
+	})
+
+	// B2: time.Time maps to a known type
+	t.Run("time_type_recognized", func(t *testing.T) {
+		var foundTimeType bool
+		for _, mt := range manifest.Types {
+			if mt.Kind == "time" || strings.Contains(mt.ID, "time.Time") {
+				foundTimeType = true
+				break
+			}
+		}
+		if !foundTimeType {
+			t.Error("expected time.Time to be recognized as a special type")
+		}
+	})
+
+	// B3: Slices and maps are represented correctly
+	t.Run("slice_type_representation", func(t *testing.T) {
+		var foundSlice bool
+		for _, mt := range manifest.Types {
+			if mt.Kind == "slice" && mt.Elem != "" {
+				foundSlice = true
+				break
+			}
+		}
+		if !foundSlice {
+			t.Error("expected at least one slice type with elem reference")
+		}
+	})
+
+	t.Run("map_type_representation", func(t *testing.T) {
+		var foundMap bool
+		for _, mt := range manifest.Types {
+			if mt.Kind == "map" && mt.Key != "" && mt.Value != "" {
+				foundMap = true
+				break
+			}
+		}
+		if !foundMap {
+			t.Error("expected at least one map type with key/value references")
+		}
+	})
+}
+
+// Test Group C: Docstring extraction (happy path)
+
+func TestDiscover_DocstringExtraction(t *testing.T) {
+	modDir := getModuleDir(t)
+
+	origDir, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("failed to get working directory: %v", err)
+	}
+	defer os.Chdir(origDir)
+
+	if err := os.Chdir(modDir); err != nil {
+		t.Fatalf("failed to change directory: %v", err)
+	}
+
+	manifest, err := Discover("github.com/shipq/shipq/cmd/portsql-api-httpgen/testdata/openapi_docs_happy", "")
+	if err != nil {
+		t.Fatalf("Discover failed: %v", err)
+	}
+
+	// C1: Endpoint docstrings exist
+	t.Run("endpoint_docstrings", func(t *testing.T) {
+		if len(manifest.EndpointDocs) == 0 {
+			t.Fatal("expected endpoint docs")
+		}
+
+		// Find GetPet handler docs
+		var foundGetPet bool
+		for key, doc := range manifest.EndpointDocs {
+			if strings.HasSuffix(key, "GetPet") {
+				foundGetPet = true
+				if doc.Summary == "" {
+					t.Error("GetPet should have a summary")
+				}
+				if doc.Description == "" {
+					t.Error("GetPet should have a description")
+				}
+				// Summary should be first line
+				if !strings.Contains(doc.Summary, "retrieves a pet") {
+					t.Errorf("GetPet summary should mention 'retrieves a pet', got %q", doc.Summary)
+				}
+				break
+			}
+		}
+		if !foundGetPet {
+			t.Error("expected GetPet handler docs")
+		}
+	})
+
+	// C2: Type docstrings attached to type nodes
+	t.Run("type_docstrings", func(t *testing.T) {
+		var foundPetDoc bool
+		for _, mt := range manifest.Types {
+			if strings.HasSuffix(mt.ID, "Pet") && mt.Kind == "struct" {
+				if mt.Doc != "" {
+					foundPetDoc = true
+					if !strings.Contains(mt.Doc, "represents a pet") {
+						t.Errorf("Pet type doc should mention 'represents a pet', got %q", mt.Doc)
+					}
+				}
+				break
+			}
+		}
+		if !foundPetDoc {
+			t.Error("expected Pet type to have doc comment")
+		}
+	})
+
+	// C3: Field docstrings attached to field entries
+	t.Run("field_docstrings", func(t *testing.T) {
+		var foundFieldDoc bool
+		for _, mt := range manifest.Types {
+			if strings.HasSuffix(mt.ID, "Pet") && mt.Kind == "struct" {
+				for _, f := range mt.Fields {
+					if f.JSONName == "id" && f.Doc != "" {
+						foundFieldDoc = true
+						if !strings.Contains(f.Doc, "unique identifier") {
+							t.Errorf("Pet.ID field doc should mention 'unique identifier', got %q", f.Doc)
+						}
+						break
+					}
+				}
+				break
+			}
+		}
+		if !foundFieldDoc {
+			t.Error("expected Pet.ID field to have doc comment")
+		}
+	})
+}
+
+// Test Group D: Validations for unsupported declarations
+
+func TestDiscover_InvalidBindings(t *testing.T) {
+	modDir := getModuleDir(t)
+
+	origDir, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("failed to get working directory: %v", err)
+	}
+	defer os.Chdir(origDir)
+
+	if err := os.Chdir(modDir); err != nil {
+		t.Fatalf("failed to change directory: %v", err)
+	}
+
+	// D1: Discovery fails with clear error for conflicting bindings
+	_, err = Discover("github.com/shipq/shipq/cmd/portsql-api-httpgen/testdata/openapi_invalid_bindings", "")
+	if err == nil {
+		t.Fatal("expected error for conflicting bindings, got nil")
+	}
+
+	// Error should mention the field or binding conflict
+	errStr := err.Error()
+	if !strings.Contains(errStr, "multiple binding") && !strings.Contains(errStr, "conflicting") && !strings.Contains(errStr, "path") {
+		t.Errorf("error should mention binding conflict, got %q", errStr)
+	}
+}
+
+func TestDiscover_NonStringMapKeys(t *testing.T) {
+	modDir := getModuleDir(t)
+
+	origDir, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("failed to get working directory: %v", err)
+	}
+	defer os.Chdir(origDir)
+
+	if err := os.Chdir(modDir); err != nil {
+		t.Fatalf("failed to change directory: %v", err)
+	}
+
+	// D2: Non-string map keys are flagged with warning (not failure)
+	manifest, err := Discover("github.com/shipq/shipq/cmd/portsql-api-httpgen/testdata/openapi_map_key_invalid", "")
+	if err != nil {
+		t.Fatalf("Discover should not fail for non-string map keys, got: %v", err)
+	}
+
+	// Check that there's a type with warnings about non-string keys
+	var foundWarning bool
+	for _, mt := range manifest.Types {
+		if mt.Kind == "map" && len(mt.Warnings) > 0 {
+			for _, w := range mt.Warnings {
+				if strings.Contains(w, "non-string") || strings.Contains(w, "int") {
+					foundWarning = true
+					break
+				}
+			}
+		}
+		// Also check if it's marked as unknown
+		if mt.Kind == "unknown" && len(mt.Warnings) > 0 {
+			foundWarning = true
+		}
+	}
+	if !foundWarning {
+		t.Error("expected warning for non-string map keys")
+	}
+}
+
+// Test Group E: Determinism
+
+func TestDiscover_TypeGraphDeterminism(t *testing.T) {
+	modDir := getModuleDir(t)
+
+	origDir, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("failed to get working directory: %v", err)
+	}
+	defer os.Chdir(origDir)
+
+	if err := os.Chdir(modDir); err != nil {
+		t.Fatalf("failed to change directory: %v", err)
+	}
+
+	// Run discovery twice
+	manifest1, err := Discover("github.com/shipq/shipq/cmd/portsql-api-httpgen/testdata/openapi_types_happy", "")
+	if err != nil {
+		t.Fatalf("first Discover failed: %v", err)
+	}
+
+	manifest2, err := Discover("github.com/shipq/shipq/cmd/portsql-api-httpgen/testdata/openapi_types_happy", "")
+	if err != nil {
+		t.Fatalf("second Discover failed: %v", err)
+	}
+
+	// E1: Types should be in the same order
+	if len(manifest1.Types) != len(manifest2.Types) {
+		t.Fatalf("type counts differ: %d vs %d", len(manifest1.Types), len(manifest2.Types))
+	}
+
+	// Extract type IDs and compare order
+	ids1 := make([]string, len(manifest1.Types))
+	ids2 := make([]string, len(manifest2.Types))
+	for i := range manifest1.Types {
+		ids1[i] = manifest1.Types[i].ID
+		ids2[i] = manifest2.Types[i].ID
+	}
+
+	// Check that IDs are sorted (our determinism guarantee)
+	if !sort.StringsAreSorted(ids1) {
+		t.Error("types in first manifest should be sorted by ID")
+	}
+	if !sort.StringsAreSorted(ids2) {
+		t.Error("types in second manifest should be sorted by ID")
+	}
+
+	// Check equality
+	if !reflect.DeepEqual(ids1, ids2) {
+		t.Errorf("type IDs differ between runs:\nfirst:  %v\nsecond: %v", ids1, ids2)
+	}
+
+	// Check field ordering within types is deterministic
+	for i := range manifest1.Types {
+		t1 := manifest1.Types[i]
+		t2 := manifest2.Types[i]
+		if len(t1.Fields) != len(t2.Fields) {
+			t.Errorf("field counts differ for type %s: %d vs %d", t1.ID, len(t1.Fields), len(t2.Fields))
+			continue
+		}
+		for j := range t1.Fields {
+			if t1.Fields[j].GoName != t2.Fields[j].GoName {
+				t.Errorf("field order differs for type %s at index %d: %s vs %s",
+					t1.ID, j, t1.Fields[j].GoName, t2.Fields[j].GoName)
+			}
+		}
 	}
 }
