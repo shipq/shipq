@@ -580,3 +580,78 @@ The generator validates your API surface:
 * Middleware used by endpoints is properly declared
 
 Errors are caught before runtime, not at server startup.
+
+== OpenAPI and API Documentation
+
+PortAPI can generate an OpenAPI 3.0.3 specification from your registered endpoints and Go types. The same source of truth that drives code generation also produces accurate API documentation—no separate schema files to maintain.
+
+=== Enabling OpenAPI Generation
+
+Add these settings to your `portsql-api-httpgen.ini`:
+
+[source,ini]
+----
+[httpgen]
+package = ./api
+
+# Enable OpenAPI JSON generation
+openapi = true
+openapi_output = openapi.json       # Output filename (default)
+openapi_title = My API              # API title (defaults to package name)
+openapi_version = 1.0.0             # API version (defaults to 0.0.0)
+openapi_description = My API docs   # Optional description
+openapi_servers = http://localhost:8080, https://api.example.com
+----
+
+Running the generator will produce an `openapi.json` file alongside your generated code. The specification includes:
+
+* All registered endpoints with their HTTP methods and paths
+* Request parameters extracted from `path:`, `query:`, and `header:` struct tags
+* Request body schemas for handlers that accept JSON
+* Response schemas derived from your Go return types
+* Error response schemas (400, 500) where applicable
+* Operation IDs and tags derived from handler names and paths
+
+=== Interactive API Documentation UI
+
+PortAPI includes built-in support for serving interactive API documentation using Stoplight Elements. Enable it by adding:
+
+[source,ini]
+----
+[httpgen]
+package = ./api
+
+docs_ui = true                      # Enable docs UI (implies openapi=true)
+docs_path = /docs                   # Where to serve the UI
+openapi_json_path = /openapi.json   # Where to serve the spec (default)
+----
+
+This generates a `zz_generated_openapi.go` file with a `RegisterDocs` function:
+
+[source,go]
+----
+func main() {
+    mux := http.NewServeMux()
+
+    // Register your API endpoints
+    api.RegisterRoutes(mux)
+
+    // Register docs UI endpoints
+    api.RegisterDocs(mux)
+
+    http.ListenAndServe(":8080", mux)
+}
+----
+
+Your API documentation will be available at `/docs/`, with the raw OpenAPI spec at `/openapi.json`. The UI is fully self-contained—all assets are embedded in the generated code with no external CDN dependencies.
+
+=== How It Works
+
+The OpenAPI generator reads the discovery manifest that the code generator already produces. This manifest contains:
+
+* Endpoint paths, methods, and handler metadata
+* Request/response type information with full field details
+* Struct tag bindings (path, query, header, JSON)
+* Middleware metadata including possible error responses
+
+Because OpenAPI generation uses the same manifest as code generation, your documentation always matches your implementation. Change a handler's signature or add a new endpoint, and the next generator run updates both the routing code and the API spec.
