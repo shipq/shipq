@@ -407,7 +407,7 @@ func TestAlterTableAllColumnTypes(t *testing.T) {
 	alt.Float("float_col")
 	alt.Bool("bool_col")
 	alt.String("string_col")
-	alt.Varchar("varchar_col", 100)
+	alt.VarChar("varchar_col", 100)
 	alt.Text("text_col")
 	alt.Datetime("datetime_col")
 	alt.Timestamp("timestamp_col")

@@ -403,8 +403,8 @@ func (ab *AlterTableBuilder) String(name string) *AlterStringColumnBuilder {
 	}
 }
 
-// Varchar adds a string column with specified length.
-func (ab *AlterTableBuilder) Varchar(name string, length int) *AlterStringColumnBuilder {
+// VarChar adds a string column with specified length.
+func (ab *AlterTableBuilder) VarChar(name string, length int) *AlterStringColumnBuilder {
 	col := ColumnDefinition{
 		Name:       name,
 		Type:       StringType,

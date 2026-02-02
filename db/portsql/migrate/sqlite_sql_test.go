@@ -49,9 +49,9 @@ func TestSQLite_CreateTable_String(t *testing.T) {
 	}
 }
 
-func TestSQLite_CreateTable_Varchar(t *testing.T) {
+func TestSQLite_CreateTable_VarChar(t *testing.T) {
 	tb := ddl.MakeEmptyTable("test_table")
-	tb.Varchar("code", 50)
+	tb.VarChar("code", 50)
 	table := tb.Build()
 
 	sql := generateSQLiteCreateTable(table)
@@ -563,7 +563,7 @@ func TestSQLite_DropTable_QuotesIdentifier(t *testing.T) {
 func TestSQLite_TextForStrings(t *testing.T) {
 	tb := ddl.MakeEmptyTable("test_table")
 	tb.String("name")      // Should become TEXT
-	tb.Varchar("code", 50) // Should become TEXT (no VARCHAR in SQLite)
+	tb.VarChar("code", 50) // Should become TEXT (no VARCHAR in SQLite)
 	tb.Text("bio")         // Should become TEXT
 	table := tb.Build()
 

@@ -680,7 +680,7 @@ func addColumnToBuilder(tb *ddl.TableBuilder, col ddl.ColumnDefinition) error {
 	case ddl.StringType:
 		var b *ddl.StringColumnBuilder
 		if col.Length != nil {
-			b = tb.Varchar(col.Name, *col.Length)
+			b = tb.VarChar(col.Name, *col.Length)
 		} else {
 			b = tb.String(col.Name)
 		}

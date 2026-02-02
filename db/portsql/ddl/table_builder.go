@@ -284,8 +284,8 @@ func (tb *TableBuilder) String(name string) *StringColumnBuilder {
 	}
 }
 
-// Varchar adds a string column with specified length.
-func (tb *TableBuilder) Varchar(name string, length int) *StringColumnBuilder {
+// VarChar adds a string column with specified length.
+func (tb *TableBuilder) VarChar(name string, length int) *StringColumnBuilder {
 	col := ColumnDefinition{
 		Name:       name,
 		Type:       StringType,

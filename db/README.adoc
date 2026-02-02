@@ -283,14 +283,14 @@ import (
 
 func (s *Server) GetUser(ctx context.Context, email string) (*queries.GetUserByEmailResult, error) {
     runner := sqlite.NewQueryRunner(s.db)  // No dialect parameter needed!
-    
+
     // Type-safe method with automatic scanning
     return runner.GetUserByEmail(ctx, queries.GetUserByEmailParams{Email: email})
 }
 
 func (s *Server) ListPosts(ctx context.Context, limit, offset int) ([]queries.ListRecentPostsResult, error) {
     runner := sqlite.NewQueryRunner(s.db)
-    
+
     return runner.ListRecentPosts(ctx, queries.ListRecentPostsParams{
         Limit:  limit,
         Offset: offset,
@@ -336,7 +336,7 @@ PortSQL supports the following column types in your schema definitions:
 | `Decimal(name, precision, scale)` | DECIMAL(p,s) | `string` | `*string`
 | `Bool(name)` | BOOLEAN | `bool` | `*bool`
 | `String(name)` | VARCHAR(255) | `string` | `*string`
-| `Varchar(name, length)` | VARCHAR(length) | `string` | `*string`
+| `VarChar(name, length)` | VARCHAR(length) | `string` | `*string`
 | `Text(name)` | TEXT | `string` | `*string`
 | `Datetime(name)` | TIMESTAMP WITH TIME ZONE | `time.Time` | `*time.Time`
 | `Timestamp(name)` | TIMESTAMP WITH TIME ZONE | `time.Time` | `*time.Time`
@@ -672,7 +672,7 @@ With `scope = org_id`:
 -- GetUser
 SELECT ... FROM users WHERE public_id = ? AND org_id = ? AND deleted_at IS NULL
 
--- ListUsers  
+-- ListUsers
 SELECT ... FROM users WHERE org_id = ? AND deleted_at IS NULL ORDER BY created_at DESC LIMIT ? OFFSET ?
 
 -- InsertUser

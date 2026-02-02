@@ -178,24 +178,24 @@ func TestString(t *testing.T) {
 	}
 }
 
-func TestVarchar(t *testing.T) {
+func TestVarChar(t *testing.T) {
 	tests := []struct {
 		name       string
 		length     int
 		wantLength int
 	}{
 		{
-			name:       "Varchar sets length to 100",
+			name:       "VarChar sets length to 100",
 			length:     100,
 			wantLength: 100,
 		},
 		{
-			name:       "Varchar sets length to 21 (nanoid)",
+			name:       "VarChar sets length to 21 (nanoid)",
 			length:     21,
 			wantLength: 21,
 		},
 		{
-			name:       "Varchar sets length to 500",
+			name:       "VarChar sets length to 500",
 			length:     500,
 			wantLength: 500,
 		},
@@ -204,7 +204,7 @@ func TestVarchar(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			tb := MakeEmptyTable("test")
-			tb.Varchar("field", tt.length)
+			tb.VarChar("field", tt.length)
 			table := tb.Build()
 
 			if len(table.Columns) != 1 {
@@ -461,9 +461,9 @@ func TestDefaultValues(t *testing.T) {
 func TestMultipleColumns(t *testing.T) {
 	tb := MakeEmptyTable("users")
 	tb.Bigint("id").PrimaryKey()
-	tb.Varchar("public_id", 21).Unique()
+	tb.VarChar("public_id", 21).Unique()
 	tb.String("email").Unique()
-	tb.Varchar("name", 100)
+	tb.VarChar("name", 100)
 	tb.Text("bio").Nullable()
 	tb.Bool("active").Default(true)
 	tb.Integer("login_count").Default(0)

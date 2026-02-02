@@ -47,9 +47,9 @@ func TestMySQL_CreateTable_String(t *testing.T) {
 	}
 }
 
-func TestMySQL_CreateTable_Varchar(t *testing.T) {
+func TestMySQL_CreateTable_VarChar(t *testing.T) {
 	tb := ddl.MakeEmptyTable("test_table")
-	tb.Varchar("code", 50)
+	tb.VarChar("code", 50)
 	table := tb.Build()
 
 	sql := generateMySQLCreateTable(table)
