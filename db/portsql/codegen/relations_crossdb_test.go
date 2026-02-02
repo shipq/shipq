@@ -11,10 +11,10 @@ import (
 	"sort"
 	"testing"
 
+	_ "github.com/go-sql-driver/mysql"
 	"github.com/jackc/pgx/v5"
 	"github.com/shipq/shipq/db/portsql/ddl"
 	"github.com/shipq/shipq/db/portsql/migrate"
-	_ "github.com/go-sql-driver/mysql"
 	_ "modernc.org/sqlite"
 )
 

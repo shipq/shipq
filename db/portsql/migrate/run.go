@@ -102,7 +102,6 @@ func runMigrationInTransaction(ctx context.Context, db *sql.DB, dialect, name, s
 	return nil
 }
 
-
 // DetectDialect attempts to detect the database dialect from a *sql.DB.
 // It uses the driver name to determine the dialect.
 func DetectDialect(db *sql.DB) (string, error) {

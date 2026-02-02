@@ -362,7 +362,13 @@ func NormalizeDDLType(ddlType string) string {
 }
 
 // NormalizeDDLColumn converts a DDL ColumnDefinition to a NormalizedColumn.
-func NormalizeDDLColumn(col interface{ GetName() string; GetType() string; IsNullable() bool; IsPrimaryKey() bool; GetDefault() string }) NormalizedColumn {
+func NormalizeDDLColumn(col interface {
+	GetName() string
+	GetType() string
+	IsNullable() bool
+	IsPrimaryKey() bool
+	GetDefault() string
+}) NormalizedColumn {
 	return NormalizedColumn{
 		Name:       col.GetName(),
 		BaseType:   NormalizeDDLType(col.GetType()),

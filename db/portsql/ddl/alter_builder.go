@@ -318,14 +318,14 @@ func (ab *AlterTableBuilder) Bigint(name string) *AlterIntColumnBuilder {
 // Decimal adds a decimal column with specified precision and scale.
 func (ab *AlterTableBuilder) Decimal(name string, precision int, scale int) *AlterDecimalColumnBuilder {
 	col := ColumnDefinition{
-		Name:      name,
-		Type:      DecimalType,
-		Precision: &precision,
-		Scale:     &scale,
-		Nullable:  false,
-		Unique:    false,
+		Name:       name,
+		Type:       DecimalType,
+		Precision:  &precision,
+		Scale:      &scale,
+		Nullable:   false,
+		Unique:     false,
 		PrimaryKey: false,
-		Index:     false,
+		Index:      false,
 	}
 	op := TableOperation{
 		Type:      OpAddColumn,

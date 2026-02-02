@@ -6,15 +6,15 @@ import (
 
 // Charsets for string generation
 const (
-	CharsetAlpha       = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ"
-	CharsetAlphaLower  = "abcdefghijklmnopqrstuvwxyz"
-	CharsetAlphaUpper  = "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
-	CharsetDigits      = "0123456789"
-	CharsetAlphaNum    = CharsetAlpha + CharsetDigits
-	CharsetHex         = "0123456789abcdef"
-	CharsetPrintable   = CharsetAlphaNum + " !\"#$%&'()*+,-./:;<=>?@[\\]^_`{|}~"
-	CharsetIdentStart  = CharsetAlpha + "_"
-	CharsetIdentBody   = CharsetAlphaNum + "_"
+	CharsetAlpha      = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ"
+	CharsetAlphaLower = "abcdefghijklmnopqrstuvwxyz"
+	CharsetAlphaUpper = "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+	CharsetDigits     = "0123456789"
+	CharsetAlphaNum   = CharsetAlpha + CharsetDigits
+	CharsetHex        = "0123456789abcdef"
+	CharsetPrintable  = CharsetAlphaNum + " !\"#$%&'()*+,-./:;<=>?@[\\]^_`{|}~"
+	CharsetIdentStart = CharsetAlpha + "_"
+	CharsetIdentBody  = CharsetAlphaNum + "_"
 )
 
 // =============================================================================
@@ -276,38 +276,38 @@ func (g *Generator) EdgeCaseInt() int {
 // EdgeCaseString returns a string that's likely to trigger edge cases.
 func (g *Generator) EdgeCaseString() string {
 	edgeCases := []string{
-		"",                     // empty
-		" ",                    // single space
-		"  ",                   // multiple spaces
-		"\t",                   // tab
-		"\n",                   // newline
-		"\r\n",                 // CRLF
-		"'",                    // single quote
-		"''",                   // escaped single quote
-		`"`,                    // double quote
-		`""`,                   // escaped double quote
-		`\`,                    // backslash
-		`\\`,                   // escaped backslash
-		"it's",                 // apostrophe
-		`say "hello"`,          // embedded quotes
-		"line1\nline2",         // multiline
-		"col1\tcol2",           // tabs
-		"NULL",                 // SQL keyword
-		"null",                 // lowercase null
-		"true",                 // boolean keyword
-		"false",                // boolean keyword
-		"0",                    // numeric string
-		"-1",                   // negative numeric
-		"123.456",              // decimal string
-		"日本語",                // Japanese
-		"中文",                  // Chinese
-		"🎉",                   // emoji
-		"hello🎉world",         // mixed with emoji
-		"<script>",             // HTML-like
-		"--",                   // SQL comment
-		"/**/",                 // SQL block comment
-		"; DROP TABLE users;",  // SQL injection
-		"SELECT * FROM",        // SQL keywords
+		"",                      // empty
+		" ",                     // single space
+		"  ",                    // multiple spaces
+		"\t",                    // tab
+		"\n",                    // newline
+		"\r\n",                  // CRLF
+		"'",                     // single quote
+		"''",                    // escaped single quote
+		`"`,                     // double quote
+		`""`,                    // escaped double quote
+		`\`,                     // backslash
+		`\\`,                    // escaped backslash
+		"it's",                  // apostrophe
+		`say "hello"`,           // embedded quotes
+		"line1\nline2",          // multiline
+		"col1\tcol2",            // tabs
+		"NULL",                  // SQL keyword
+		"null",                  // lowercase null
+		"true",                  // boolean keyword
+		"false",                 // boolean keyword
+		"0",                     // numeric string
+		"-1",                    // negative numeric
+		"123.456",               // decimal string
+		"日本語",                   // Japanese
+		"中文",                    // Chinese
+		"🎉",                     // emoji
+		"hello🎉world",           // mixed with emoji
+		"<script>",              // HTML-like
+		"--",                    // SQL comment
+		"/**/",                  // SQL block comment
+		"; DROP TABLE users;",   // SQL injection
+		"SELECT * FROM",         // SQL keywords
 		string(make([]byte, 0)), // truly empty
 	}
 	// 70% chance of edge case, 30% chance of random

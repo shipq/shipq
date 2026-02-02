@@ -11,21 +11,21 @@ import (
 
 // ASTJson is the JSON-serializable form of AST.
 type ASTJson struct {
-	Kind       QueryKind          `json:"kind"`
-	Distinct   bool               `json:"distinct,omitempty"`
-	FromTable  TableRef           `json:"from_table"`
-	Joins      []JoinClauseJson   `json:"joins,omitempty"`
-	SelectCols []SelectExprJson   `json:"select_cols,omitempty"`
-	Where      *ExprJson          `json:"where,omitempty"`
-	GroupBy    []ColumnJson       `json:"group_by,omitempty"`
-	Having     *ExprJson          `json:"having,omitempty"`
-	OrderBy    []OrderByExprJson  `json:"order_by,omitempty"`
-	Limit      *ExprJson          `json:"limit,omitempty"`
-	Offset     *ExprJson          `json:"offset,omitempty"`
+	Kind       QueryKind         `json:"kind"`
+	Distinct   bool              `json:"distinct,omitempty"`
+	FromTable  TableRef          `json:"from_table"`
+	Joins      []JoinClauseJson  `json:"joins,omitempty"`
+	SelectCols []SelectExprJson  `json:"select_cols,omitempty"`
+	Where      *ExprJson         `json:"where,omitempty"`
+	GroupBy    []ColumnJson      `json:"group_by,omitempty"`
+	Having     *ExprJson         `json:"having,omitempty"`
+	OrderBy    []OrderByExprJson `json:"order_by,omitempty"`
+	Limit      *ExprJson         `json:"limit,omitempty"`
+	Offset     *ExprJson         `json:"offset,omitempty"`
 
-	InsertCols []ColumnJson   `json:"insert_cols,omitempty"`
-	InsertVals []*ExprJson    `json:"insert_vals,omitempty"`
-	Returning  []ColumnJson   `json:"returning,omitempty"`
+	InsertCols []ColumnJson `json:"insert_cols,omitempty"`
+	InsertVals []*ExprJson  `json:"insert_vals,omitempty"`
+	Returning  []ColumnJson `json:"returning,omitempty"`
 
 	SetClauses []SetClauseJson `json:"set_clauses,omitempty"`
 
