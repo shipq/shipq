@@ -50,7 +50,7 @@ func TestMonorepo_ModulePathFromSubpackages(t *testing.T) {
 			subDir:       filepath.Join("service-mysql", "migrations"),
 			wantModule:   "github.com/test/monorepo",
 			wantRoot:     monorepo.rootDir,
-			wantDialects: nil, // no portsql.ini in migrations dir
+			wantDialects: nil, // no shipq.ini in migrations dir
 		},
 	}
 
@@ -152,7 +152,7 @@ func TestMonorepo_ImportPathCalculation(t *testing.T) {
 }
 
 // TestMonorepo_DialectConfiguration verifies that each subpackage can have
-// its own dialect configuration via portsql.ini.
+// its own dialect configuration via shipq.ini.
 func TestMonorepo_DialectConfiguration(t *testing.T) {
 	// Save and restore cwd
 	origDir, err := os.Getwd()
@@ -256,16 +256,15 @@ func setupTestMonorepo(t *testing.T) *testMonorepo {
 		t.Fatal(err)
 	}
 
-	mysqlConfig := `[database]
+	// Use shipq.ini with [db] section
+	mysqlConfig := `[db]
 dialects = mysql
-
-[paths]
 migrations = migrations
 schematypes = schematypes
 queries_in = querydef
 queries_out = queries
 `
-	if err := os.WriteFile(filepath.Join(serviceMysql, "portsql.ini"), []byte(mysqlConfig), 0644); err != nil {
+	if err := os.WriteFile(filepath.Join(serviceMysql, "shipq.ini"), []byte(mysqlConfig), 0644); err != nil {
 		os.RemoveAll(tmpDir)
 		t.Fatal(err)
 	}
@@ -285,16 +284,15 @@ queries_out = queries
 		t.Fatal(err)
 	}
 
-	sqliteConfig := `[database]
+	// Use shipq.ini with [db] section
+	sqliteConfig := `[db]
 dialects = sqlite
-
-[paths]
 migrations = migrations
 schematypes = schematypes
 queries_in = querydef
 queries_out = queries
 `
-	if err := os.WriteFile(filepath.Join(serviceSqlite, "portsql.ini"), []byte(sqliteConfig), 0644); err != nil {
+	if err := os.WriteFile(filepath.Join(serviceSqlite, "shipq.ini"), []byte(sqliteConfig), 0644); err != nil {
 		os.RemoveAll(tmpDir)
 		t.Fatal(err)
 	}

@@ -655,3 +655,87 @@ The OpenAPI generator reads the discovery manifest that the code generator alrea
 * Middleware metadata including possible error responses
 
 Because OpenAPI generation uses the same manifest as code generation, your documentation always matches your implementation. Change a handler's signature or add a new endpoint, and the next generator run updates both the routing code and the API spec.
+
+== Test Client Generation
+
+PortAPI can generate a type-safe test client for integration testing. The test client provides:
+
+* Typed request/response methods for each endpoint
+* Automatic error handling with `portapi.CodedError` for API errors
+* Test harness helpers (`NewTestServer`, `NewTestClient`) for easy setup
+
+=== Enabling Test Client Generation
+
+Add to your configuration:
+
+[source,ini]
+----
+[httpgen]
+package = ./api
+test_client = true                              # Enable test client generation
+test_client_filename = zz_generated_testclient_test.go  # Optional: customize filename
+----
+
+This generates two files:
+
+* `zz_generated_testclient_test.go` - The typed client with endpoint methods
+* `zz_generated_testharness_test.go` - Helpers for spinning up test servers
+
+=== Writing Integration Tests
+
+[source,go]
+----
+func TestCreatePet(t *testing.T) {
+    // Create server using generated NewMux()
+    ts := NewTestServer(t)  // Uses t.Cleanup for automatic shutdown
+
+    // Create client bound to the test server
+    client := NewTestClient(ts)
+
+    // Call endpoints with typed requests
+    resp, err := client.CreatePet(context.Background(), CreatePetReq{
+        Name: "Fluffy",
+        Age:  3,
+    })
+    require.NoError(t, err)
+    require.Equal(t, "Fluffy", resp.Name)
+}
+----
+
+=== Asserting on API Errors
+
+Non-2xx responses are returned as `portapi.CodedError`, making it easy to assert on error codes:
+
+[source,go]
+----
+func TestGetPet_NotFound(t *testing.T) {
+    ts := NewTestServer(t)
+    client := NewTestClient(ts)
+
+    _, err := client.GetPet(context.Background(), GetPetReq{
+        ID: "nonexistent",
+    })
+    require.Error(t, err)
+
+    // Check that it's an API error with expected code
+    var ce portapi.CodedError
+    require.True(t, errors.As(err, &ce))
+    require.Equal(t, 404, ce.StatusCode())
+    require.Equal(t, "not_found", ce.ErrorCode())
+}
+----
+
+=== Generated Client Features
+
+The generated client includes:
+
+* `NewClient(baseURL string) *Client` - Create a client with any base URL
+* `NewTestClient(ts *httptest.Server) *Client` - Create a client for test servers (uses `ts.Client()` for proper cookie/redirect handling)
+* `NewTestServer(t *testing.T) *httptest.Server` - Create a test server with all routes registered and automatic cleanup
+
+Each endpoint method:
+
+* Takes a typed request struct (with path, query, header, and body bindings)
+* Returns the typed response and an error
+* Handles path interpolation, query encoding, and header binding automatically
+* Returns `portapi.HTTPError` (satisfying `portapi.CodedError`) for non-2xx responses

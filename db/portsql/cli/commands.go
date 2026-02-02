@@ -208,14 +208,12 @@ Flags:
   --version, -v        Show version information
 
 Configuration:
-  portsql looks for a portsql.ini file in the current directory.
+  portsql looks for a shipq.ini file in the current directory.
   If not found, it uses DATABASE_URL environment variable for the database URL.
 
-  Example portsql.ini:
-    [database]
+  Example shipq.ini:
+    [db]
     url = postgres://localhost/myapp
-
-    [paths]
     migrations = migrations
     schematypes = schematypes
     queries_in = querydef

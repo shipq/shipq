@@ -1,4 +1,4 @@
-PROJECT_DIR := "$HOME/Documents/GitHub/portsql/portsql"
+PROJECT_DIR := "$HOME/Documents/GitHub/shipq/shipq"
 
 start-cursor:  # Launch a Terminal on MacOS and open cursor.
     osascript -e 'tell application "Terminal"' \

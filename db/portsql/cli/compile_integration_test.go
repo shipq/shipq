@@ -64,10 +64,10 @@ func init() {
 		t.Fatalf("failed to create queries dir: %v", err)
 	}
 
-	// Write portsql.ini if config provided
+	// Write shipq.ini if config provided
 	if config != "" {
-		if err := os.WriteFile(filepath.Join(tmpDir, "portsql.ini"), []byte(config), 0644); err != nil {
-			t.Fatalf("failed to write portsql.ini: %v", err)
+		if err := os.WriteFile(filepath.Join(tmpDir, "shipq.ini"), []byte(config), 0644); err != nil {
+			t.Fatalf("failed to write shipq.ini: %v", err)
 		}
 	}
 
@@ -150,7 +150,7 @@ func TestIntegration_CRUDTableDetection(t *testing.T) {
 
 func TestIntegration_LoadSchema(t *testing.T) {
 	schema := createAddTableSchema("users", "orders")
-	tmpDir := setupTestProject(t, schema, `[database]
+	tmpDir := setupTestProject(t, schema, `[db]
 url = sqlite:./test.db
 `)
 
@@ -183,10 +183,8 @@ func TestIntegration_CRUDWithScope_GeneratesCorrectSQL(t *testing.T) {
 	})
 	schema.Schema.Tables["users"] = usersTable
 
-	tmpDir := setupTestProject(t, schema, `[database]
+	tmpDir := setupTestProject(t, schema, `[db]
 url = sqlite:./test.db
-
-[crud]
 scope = org_id
 `)
 
@@ -221,10 +219,8 @@ func TestIntegration_CRUDPerTableScope(t *testing.T) {
 	})
 	schema.Schema.Tables["orders"] = ordersTable
 
-	tmpDir := setupTestProject(t, schema, `[database]
+	tmpDir := setupTestProject(t, schema, `[db]
 url = sqlite:./test.db
-
-[crud]
 scope = org_id
 
 [crud.orders]
@@ -288,7 +284,7 @@ func TestIntegration_SQLiteCRUD_EndToEnd(t *testing.T) {
 	// Test SELECT with scope
 	var name, email string
 	err = db.QueryRowContext(ctx, `
-		SELECT name, email FROM users 
+		SELECT name, email FROM users
 		WHERE public_id = ? AND org_id = ? AND deleted_at IS NULL
 	`, publicID, 1).Scan(&name, &email)
 	if err != nil {
@@ -317,10 +313,8 @@ func TestIntegration_SQLiteCRUD_EndToEnd(t *testing.T) {
 
 func TestIntegration_GeneratedCodeContainsExpectedTypes(t *testing.T) {
 	schema := createAddTableSchema("users")
-	tmpDir := setupTestProject(t, schema, `[database]
+	tmpDir := setupTestProject(t, schema, `[db]
 url = sqlite:./test.db
-
-[crud]
 scope = org_id
 `)
 
@@ -388,10 +382,8 @@ func TestIntegration_CursorPagination_GeneratedCode(t *testing.T) {
 	// Create schema with AddTable-style tables (has created_at and public_id)
 	schema := createAddTableSchema("users")
 
-	config := `[database]
+	config := `[db]
 url = sqlite:test.db
-
-[paths]
 queries_out = queries
 `
 
@@ -481,7 +473,7 @@ func TestIntegration_CursorPagination_RunnerCode(t *testing.T) {
 	// Create schema with AddTable-style tables
 	schema := createAddTableSchema("users")
 
-	config := `[database]
+	config := `[db]
 url = sqlite:test.db
 `
 
@@ -551,7 +543,7 @@ func TestIntegration_CursorPagination_OrderDirection(t *testing.T) {
 
 	schema := createAddTableSchema("audit_logs")
 
-	config := `[database]
+	config := `[db]
 url = sqlite:test.db
 
 [crud.audit_logs]

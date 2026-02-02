@@ -3,36 +3,13 @@ package cli
 import (
 	"fmt"
 	"os"
-	"path/filepath"
 	"strings"
 
-	"github.com/shipq/shipq/inifile"
+	"github.com/shipq/shipq/internal/config"
 )
 
 // ValidDialects is the list of supported database dialects.
 var ValidDialects = []string{"postgres", "mysql", "sqlite"}
-
-// normalizeDialect normalizes and validates a dialect string.
-// Returns the normalized dialect (lowercased, trimmed) or an error if invalid.
-// Returns empty string for empty input (to allow filtering).
-func normalizeDialect(s string) (string, error) {
-	d := strings.ToLower(strings.TrimSpace(s))
-	if d == "" {
-		return "", nil // Will be filtered out by caller
-	}
-	switch d {
-	case "postgres", "mysql", "sqlite":
-		return d, nil
-	default:
-		return "", fmt.Errorf(
-			"invalid dialect %q in portsql.ini\n"+
-				"  Supported dialects: postgres, mysql, sqlite\n"+
-				"  Example: dialects = postgres, sqlite\n"+
-				"  Hint: Check for typos or extra spaces",
-			s,
-		)
-	}
-}
 
 // Config holds the portsql configuration.
 type Config struct {
@@ -149,94 +126,67 @@ func DefaultConfig() *Config {
 	}
 }
 
-// LoadConfig reads portsql.ini if present, falls back to defaults + DATABASE_URL.
-// The configPath parameter specifies the directory to look for portsql.ini.
+// LoadConfig reads shipq.ini and returns a Config.
+// The configPath parameter specifies the directory to look for shipq.ini.
 // If empty, it defaults to the current working directory.
 func LoadConfig(configPath string) (*Config, error) {
-	cfg := DefaultConfig()
-
-	if configPath == "" {
-		var err error
-		configPath, err = os.Getwd()
-		if err != nil {
-			return nil, err
-		}
-	}
-
-	iniPath := filepath.Join(configPath, "portsql.ini")
-	if _, err := os.Stat(iniPath); os.IsNotExist(err) {
-		// No config file, use defaults
-		return cfg, nil
-	}
-
-	f, err := inifile.ParseFile(iniPath)
+	shipqCfg, err := config.Load(configPath)
 	if err != nil {
 		return nil, err
 	}
 
-	// [database] section
-	if url := f.Get("database", "url"); url != "" {
-		cfg.Database.URL = url
+	return ConfigFromShipq(shipqCfg), nil
+}
+
+// ConfigFromShipq converts a unified ShipqConfig to a PortSQL Config.
+func ConfigFromShipq(shipqCfg *config.ShipqConfig) *Config {
+	cfg := DefaultConfig()
+
+	// Map DB settings
+	cfg.Database.URL = shipqCfg.DB.URL
+	cfg.Database.Dialects = shipqCfg.DB.Dialects
+
+	// Map paths
+	cfg.Paths.Migrations = shipqCfg.DB.Migrations
+	cfg.Paths.Schematypes = shipqCfg.DB.Schematypes
+	cfg.Paths.QueriesIn = shipqCfg.DB.QueriesIn
+	cfg.Paths.QueriesOut = shipqCfg.DB.QueriesOut
+
+	// Map CRUD settings
+	cfg.CRUD.GlobalScope = shipqCfg.DB.GlobalScope
+	cfg.CRUD.GlobalOrder = shipqCfg.DB.GlobalOrder
+	cfg.CRUD.TableScopes = shipqCfg.DB.TableScopes
+	cfg.CRUD.TableOrders = shipqCfg.DB.TableOrders
+
+	// Ensure maps are initialized
+	if cfg.CRUD.TableScopes == nil {
+		cfg.CRUD.TableScopes = make(map[string]string)
 	}
-	if dialectsStr := f.Get("database", "dialects"); dialectsStr != "" {
-		parts := strings.Split(dialectsStr, ",")
-		var dialects []string
-		for _, part := range parts {
-			d, err := normalizeDialect(part)
-			if err != nil {
-				return nil, err
-			}
-			if d != "" { // Filter out empty entries (e.g., trailing comma)
-				dialects = append(dialects, d)
-			}
-		}
-		cfg.Database.Dialects = dialects
+	if cfg.CRUD.TableOrders == nil {
+		cfg.CRUD.TableOrders = make(map[string]string)
 	}
 
-	// [paths] section
-	if v := f.Get("paths", "migrations"); v != "" {
-		cfg.Paths.Migrations = v
-	}
-	if v := f.Get("paths", "schematypes"); v != "" {
-		cfg.Paths.Schematypes = v
-	}
-	if v := f.Get("paths", "queries_in"); v != "" {
-		cfg.Paths.QueriesIn = v
-	}
-	if v := f.Get("paths", "queries_out"); v != "" {
-		cfg.Paths.QueriesOut = v
-	}
+	return cfg
+}
 
-	// [crud] section
-	if v := f.Get("crud", "scope"); v != "" {
-		cfg.CRUD.GlobalScope = v
+// normalizeDialect normalizes and validates a dialect string.
+// Returns the normalized dialect (lowercased, trimmed) or an error if invalid.
+// Returns empty string for empty input (to allow filtering).
+func normalizeDialect(s string) (string, error) {
+	d := strings.ToLower(strings.TrimSpace(s))
+	if d == "" {
+		return "", nil // Will be filtered out by caller
 	}
-	if v := f.Get("crud", "order"); v != "" {
-		cfg.CRUD.GlobalOrder = v
+	switch d {
+	case "postgres", "mysql", "sqlite":
+		return d, nil
+	default:
+		return "", fmt.Errorf(
+			"invalid dialect %q in shipq.ini\n"+
+				"  Supported dialects: postgres, mysql, sqlite\n"+
+				"  Example: dialects = postgres, sqlite\n"+
+				"  Hint: Check for typos or extra spaces",
+			s,
+		)
 	}
-
-	// [crud.tablename] sections
-	for _, section := range f.SectionsWithPrefix("crud.") {
-		tableName := strings.TrimPrefix(section.Name, "crud.")
-		// Check if scope key exists (even if empty value)
-		if section.HasKey("scope") {
-			if cfg.CRUD.TableScopes == nil {
-				cfg.CRUD.TableScopes = make(map[string]string)
-			}
-			cfg.CRUD.TableScopes[tableName] = section.Get("scope")
-		}
-		if order := section.Get("order"); order != "" {
-			if cfg.CRUD.TableOrders == nil {
-				cfg.CRUD.TableOrders = make(map[string]string)
-			}
-			cfg.CRUD.TableOrders[tableName] = order
-		}
-	}
-
-	// If database URL is still empty, try DATABASE_URL env var
-	if cfg.Database.URL == "" {
-		cfg.Database.URL = os.Getenv("DATABASE_URL")
-	}
-
-	return cfg, nil
 }

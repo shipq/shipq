@@ -91,6 +91,11 @@ func TestRunMigrateNewWithTempDir(t *testing.T) {
 	}
 	defer os.Chdir(originalDir)
 
+	// Create shipq.ini (required)
+	if err := os.WriteFile("shipq.ini", []byte("[db]\n"), 0644); err != nil {
+		t.Fatalf("failed to write shipq.ini: %v", err)
+	}
+
 	stdout := &bytes.Buffer{}
 	stderr := &bytes.Buffer{}
 
@@ -157,6 +162,11 @@ func TestRunMigrateUpNoDatabase(t *testing.T) {
 	}
 	defer os.Chdir(originalDir)
 
+	// Create shipq.ini (required)
+	if err := os.WriteFile("shipq.ini", []byte("[db]\n"), 0644); err != nil {
+		t.Fatalf("failed to write shipq.ini: %v", err)
+	}
+
 	// Clear DATABASE_URL if set
 	originalURL := os.Getenv("DATABASE_URL")
 	os.Unsetenv("DATABASE_URL")
@@ -198,6 +208,11 @@ func TestRunMigrateResetRefusesRemote(t *testing.T) {
 		t.Fatalf("failed to change to temp directory: %v", err)
 	}
 	defer os.Chdir(originalDir)
+
+	// Create shipq.ini (required)
+	if err := os.WriteFile("shipq.ini", []byte("[db]\n"), 0644); err != nil {
+		t.Fatalf("failed to write shipq.ini: %v", err)
+	}
 
 	// Set a remote DATABASE_URL
 	originalURL := os.Getenv("DATABASE_URL")
@@ -243,6 +258,11 @@ func TestRunCompileNoDatabase(t *testing.T) {
 	}
 	defer os.Chdir(originalDir)
 
+	// Create shipq.ini (required)
+	if err := os.WriteFile("shipq.ini", []byte("[db]\n"), 0644); err != nil {
+		t.Fatalf("failed to write shipq.ini: %v", err)
+	}
+
 	// Clear DATABASE_URL if set
 	originalURL := os.Getenv("DATABASE_URL")
 	os.Unsetenv("DATABASE_URL")
@@ -284,6 +304,11 @@ func TestRunCompileNoQueries(t *testing.T) {
 		t.Fatalf("failed to change to temp directory: %v", err)
 	}
 	defer os.Chdir(originalDir)
+
+	// Create shipq.ini (required)
+	if err := os.WriteFile("shipq.ini", []byte("[db]\n"), 0644); err != nil {
+		t.Fatalf("failed to write shipq.ini: %v", err)
+	}
 
 	// Set DATABASE_URL
 	originalURL := os.Getenv("DATABASE_URL")

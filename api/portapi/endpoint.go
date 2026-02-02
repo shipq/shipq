@@ -8,6 +8,40 @@ import (
 	"strings"
 )
 
+// extractHandlerInfo extracts package and name from a handler function using reflection.
+func extractHandlerInfo(handler any) (pkg, name string) {
+	if handler == nil {
+		return "", ""
+	}
+
+	fnVal := reflect.ValueOf(handler)
+	if fnVal.Kind() != reflect.Func {
+		return "", ""
+	}
+
+	ptr := fnVal.Pointer()
+	fnInfo := runtime.FuncForPC(ptr)
+	if fnInfo == nil {
+		return "", ""
+	}
+
+	fullName := fnInfo.Name()
+	// Format is typically: "path/to/package.FuncName" or "path/to/package.(*Type).Method"
+	lastSlash := strings.LastIndex(fullName, "/")
+	lastDot := strings.LastIndex(fullName, ".")
+
+	if lastDot > lastSlash {
+		pkg = fullName[:lastDot]
+		name = fullName[lastDot+1:]
+	} else {
+		// No package path (e.g., main package or builtin)
+		pkg = ""
+		name = fullName
+	}
+
+	return pkg, name
+}
+
 // MiddlewareRef represents a stable identity reference to a middleware function.
 type MiddlewareRef struct {
 	Pkg  string // import path of the package containing the middleware
@@ -88,7 +122,16 @@ func NewEndpoint(method, path string, handler any) (Endpoint, error) {
 		p = strings.TrimSuffix(p, "/")
 	}
 
-	return Endpoint{Method: m, Path: p, Handler: handler}, nil
+	// Extract handler info via reflection
+	handlerPkg, handlerName := extractHandlerInfo(handler)
+
+	return Endpoint{
+		Method:      m,
+		Path:        p,
+		Handler:     handler,
+		HandlerPkg:  handlerPkg,
+		HandlerName: handlerName,
+	}, nil
 }
 
 // pathVarRegex matches {name} or {name...} path variables

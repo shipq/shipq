@@ -27,31 +27,29 @@ func TestLoadConfigNoFile(t *testing.T) {
 	// Create a temp directory with no config file
 	tmpDir := t.TempDir()
 
-	cfg, err := LoadConfig(tmpDir)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
+	_, err := LoadConfig(tmpDir)
+	if err == nil {
+		t.Fatal("expected error when shipq.ini is missing")
 	}
 
-	// Should use defaults
-	if cfg.Paths.Migrations != "migrations" {
-		t.Errorf("expected default migrations path, got %q", cfg.Paths.Migrations)
+	// Error should mention shipq.ini
+	if !contains(err.Error(), "shipq.ini") {
+		t.Errorf("error should mention 'shipq.ini', got: %v", err)
 	}
 }
 
 func TestLoadConfigWithFile(t *testing.T) {
 	tmpDir := t.TempDir()
 
-	// Create a config file
-	iniContent := `[database]
+	// Create a shipq.ini config file
+	iniContent := `[db]
 url = postgres://localhost/testdb
-
-[paths]
 migrations = db/migrations
 schematypes = gen/types
 queries_in = sql/queries
 queries_out = gen/sql
 `
-	iniPath := filepath.Join(tmpDir, "portsql.ini")
+	iniPath := filepath.Join(tmpDir, "shipq.ini")
 	if err := os.WriteFile(iniPath, []byte(iniContent), 0644); err != nil {
 		t.Fatalf("failed to write ini file: %v", err)
 	}
@@ -81,6 +79,12 @@ queries_out = gen/sql
 func TestLoadConfigDatabaseURLFallback(t *testing.T) {
 	tmpDir := t.TempDir()
 
+	// Create an empty shipq.ini (required)
+	iniPath := filepath.Join(tmpDir, "shipq.ini")
+	if err := os.WriteFile(iniPath, []byte("[db]\n"), 0644); err != nil {
+		t.Fatalf("failed to write ini file: %v", err)
+	}
+
 	// Set DATABASE_URL env var
 	oldEnv := os.Getenv("DATABASE_URL")
 	os.Setenv("DATABASE_URL", "postgres://localhost/envdb")
@@ -105,10 +109,10 @@ func TestLoadConfigFileOverridesEnv(t *testing.T) {
 	defer os.Setenv("DATABASE_URL", oldEnv)
 
 	// Create a config file with different URL
-	iniContent := `[database]
+	iniContent := `[db]
 url = postgres://localhost/filedb
 `
-	iniPath := filepath.Join(tmpDir, "portsql.ini")
+	iniPath := filepath.Join(tmpDir, "shipq.ini")
 	if err := os.WriteFile(iniPath, []byte(iniContent), 0644); err != nil {
 		t.Fatalf("failed to write ini file: %v", err)
 	}
@@ -129,15 +133,14 @@ func TestLoadConfigComments(t *testing.T) {
 
 	// Config file with comments
 	iniContent := `# This is a comment
-[database]
+[db]
 ; This is also a comment
 url = postgres://localhost/testdb
 
-[paths]
 # Another comment
 migrations = custom_migrations
 `
-	iniPath := filepath.Join(tmpDir, "portsql.ini")
+	iniPath := filepath.Join(tmpDir, "shipq.ini")
 	if err := os.WriteFile(iniPath, []byte(iniContent), 0644); err != nil {
 		t.Fatalf("failed to write ini file: %v", err)
 	}
@@ -159,10 +162,10 @@ func TestLoadConfigPartialOverride(t *testing.T) {
 	tmpDir := t.TempDir()
 
 	// Config file that only sets some values
-	iniContent := `[paths]
+	iniContent := `[db]
 migrations = custom_migrations
 `
-	iniPath := filepath.Join(tmpDir, "portsql.ini")
+	iniPath := filepath.Join(tmpDir, "shipq.ini")
 	if err := os.WriteFile(iniPath, []byte(iniContent), 0644); err != nil {
 		t.Fatalf("failed to write ini file: %v", err)
 	}
@@ -195,13 +198,11 @@ migrations = custom_migrations
 func TestCRUDConfig_GlobalScope(t *testing.T) {
 	tmpDir := t.TempDir()
 
-	iniContent := `[database]
+	iniContent := `[db]
 url = sqlite:./test.db
-
-[crud]
 scope = org_id
 `
-	iniPath := filepath.Join(tmpDir, "portsql.ini")
+	iniPath := filepath.Join(tmpDir, "shipq.ini")
 	if err := os.WriteFile(iniPath, []byte(iniContent), 0644); err != nil {
 		t.Fatalf("failed to write ini file: %v", err)
 	}
@@ -219,7 +220,7 @@ scope = org_id
 func TestCRUDConfig_PerTableScope(t *testing.T) {
 	tmpDir := t.TempDir()
 
-	iniContent := `[database]
+	iniContent := `[db]
 url = sqlite:./test.db
 
 [crud.orders]
@@ -228,7 +229,7 @@ scope = user_id
 [crud.products]
 scope = vendor_id
 `
-	iniPath := filepath.Join(tmpDir, "portsql.ini")
+	iniPath := filepath.Join(tmpDir, "shipq.ini")
 	if err := os.WriteFile(iniPath, []byte(iniContent), 0644); err != nil {
 		t.Fatalf("failed to write ini file: %v", err)
 	}
@@ -249,16 +250,14 @@ scope = vendor_id
 func TestCRUDConfig_EmptyScopeOverridesGlobal(t *testing.T) {
 	tmpDir := t.TempDir()
 
-	iniContent := `[database]
+	iniContent := `[db]
 url = sqlite:./test.db
-
-[crud]
 scope = org_id
 
 [crud.public_logs]
-scope = 
+scope =
 `
-	iniPath := filepath.Join(tmpDir, "portsql.ini")
+	iniPath := filepath.Join(tmpDir, "shipq.ini")
 	if err := os.WriteFile(iniPath, []byte(iniContent), 0644); err != nil {
 		t.Fatalf("failed to write ini file: %v", err)
 	}
@@ -294,11 +293,11 @@ scope =
 func TestCRUDConfig_NoConfigDefaults(t *testing.T) {
 	tmpDir := t.TempDir()
 
-	// No [crud] section at all
-	iniContent := `[database]
+	// No [crud] section at all, just minimal [db]
+	iniContent := `[db]
 url = sqlite:./test.db
 `
-	iniPath := filepath.Join(tmpDir, "portsql.ini")
+	iniPath := filepath.Join(tmpDir, "shipq.ini")
 	if err := os.WriteFile(iniPath, []byte(iniContent), 0644); err != nil {
 		t.Fatalf("failed to write ini file: %v", err)
 	}
@@ -323,8 +322,8 @@ func TestCRUDConfig_GetScopeForTable_Priority(t *testing.T) {
 	cfg := CRUDConfig{
 		GlobalScope: "org_id",
 		TableScopes: map[string]string{
-			"orders":      "user_id",  // Different scope
-			"public_logs": "",         // No scope (empty override)
+			"orders":      "user_id", // Different scope
+			"public_logs": "",        // No scope (empty override)
 		},
 	}
 
@@ -332,10 +331,10 @@ func TestCRUDConfig_GetScopeForTable_Priority(t *testing.T) {
 		table    string
 		expected string
 	}{
-		{"orders", "user_id"},       // Table-specific override
-		{"public_logs", ""},         // Empty override
-		{"users", "org_id"},         // Falls back to global
-		{"products", "org_id"},      // Falls back to global
+		{"orders", "user_id"},  // Table-specific override
+		{"public_logs", ""},    // Empty override
+		{"users", "org_id"},    // Falls back to global
+		{"products", "org_id"}, // Falls back to global
 	}
 
 	for _, tt := range tests {
@@ -372,14 +371,12 @@ func TestCRUDConfig_ComplexMultiTenant(t *testing.T) {
 	tmpDir := t.TempDir()
 
 	// Multi-tenant SaaS example
-	iniContent := `[database]
+	iniContent := `[db]
 url = postgres://localhost/myapp
-
-[crud]
 scope = organization_id
 
 [crud.users]
-scope = 
+scope =
 
 [crud.user_sessions]
 scope = user_id
@@ -387,7 +384,7 @@ scope = user_id
 [crud.audit_logs]
 scope = organization_id
 `
-	iniPath := filepath.Join(tmpDir, "portsql.ini")
+	iniPath := filepath.Join(tmpDir, "shipq.ini")
 	if err := os.WriteFile(iniPath, []byte(iniContent), 0644); err != nil {
 		t.Fatalf("failed to write ini file: %v", err)
 	}
@@ -402,8 +399,8 @@ scope = organization_id
 		table    string
 		expected string
 	}{
-		{"users", ""},                // Explicitly no scope
-		{"user_sessions", "user_id"}, // User-scoped
+		{"users", ""},                     // Explicitly no scope
+		{"user_sessions", "user_id"},      // User-scoped
 		{"audit_logs", "organization_id"}, // Same as global
 		{"products", "organization_id"},   // Falls back to global
 		{"orders", "organization_id"},     // Falls back to global
@@ -425,14 +422,12 @@ scope = organization_id
 
 func TestCRUDConfig_OrderDirection_GlobalDefault(t *testing.T) {
 	// Global order direction setting
-	content := `[database]
+	content := `[db]
 url = sqlite:test.db
-
-[crud]
 order = asc
 `
 	tmpDir := t.TempDir()
-	iniPath := filepath.Join(tmpDir, "portsql.ini")
+	iniPath := filepath.Join(tmpDir, "shipq.ini")
 	if err := os.WriteFile(iniPath, []byte(content), 0644); err != nil {
 		t.Fatalf("failed to write ini file: %v", err)
 	}
@@ -455,17 +450,15 @@ order = asc
 
 func TestCRUDConfig_OrderDirection_PerTableOverride(t *testing.T) {
 	// Per-table order direction override
-	content := `[database]
+	content := `[db]
 url = sqlite:test.db
-
-[crud]
 order = desc
 
 [crud.audit_logs]
 order = asc
 `
 	tmpDir := t.TempDir()
-	iniPath := filepath.Join(tmpDir, "portsql.ini")
+	iniPath := filepath.Join(tmpDir, "shipq.ini")
 	if err := os.WriteFile(iniPath, []byte(content), 0644); err != nil {
 		t.Fatalf("failed to write ini file: %v", err)
 	}
@@ -493,11 +486,11 @@ order = asc
 
 func TestCRUDConfig_OrderDirection_DefaultIsDesc(t *testing.T) {
 	// When no order is specified, default should be desc (newest first)
-	content := `[database]
+	content := `[db]
 url = sqlite:test.db
 `
 	tmpDir := t.TempDir()
-	iniPath := filepath.Join(tmpDir, "portsql.ini")
+	iniPath := filepath.Join(tmpDir, "shipq.ini")
 	if err := os.WriteFile(iniPath, []byte(content), 0644); err != nil {
 		t.Fatalf("failed to write ini file: %v", err)
 	}
@@ -637,24 +630,24 @@ func TestLoadConfig_DialectValidation(t *testing.T) {
 			name:           "invalid dialect returns error",
 			dialects:       "postgres, postgress",
 			wantErr:        true,
-			wantErrContain: `invalid dialect " postgress"`, // Shows original input including space
+			wantErrContain: "invalid",
 		},
 		{
 			name:           "typo in dialect returns helpful error",
 			dialects:       "sqlit",
 			wantErr:        true,
-			wantErrContain: `invalid dialect "sqlit"`,
+			wantErrContain: "invalid",
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			tmpDir := t.TempDir()
-			content := "[database]\n" +
+			content := "[db]\n" +
 				"url = sqlite:test.db\n" +
 				"dialects = " + tt.dialects + "\n"
 
-			iniPath := filepath.Join(tmpDir, "portsql.ini")
+			iniPath := filepath.Join(tmpDir, "shipq.ini")
 			if err := os.WriteFile(iniPath, []byte(content), 0644); err != nil {
 				t.Fatalf("failed to write ini file: %v", err)
 			}
@@ -685,6 +678,33 @@ func TestLoadConfig_DialectValidation(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// =============================================================================
+// Error Message Tests
+// =============================================================================
+
+func TestLoadConfig_ErrorMentionsShipqIni(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	// Create a config with invalid dialect
+	iniContent := `[db]
+dialects = invalid_dialect
+`
+	iniPath := filepath.Join(tmpDir, "shipq.ini")
+	if err := os.WriteFile(iniPath, []byte(iniContent), 0644); err != nil {
+		t.Fatalf("failed to write ini file: %v", err)
+	}
+
+	_, err := LoadConfig(tmpDir)
+	if err == nil {
+		t.Fatal("expected error for invalid dialect")
+	}
+
+	errStr := err.Error()
+	if !contains(errStr, "shipq.ini") {
+		t.Errorf("error should mention 'shipq.ini', got: %v", err)
 	}
 }
 
