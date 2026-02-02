@@ -3,6 +3,7 @@ package config
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -675,14 +676,116 @@ func writeFile(t *testing.T, dir, name, content string) {
 }
 
 func contains(s, substr string) bool {
-	return len(s) >= len(substr) && findSubstring(s, substr)
+	return strings.Contains(s, substr)
 }
 
-func findSubstring(s, substr string) bool {
-	for i := 0; i <= len(s)-len(substr); i++ {
-		if s[i:i+len(substr)] == substr {
-			return true
-		}
+// Tests for [project] section
+
+func TestLoad_ProjectSection_DefaultTrue(t *testing.T) {
+	dir := t.TempDir()
+	// No [project] section at all
+	writeFile(t, dir, "shipq.ini", "[db]\ndialects = mysql")
+
+	cfg, err := Load(dir)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
 	}
-	return false
+
+	if !cfg.Project.IncludeLogging {
+		t.Error("expected IncludeLogging to default to true when [project] section is absent")
+	}
+}
+
+func TestLoad_ProjectSection_ExplicitTrue(t *testing.T) {
+	dir := t.TempDir()
+	writeFile(t, dir, "shipq.ini", `
+[project]
+include_logging = true
+
+[db]
+dialects = mysql
+`)
+
+	cfg, err := Load(dir)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if !cfg.Project.IncludeLogging {
+		t.Error("expected IncludeLogging to be true")
+	}
+}
+
+func TestLoad_ProjectSection_ExplicitFalse(t *testing.T) {
+	dir := t.TempDir()
+	writeFile(t, dir, "shipq.ini", `
+[project]
+include_logging = false
+
+[db]
+dialects = mysql
+`)
+
+	cfg, err := Load(dir)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if cfg.Project.IncludeLogging {
+		t.Error("expected IncludeLogging to be false")
+	}
+}
+
+func TestLoad_ProjectSection_InvalidBoolean(t *testing.T) {
+	dir := t.TempDir()
+	writeFile(t, dir, "shipq.ini", `
+[project]
+include_logging = yes
+`)
+
+	_, err := Load(dir)
+	if err == nil {
+		t.Fatal("expected error for invalid boolean value")
+	}
+
+	errStr := err.Error()
+	if !contains(errStr, "shipq.ini") {
+		t.Errorf("error should mention 'shipq.ini', got: %v", err)
+	}
+	if !contains(errStr, "project.include_logging") {
+		t.Errorf("error should mention 'project.include_logging', got: %v", err)
+	}
+}
+
+func TestLoad_ProjectSection_BooleanFormats(t *testing.T) {
+	tests := []struct {
+		name  string
+		value string
+		want  bool
+	}{
+		{"true", "true", true},
+		{"TRUE", "TRUE", true},
+		{"1", "1", true},
+		{"false", "false", false},
+		{"FALSE", "FALSE", false},
+		{"0", "0", false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			dir := t.TempDir()
+			writeFile(t, dir, "shipq.ini", `
+[project]
+include_logging = `+tt.value)
+
+			cfg, err := Load(dir)
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+
+			if cfg.Project.IncludeLogging != tt.want {
+				t.Errorf("expected IncludeLogging=%v, got %v", tt.want, cfg.Project.IncludeLogging)
+			}
+		})
+	}
 }

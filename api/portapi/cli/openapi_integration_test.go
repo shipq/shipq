@@ -118,7 +118,7 @@ openapi_description = A test API for pets
 
 	// Build the generator
 	generatorPath := filepath.Join(tmpDir, "generator")
-	buildCmd := exec.Command("go", "build", "-o", generatorPath, "./cmd/portsql-api-httpgen")
+	buildCmd := exec.Command("go", "build", "-o", generatorPath, "./cmd/shipq")
 	buildCmd.Dir = modDir
 	output, err = buildCmd.CombinedOutput()
 	if err != nil {
@@ -126,7 +126,7 @@ openapi_description = A test API for pets
 	}
 
 	// Run the generator
-	genCmd := exec.Command(generatorPath)
+	genCmd := exec.Command(generatorPath, "api", "generate")
 	genCmd.Dir = tmpDir
 	genCmd.Env = append(os.Environ(), "GOFLAGS=-mod=mod")
 	output, err = genCmd.CombinedOutput()
@@ -281,7 +281,7 @@ package = ./api
 
 	// Build the generator
 	generatorPath := filepath.Join(tmpDir, "generator")
-	buildCmd := exec.Command("go", "build", "-o", generatorPath, "./cmd/portsql-api-httpgen")
+	buildCmd := exec.Command("go", "build", "-o", generatorPath, "./cmd/shipq")
 	buildCmd.Dir = modDir
 	output, err = buildCmd.CombinedOutput()
 	if err != nil {
@@ -289,7 +289,7 @@ package = ./api
 	}
 
 	// Run the generator
-	genCmd := exec.Command(generatorPath)
+	genCmd := exec.Command(generatorPath, "api", "generate")
 	genCmd.Dir = tmpDir
 	genCmd.Env = append(os.Environ(), "GOFLAGS=-mod=mod")
 	output, err = genCmd.CombinedOutput()

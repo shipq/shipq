@@ -22,8 +22,14 @@ type ShipqConfig struct {
 	// ConfigDir is the directory containing shipq.ini (the project root).
 	ConfigDir string
 
-	DB  DBConfig
-	API APIConfig
+	Project ProjectConfig
+	DB      DBConfig
+	API     APIConfig
+}
+
+// ProjectConfig holds project-level settings from the [project] section.
+type ProjectConfig struct {
+	IncludeLogging bool
 }
 
 // DBConfig holds database and PortSQL settings from the [db] section.
@@ -90,8 +96,14 @@ func Load(dir string) (*ShipqConfig, error) {
 
 	cfg := &ShipqConfig{
 		ConfigDir: dir,
+		Project:   defaultProjectConfig(),
 		DB:        defaultDBConfig(),
 		API:       defaultAPIConfig(),
+	}
+
+	// Parse [project] section
+	if err := parseProjectSection(f, &cfg.Project); err != nil {
+		return nil, err
 	}
 
 	// Parse [db] section
@@ -145,6 +157,13 @@ func defaultDBConfig() DBConfig {
 	}
 }
 
+// defaultProjectConfig returns ProjectConfig with default values.
+func defaultProjectConfig() ProjectConfig {
+	return ProjectConfig{
+		IncludeLogging: true,
+	}
+}
+
 // defaultAPIConfig returns APIConfig with default values.
 func defaultAPIConfig() APIConfig {
 	return APIConfig{
@@ -162,6 +181,18 @@ func defaultAPIConfig() APIConfig {
 		TestClientEnabled:  false,
 		TestClientFilename: "zz_generated_testclient_test.go",
 	}
+}
+
+// parseProjectSection parses the [project] section from the INI file.
+func parseProjectSection(f *inifile.File, cfg *ProjectConfig) error {
+	if v := f.Get("project", "include_logging"); v != "" {
+		b, err := parseBool(v, "project.include_logging")
+		if err != nil {
+			return err
+		}
+		cfg.IncludeLogging = b
+	}
+	return nil
 }
 
 // parseDBSection parses the [db] section from the INI file.

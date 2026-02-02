@@ -311,8 +311,11 @@ func TestRun_Help(t *testing.T) {
 }
 
 func TestRenderShipqINI_ContainsRequiredSections(t *testing.T) {
-	content := renderShipqINI("mysql")
+	content := renderShipqINI("mysql", true)
 
+	if !strings.Contains(content, "[project]") {
+		t.Error("config should contain [project] section")
+	}
 	if !strings.Contains(content, "[db]") {
 		t.Error("config should contain [db] section")
 	}
@@ -322,9 +325,10 @@ func TestRenderShipqINI_ContainsRequiredSections(t *testing.T) {
 }
 
 func TestRenderShipqINI_ContainsRequiredKeys(t *testing.T) {
-	content := renderShipqINI("mysql")
+	content := renderShipqINI("mysql", true)
 
 	requiredKeys := []string{
+		"include_logging =",
 		"url =",
 		"dialects =",
 		"migrations =",
@@ -353,7 +357,7 @@ func TestRenderShipqINI_Dialects(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.dialect, func(t *testing.T) {
-			content := renderShipqINI(tt.dialect)
+			content := renderShipqINI(tt.dialect, true)
 			if !strings.Contains(content, tt.expected) {
 				t.Errorf("expected %q in content", tt.expected)
 			}
@@ -373,7 +377,7 @@ func TestRenderShipqINI_ExampleURLs(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.dialect, func(t *testing.T) {
-			content := renderShipqINI(tt.dialect)
+			content := renderShipqINI(tt.dialect, true)
 			if !strings.Contains(content, tt.expectedURL) {
 				t.Errorf("expected example URL containing %q", tt.expectedURL)
 			}
@@ -382,8 +386,8 @@ func TestRenderShipqINI_ExampleURLs(t *testing.T) {
 }
 
 func TestRenderShipqINI_IsDeterministic(t *testing.T) {
-	content1 := renderShipqINI("mysql")
-	content2 := renderShipqINI("mysql")
+	content1 := renderShipqINI("mysql", true)
+	content2 := renderShipqINI("mysql", true)
 
 	if content1 != content2 {
 		t.Error("renderShipqINI should produce deterministic output")
@@ -393,7 +397,7 @@ func TestRenderShipqINI_IsDeterministic(t *testing.T) {
 func TestRenderShipqINI_Parseable(t *testing.T) {
 	// The generated config should be parseable by our config loader
 	dir := t.TempDir()
-	content := renderShipqINI("postgres")
+	content := renderShipqINI("postgres", true)
 	writeFile(t, dir, config.ConfigFilename, content)
 
 	cfg, err := config.Load(dir)
@@ -409,6 +413,25 @@ func TestRenderShipqINI_Parseable(t *testing.T) {
 	}
 	if cfg.API.Package != "./api" {
 		t.Errorf("expected package='./api', got %q", cfg.API.Package)
+	}
+	if !cfg.Project.IncludeLogging {
+		t.Error("expected IncludeLogging=true")
+	}
+}
+
+func TestRenderShipqINI_IncludeLoggingTrue(t *testing.T) {
+	content := renderShipqINI("mysql", true)
+
+	if !strings.Contains(content, "include_logging = true") {
+		t.Error("expected include_logging = true in config")
+	}
+}
+
+func TestRenderShipqINI_IncludeLoggingFalse(t *testing.T) {
+	content := renderShipqINI("mysql", false)
+
+	if !strings.Contains(content, "include_logging = false") {
+		t.Error("expected include_logging = false in config")
 	}
 }
 
@@ -512,4 +535,235 @@ func readFile(t *testing.T, dir, name string) string {
 		t.Fatalf("failed to read %s: %v", name, err)
 	}
 	return string(data)
+}
+
+// Tests for logging scaffold functionality
+
+func TestRun_DefaultIncludesLogging(t *testing.T) {
+	dir := t.TempDir()
+	changeDir(t, dir)
+
+	stdout := &bytes.Buffer{}
+	stderr := &bytes.Buffer{}
+
+	code := Run(nil, Options{Stdout: stdout, Stderr: stderr})
+	if code != 0 {
+		t.Fatalf("expected exit code 0, got %d; stderr: %s", code, stderr.String())
+	}
+
+	// Check logging directory was created
+	loggingDir := filepath.Join(dir, "logging")
+	info, err := os.Stat(loggingDir)
+	if os.IsNotExist(err) {
+		t.Error("logging/ directory was not created")
+	} else if !info.IsDir() {
+		t.Error("logging/ is not a directory")
+	}
+
+	// Check logging/logging.go was created
+	loggingGoPath := filepath.Join(dir, "logging", "logging.go")
+	if _, err := os.Stat(loggingGoPath); os.IsNotExist(err) {
+		t.Error("logging/logging.go was not created")
+	}
+
+	// Check logging.go content
+	content := readFile(t, filepath.Join(dir, "logging"), "logging.go")
+	if !strings.Contains(content, "package logging") {
+		t.Error("logging.go should contain 'package logging'")
+	}
+	if !strings.Contains(content, "func Decorate") {
+		t.Error("logging.go should contain 'func Decorate'")
+	}
+
+	// Check shipq.ini contains include_logging = true
+	iniContent := readFile(t, dir, config.ConfigFilename)
+	if !strings.Contains(iniContent, "include_logging = true") {
+		t.Errorf("expected shipq.ini to contain 'include_logging = true', got: %s", iniContent)
+	}
+
+	// Check success message
+	output := stdout.String()
+	if !strings.Contains(output, "Created logging/logging.go") {
+		t.Errorf("expected success message about logging, got: %s", output)
+	}
+}
+
+func TestRun_NoLoggingFlag(t *testing.T) {
+	dir := t.TempDir()
+	changeDir(t, dir)
+
+	stdout := &bytes.Buffer{}
+	stderr := &bytes.Buffer{}
+
+	code := Run([]string{"--no-logging"}, Options{Stdout: stdout, Stderr: stderr})
+	if code != 0 {
+		t.Fatalf("expected exit code 0, got %d; stderr: %s", code, stderr.String())
+	}
+
+	// Check logging directory was NOT created
+	loggingDir := filepath.Join(dir, "logging")
+	if _, err := os.Stat(loggingDir); !os.IsNotExist(err) {
+		t.Error("logging/ directory should not be created with --no-logging")
+	}
+
+	// Check shipq.ini contains include_logging = false
+	iniContent := readFile(t, dir, config.ConfigFilename)
+	if !strings.Contains(iniContent, "include_logging = false") {
+		t.Errorf("expected shipq.ini to contain 'include_logging = false', got: %s", iniContent)
+	}
+
+	// Check success message mentions skipped
+	output := stdout.String()
+	if !strings.Contains(output, "Logging scaffold skipped") {
+		t.Errorf("expected message about skipped logging, got: %s", output)
+	}
+}
+
+func TestRun_LoggingFalseFlag(t *testing.T) {
+	dir := t.TempDir()
+	changeDir(t, dir)
+
+	stdout := &bytes.Buffer{}
+	stderr := &bytes.Buffer{}
+
+	code := Run([]string{"--logging=false"}, Options{Stdout: stdout, Stderr: stderr})
+	if code != 0 {
+		t.Fatalf("expected exit code 0, got %d; stderr: %s", code, stderr.String())
+	}
+
+	// Check logging directory was NOT created
+	loggingDir := filepath.Join(dir, "logging")
+	if _, err := os.Stat(loggingDir); !os.IsNotExist(err) {
+		t.Error("logging/ directory should not be created with --logging=false")
+	}
+
+	// Check shipq.ini contains include_logging = false
+	iniContent := readFile(t, dir, config.ConfigFilename)
+	if !strings.Contains(iniContent, "include_logging = false") {
+		t.Errorf("expected shipq.ini to contain 'include_logging = false', got: %s", iniContent)
+	}
+}
+
+func TestRun_ExistingLoggingGo_NoForce(t *testing.T) {
+	dir := t.TempDir()
+	changeDir(t, dir)
+
+	// Create existing logging/logging.go
+	loggingDir := filepath.Join(dir, "logging")
+	if err := os.MkdirAll(loggingDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	existingContent := "// existing content"
+	writeFile(t, loggingDir, "logging.go", existingContent)
+
+	stdout := &bytes.Buffer{}
+	stderr := &bytes.Buffer{}
+
+	code := Run(nil, Options{Stdout: stdout, Stderr: stderr})
+
+	if code != 1 {
+		t.Errorf("expected exit code 1, got %d", code)
+	}
+
+	errOutput := stderr.String()
+	if !strings.Contains(errOutput, "logging/logging.go already exists") {
+		t.Errorf("expected error about existing logging.go, got: %s", errOutput)
+	}
+	if !strings.Contains(errOutput, "--force") {
+		t.Errorf("expected hint about --force, got: %s", errOutput)
+	}
+
+	// Original content should be preserved
+	content := readFile(t, loggingDir, "logging.go")
+	if content != existingContent {
+		t.Errorf("existing logging.go was modified: got %q", content)
+	}
+}
+
+func TestRun_ExistingLoggingGo_WithForce(t *testing.T) {
+	dir := t.TempDir()
+	changeDir(t, dir)
+
+	// Create existing logging/logging.go
+	loggingDir := filepath.Join(dir, "logging")
+	if err := os.MkdirAll(loggingDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	writeFile(t, loggingDir, "logging.go", "// old content")
+
+	stdout := &bytes.Buffer{}
+	stderr := &bytes.Buffer{}
+
+	code := Run([]string{"--force"}, Options{Stdout: stdout, Stderr: stderr})
+
+	if code != 0 {
+		t.Fatalf("expected exit code 0, got %d; stderr: %s", code, stderr.String())
+	}
+
+	// Content should be overwritten
+	content := readFile(t, loggingDir, "logging.go")
+	if strings.Contains(content, "old content") {
+		t.Error("logging.go was not overwritten")
+	}
+	if !strings.Contains(content, "package logging") {
+		t.Error("logging.go should contain new template content")
+	}
+}
+
+func TestRun_LoggingFileContainsValidGo(t *testing.T) {
+	dir := t.TempDir()
+	changeDir(t, dir)
+
+	stdout := &bytes.Buffer{}
+	stderr := &bytes.Buffer{}
+
+	code := Run(nil, Options{Stdout: stdout, Stderr: stderr})
+	if code != 0 {
+		t.Fatalf("expected exit code 0, got %d; stderr: %s", code, stderr.String())
+	}
+
+	// Check that the generated logging.go contains expected elements
+	content := readFile(t, filepath.Join(dir, "logging"), "logging.go")
+
+	expectedElements := []string{
+		"package logging",
+		"import (",
+		"log/slog",
+		"net/http",
+		"type contextKey string",
+		"UserIDKey contextKey",
+		"PrettyJSONHandler",
+		"ProdLogger",
+		"DevLogger",
+		"func Decorate(",
+		"request_started",
+		"request_completed",
+	}
+
+	for _, elem := range expectedElements {
+		if !strings.Contains(content, elem) {
+			t.Errorf("expected logging.go to contain %q", elem)
+		}
+	}
+}
+
+func TestRun_HelpShowsLoggingFlags(t *testing.T) {
+	dir := t.TempDir()
+	changeDir(t, dir)
+
+	stdout := &bytes.Buffer{}
+	stderr := &bytes.Buffer{}
+
+	code := Run([]string{"--help"}, Options{Stdout: stdout, Stderr: stderr})
+	if code != 0 {
+		t.Errorf("expected exit code 0, got %d", code)
+	}
+
+	output := stdout.String()
+	if !strings.Contains(output, "--no-logging") {
+		t.Errorf("expected help to mention --no-logging flag")
+	}
+	if !strings.Contains(output, "logging/") {
+		t.Errorf("expected help to mention logging/ directory")
+	}
 }

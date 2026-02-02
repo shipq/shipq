@@ -493,7 +493,7 @@ func runDocsGenerator(t *testing.T, tmpDir, modDir string) {
 
 	// Build the generator
 	generatorPath := filepath.Join(tmpDir, "generator")
-	buildCmd := exec.Command("go", "build", "-o", generatorPath, "./cmd/portsql-api-httpgen")
+	buildCmd := exec.Command("go", "build", "-o", generatorPath, "./cmd/shipq")
 	buildCmd.Dir = modDir
 	output, err := buildCmd.CombinedOutput()
 	if err != nil {
@@ -501,7 +501,7 @@ func runDocsGenerator(t *testing.T, tmpDir, modDir string) {
 	}
 
 	// Run the generator
-	genCmd := exec.Command(generatorPath)
+	genCmd := exec.Command(generatorPath, "api", "generate")
 	genCmd.Dir = tmpDir
 	genCmd.Env = append(os.Environ(), "GOFLAGS=-mod=mod")
 	output, err = genCmd.CombinedOutput()
