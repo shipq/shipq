@@ -22,6 +22,13 @@ type Config struct {
 type DatabaseConfig struct {
 	URL      string
 	Dialects []string // Explicit list of dialects to generate (e.g., ["sqlite", "postgres"])
+
+	// Database setup settings
+	Name      string // Base name for derived dev/test databases
+	DevName   string // Explicit dev database name (overrides derivation)
+	TestName  string // Explicit test database name (overrides derivation)
+	DataDir   string // Directory for local DB data (e.g., .shipq/db/postgres)
+	LocalPort string // Port for local DB servers
 }
 
 // GetDialects returns the list of dialects to generate code for.
@@ -145,6 +152,13 @@ func ConfigFromShipq(shipqCfg *config.ShipqConfig) *Config {
 	// Map DB settings
 	cfg.Database.URL = shipqCfg.DB.URL
 	cfg.Database.Dialects = shipqCfg.DB.Dialects
+
+	// Map database setup settings
+	cfg.Database.Name = shipqCfg.DB.Name
+	cfg.Database.DevName = shipqCfg.DB.DevName
+	cfg.Database.TestName = shipqCfg.DB.TestName
+	cfg.Database.DataDir = shipqCfg.DB.DataDir
+	cfg.Database.LocalPort = shipqCfg.DB.LocalPort
 
 	// Map paths
 	cfg.Paths.Migrations = shipqCfg.DB.Migrations

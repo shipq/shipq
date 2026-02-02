@@ -146,7 +146,7 @@ Usage:
 
 Commands:
   init              Initialize a new ShipQ project (creates shipq.ini and directories)
-  db                Run database commands (migrations, queries, schematypes)
+  db                Run database commands (migrations, queries, start, setup)
   api               Run API generator commands
   help              Show this help message
   version           Show version information
@@ -159,6 +159,10 @@ Global Flags:
 Examples:
   shipq init                      Create a new project with default settings
   shipq init --database postgres  Create a new project with PostgreSQL dialect
+
+  shipq db start postgres             Start a local Postgres server
+  shipq db start mysql                Start a local MySQL server
+  shipq db setup                      Create dev and test databases
 
   shipq db migrate new create_users   Create a new migration file
   shipq db migrate up                 Run pending migrations

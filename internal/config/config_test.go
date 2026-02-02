@@ -44,6 +44,70 @@ func TestLoad_EmptyFile(t *testing.T) {
 	}
 }
 
+func TestLoad_DBSetupFields(t *testing.T) {
+	dir := t.TempDir()
+	writeFile(t, dir, "shipq.ini", `
+[db]
+url = postgres://localhost/myapp
+name = mybase
+dev_name = mydev
+test_name = mytest
+data_dir = .shipq/data
+local_port = 5433
+`)
+
+	cfg, err := Load(dir)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if cfg.DB.Name != "mybase" {
+		t.Errorf("expected Name 'mybase', got %q", cfg.DB.Name)
+	}
+	if cfg.DB.DevName != "mydev" {
+		t.Errorf("expected DevName 'mydev', got %q", cfg.DB.DevName)
+	}
+	if cfg.DB.TestName != "mytest" {
+		t.Errorf("expected TestName 'mytest', got %q", cfg.DB.TestName)
+	}
+	if cfg.DB.DataDir != ".shipq/data" {
+		t.Errorf("expected DataDir '.shipq/data', got %q", cfg.DB.DataDir)
+	}
+	if cfg.DB.LocalPort != "5433" {
+		t.Errorf("expected LocalPort '5433', got %q", cfg.DB.LocalPort)
+	}
+}
+
+func TestLoad_DBSetupFieldsDefaults(t *testing.T) {
+	dir := t.TempDir()
+	writeFile(t, dir, "shipq.ini", `
+[db]
+url = postgres://localhost/myapp
+`)
+
+	cfg, err := Load(dir)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// All setup fields should be empty by default
+	if cfg.DB.Name != "" {
+		t.Errorf("expected Name '', got %q", cfg.DB.Name)
+	}
+	if cfg.DB.DevName != "" {
+		t.Errorf("expected DevName '', got %q", cfg.DB.DevName)
+	}
+	if cfg.DB.TestName != "" {
+		t.Errorf("expected TestName '', got %q", cfg.DB.TestName)
+	}
+	if cfg.DB.DataDir != "" {
+		t.Errorf("expected DataDir '', got %q", cfg.DB.DataDir)
+	}
+	if cfg.DB.LocalPort != "" {
+		t.Errorf("expected LocalPort '', got %q", cfg.DB.LocalPort)
+	}
+}
+
 func TestLoad_DBSection(t *testing.T) {
 	dir := t.TempDir()
 	writeFile(t, dir, "shipq.ini", `

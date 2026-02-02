@@ -71,6 +71,12 @@ func (c *CLI) Execute() int {
 	case "compile":
 		return c.runCompile(cmdArgs)
 
+	case "start":
+		return c.runStart(cmdArgs)
+
+	case "setup":
+		return c.runSetup(cmdArgs)
+
 	default:
 		fmt.Fprintf(c.stderr, "Error: unknown command %q\n\n", cmd)
 		c.printHelp()
@@ -188,6 +194,82 @@ func (c *CLI) runCompile(args []string) int {
 	return ExitSuccess
 }
 
+// runStart handles the start subcommands (postgres, mysql).
+func (c *CLI) runStart(args []string) int {
+	if len(args) == 0 {
+		fmt.Fprintf(c.stderr, "Error: start requires a database type (postgres or mysql)\n\n")
+		c.printStartHelp()
+		return ExitError
+	}
+
+	dbType := args[0]
+
+	switch dbType {
+	case "postgres":
+		return c.runStartPostgres(args[1:])
+	case "mysql":
+		return c.runStartMySQL(args[1:])
+	case "help", "--help", "-h":
+		c.printStartHelp()
+		return ExitSuccess
+	default:
+		fmt.Fprintf(c.stderr, "Error: unknown database type %q (supported: postgres, mysql)\n\n", dbType)
+		c.printStartHelp()
+		return ExitError
+	}
+}
+
+// runStartPostgres starts a local Postgres server.
+func (c *CLI) runStartPostgres(args []string) int {
+	// Load config
+	config, err := LoadConfig("")
+	if err != nil {
+		fmt.Fprintf(c.stderr, "Error: failed to load config: %v\n", err)
+		return ExitConfig
+	}
+
+	if err := StartPostgres(config, c.stdout, c.stderr); err != nil {
+		fmt.Fprintf(c.stderr, "Error: %v\n", err)
+		return ExitError
+	}
+
+	return ExitSuccess
+}
+
+// runStartMySQL starts a local MySQL server.
+func (c *CLI) runStartMySQL(args []string) int {
+	// Load config
+	config, err := LoadConfig("")
+	if err != nil {
+		fmt.Fprintf(c.stderr, "Error: failed to load config: %v\n", err)
+		return ExitConfig
+	}
+
+	if err := StartMySQL(config, c.stdout, c.stderr); err != nil {
+		fmt.Fprintf(c.stderr, "Error: %v\n", err)
+		return ExitError
+	}
+
+	return ExitSuccess
+}
+
+// runSetup creates the dev and test databases.
+func (c *CLI) runSetup(args []string) int {
+	// Load config
+	config, err := LoadConfig("")
+	if err != nil {
+		fmt.Fprintf(c.stderr, "Error: failed to load config: %v\n", err)
+		return ExitConfig
+	}
+
+	if err := Setup(config, c.stdout, c.stderr); err != nil {
+		fmt.Fprintf(c.stderr, "Error: %v\n", err)
+		return ExitError
+	}
+
+	return ExitSuccess
+}
+
 // printHelp prints the main help message.
 func (c *CLI) printHelp() {
 	help := `portsql - Type-safe SQL query builder and migration tool
@@ -200,6 +282,9 @@ Commands:
   migrate up           Run pending migrations, generate schematypes
   migrate reset        Drop all tables, re-run all migrations (localhost only)
   compile              Compile query definitions to SQL strings
+  start postgres       Start a local Postgres server for development
+  start mysql          Start a local MySQL server for development
+  setup                Create dev and test databases (localhost only)
   help                 Show this help message
   version              Show version information
 
@@ -242,6 +327,66 @@ Subcommands:
   reset         Drop all tables and re-run all migrations from scratch
                 WARNING: This command only works on localhost databases.
                 It will fail if the database host is not localhost/127.0.0.1.
+`
+	fmt.Fprint(c.stdout, help)
+}
+
+// printStartHelp prints help for the start command.
+func (c *CLI) printStartHelp() {
+	help := `Usage: portsql start <database>
+
+Databases:
+  postgres    Start a local Postgres server
+              Data directory: db/databases/.postgres-data
+
+  mysql       Start a local MySQL server
+              Data directory: db/databases/.mysql-data
+
+Description:
+  Starts a local database server for development. The server runs in the
+  foreground and streams logs to the terminal. Press Ctrl+C to stop.
+
+  Data is stored in project-local directories, so multiple projects can
+  run side-by-side without conflicts.
+
+Requirements:
+  postgres    Requires 'initdb' and 'postgres' on PATH
+              Install via: brew install postgresql (macOS)
+
+  mysql       Requires 'mysqld' on PATH
+              Install via: brew install mysql (macOS)
+
+Examples:
+  portsql start postgres    # Start Postgres, initialize if needed
+  portsql start mysql       # Start MySQL, initialize if needed
+`
+	fmt.Fprint(c.stdout, help)
+}
+
+// printSetupHelp prints help for the setup command.
+func (c *CLI) printSetupHelp() {
+	help := `Usage: portsql setup
+
+Description:
+  Creates the development and test databases for your project.
+
+  By default, database names are derived from the project folder name:
+    - Dev database:  <folder_name>
+    - Test database: <folder_name>_test
+
+  This command only works with localhost databases for safety.
+
+Configuration:
+  Override database names in shipq.ini:
+
+    [db]
+    url = postgres://localhost/mydb
+    name = myproject          # Base name (optional)
+    dev_name = myproject_dev  # Explicit dev DB name (optional)
+    test_name = myproject_test # Explicit test DB name (optional)
+
+Examples:
+  portsql setup             # Create dev and test databases
 `
 	fmt.Fprint(c.stdout, help)
 }

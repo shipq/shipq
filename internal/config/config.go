@@ -41,6 +41,13 @@ type DBConfig struct {
 	QueriesIn   string
 	QueriesOut  string
 
+	// Database setup settings
+	Name      string // Base name for derived dev/test databases
+	DevName   string // Explicit dev database name (overrides derivation)
+	TestName  string // Explicit test database name (overrides derivation)
+	DataDir   string // Directory for local DB data (e.g., .shipq/db/postgres)
+	LocalPort string // Port for local DB servers
+
 	// CRUD settings
 	GlobalScope string
 	TableScopes map[string]string
@@ -150,6 +157,11 @@ func defaultDBConfig() DBConfig {
 		Schematypes: "schematypes",
 		QueriesIn:   "querydef",
 		QueriesOut:  "queries",
+		Name:        "",
+		DevName:     "",
+		TestName:    "",
+		DataDir:     "",
+		LocalPort:   "",
 		GlobalScope: "",
 		TableScopes: make(map[string]string),
 		GlobalOrder: "",
@@ -223,6 +235,23 @@ func parseDBSection(f *inifile.File, cfg *DBConfig) error {
 	}
 	if v := f.Get("db", "queries_out"); v != "" {
 		cfg.QueriesOut = v
+	}
+
+	// Database setup settings
+	if v := f.Get("db", "name"); v != "" {
+		cfg.Name = v
+	}
+	if v := f.Get("db", "dev_name"); v != "" {
+		cfg.DevName = v
+	}
+	if v := f.Get("db", "test_name"); v != "" {
+		cfg.TestName = v
+	}
+	if v := f.Get("db", "data_dir"); v != "" {
+		cfg.DataDir = v
+	}
+	if v := f.Get("db", "local_port"); v != "" {
+		cfg.LocalPort = v
 	}
 
 	// CRUD global settings
