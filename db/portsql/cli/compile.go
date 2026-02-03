@@ -20,33 +20,48 @@ import (
 func Compile(ctx context.Context, config *Config) error {
 	// Validate config
 	if config.Database.URL == "" {
-		return fmt.Errorf("database URL not configured (set DATABASE_URL or add to portsql.ini)")
+		return fmt.Errorf("database URL not configured (set DATABASE_URL or add to shipq.ini)")
 	}
 
 	// Get dialects to generate
 	dialects := config.Database.GetDialects()
 	if len(dialects) == 0 {
-		return fmt.Errorf("no dialects configured (set dialects in portsql.ini or check database URL)")
+		return fmt.Errorf("no dialects configured (set dialects in shipq.ini or check database URL)")
 	}
 
 	fmt.Printf("Generating for dialects: %v\n", dialects)
 
-	// Check if queries_in directory exists
+	// Try to extract user-defined queries (optional - CRUD can work without them)
+	var queries map[string]query.RegisteredQuery
+	hasQueriesIn := true
 	if _, err := os.Stat(config.Paths.QueriesIn); os.IsNotExist(err) {
-		return fmt.Errorf("queries directory not found: %s\nCreate a package with query definitions using query.DefineOne/DefineMany/DefineExec()", config.Paths.QueriesIn)
+		hasQueriesIn = false
 	}
 
-	// Generate and run temp program to extract registered queries
-	queries, err := extractRegisteredQueries(ctx, config.Paths.QueriesIn)
-	if err != nil {
-		return fmt.Errorf("failed to extract queries: %w", err)
+	if hasQueriesIn {
+		// Check if querydef has any .go files (not just an empty directory)
+		entries, err := os.ReadDir(config.Paths.QueriesIn)
+		if err == nil {
+			hasGoFiles := false
+			for _, entry := range entries {
+				if !entry.IsDir() && strings.HasSuffix(entry.Name(), ".go") {
+					hasGoFiles = true
+					break
+				}
+			}
+			if hasGoFiles {
+				queries, err = extractRegisteredQueries(ctx, config.Paths.QueriesIn)
+				if err != nil {
+					// Log warning but continue - we can still generate CRUD
+					fmt.Printf("Warning: failed to extract user-defined queries: %v\n", err)
+				}
+			}
+		}
 	}
 
-	if len(queries) == 0 {
-		return fmt.Errorf("no queries registered in %s\nUse query.DefineOne/DefineMany/DefineExec() in init() to register queries", config.Paths.QueriesIn)
+	if len(queries) > 0 {
+		fmt.Printf("Found %d registered queries\n", len(queries))
 	}
-
-	fmt.Printf("Found %d registered queries\n", len(queries))
 
 	// Compile each query for all dialects
 	var compiledQueries []codegen.CompiledQuery
@@ -95,11 +110,6 @@ func Compile(ctx context.Context, config *Config) error {
 				SQLite:   sqliteParamOrder,
 			},
 		})
-	}
-
-	// Generate queries output directory
-	if err := os.MkdirAll(config.Paths.QueriesOut, 0755); err != nil {
-		return fmt.Errorf("failed to create queries output directory: %w", err)
 	}
 
 	// --- Load schema for CRUD generation ---
@@ -167,6 +177,19 @@ func Compile(ctx context.Context, config *Config) error {
 				}
 			}
 		}
+	}
+
+	// Check if we have anything to generate
+	if len(queries) == 0 && crudPlan == nil {
+		return fmt.Errorf("nothing to generate: no user-defined queries in %s and no CRUD tables found\n"+
+			"  - To add user-defined queries: create .go files in %s using query.DefineOne/DefineMany/DefineExec()\n"+
+			"  - To get CRUD tables: use plan.AddTable() instead of plan.AddEmptyTable() in migrations",
+			config.Paths.QueriesIn, config.Paths.QueriesIn)
+	}
+
+	// Generate queries output directory
+	if err := os.MkdirAll(config.Paths.QueriesOut, 0755); err != nil {
+		return fmt.Errorf("failed to create queries output directory: %w", err)
 	}
 
 	// --- Generate shared types (types.go) ---
@@ -246,9 +269,14 @@ func Compile(ctx context.Context, config *Config) error {
 		fmt.Printf("Generated: %s\n", runnerPath)
 	}
 
-	fmt.Printf("\nSuccessfully compiled %d queries for %d dialect(s).\n", len(compiledQueries), len(dialects))
+	if len(compiledQueries) > 0 {
+		fmt.Printf("\nSuccessfully compiled %d queries for %d dialect(s).\n", len(compiledQueries), len(dialects))
+	}
 	if crudPlan != nil {
 		fmt.Printf("Generated CRUD for %d tables.\n", len(crudPlan.Schema.Tables))
+	}
+	if len(compiledQueries) == 0 && crudPlan == nil {
+		fmt.Printf("\nNo output generated.\n")
 	}
 
 	return nil
@@ -350,7 +378,7 @@ func loadSchema(migrationsPath string) (*migrate.MigrationPlan, error) {
 	data, err := os.ReadFile(schemaPath)
 	if err != nil {
 		if os.IsNotExist(err) {
-			return nil, fmt.Errorf("schema.json not found at %s\nRun 'portsql migrate up' first to generate the schema", schemaPath)
+			return nil, fmt.Errorf("schema.json not found at %s\nRun 'shipq db migrate up' first to generate the schema", schemaPath)
 		}
 		return nil, fmt.Errorf("failed to read schema.json: %w", err)
 	}
@@ -365,29 +393,13 @@ func loadSchema(migrationsPath string) (*migrate.MigrationPlan, error) {
 
 // isAddTableTable returns true if the table was created with AddTable (has public_id AND deleted_at).
 // Tables created with AddTable have the standard columns: id, public_id, created_at, updated_at, deleted_at.
+// Deprecated: Use migrate.IsAddTableTable instead.
 func isAddTableTable(table ddl.Table) bool {
-	hasPublicID := false
-	hasDeletedAt := false
-
-	for _, col := range table.Columns {
-		switch col.Name {
-		case "public_id":
-			hasPublicID = true
-		case "deleted_at":
-			hasDeletedAt = true
-		}
-	}
-
-	return hasPublicID && hasDeletedAt
+	return migrate.IsAddTableTable(table)
 }
 
 // getCRUDTables returns tables that qualify for CRUD generation (created with AddTable).
+// Deprecated: Use migrate.GetCRUDTables instead.
 func getCRUDTables(plan *migrate.MigrationPlan) []ddl.Table {
-	var tables []ddl.Table
-	for _, table := range plan.Schema.Tables {
-		if isAddTableTable(table) {
-			tables = append(tables, table)
-		}
-	}
-	return tables
+	return migrate.GetCRUDTables(plan)
 }

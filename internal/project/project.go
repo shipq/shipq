@@ -11,7 +11,7 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/shipq/shipq/internal/config"
+	"github.com/shipq/shipq/config"
 )
 
 // ErrNotFound is returned when no project root can be found.

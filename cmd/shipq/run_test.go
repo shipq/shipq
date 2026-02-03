@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/shipq/shipq/internal/config"
+	"github.com/shipq/shipq/config"
 )
 
 func TestRun_NoArgs(t *testing.T) {
@@ -131,7 +131,7 @@ func TestRun_DB_Help(t *testing.T) {
 	stdout := &bytes.Buffer{}
 	stderr := &bytes.Buffer{}
 
-	// Note: 'shipq db --help' should pass through to PortSQL CLI
+	// Note: 'shipq db --help' should pass through to shipq db CLI
 	// which will print its own help
 	code := runWithOutput([]string{"db", "--help"}, stdout, stderr)
 
@@ -140,13 +140,13 @@ func TestRun_DB_Help(t *testing.T) {
 		t.Errorf("expected exit code 0 for db --help, got %d", code)
 	}
 
-	// The output should contain PortSQL help content
+	// The output should contain shipq db help content
 	output := stdout.String()
-	if !strings.Contains(output, "portsql") {
-		t.Errorf("expected db --help to show PortSQL help, got %q", output)
+	if !strings.Contains(output, "shipq db") {
+		t.Errorf("expected db --help to show shipq db help, got %q", output)
 	}
 	if !strings.Contains(output, "migrate") {
-		t.Errorf("expected PortSQL help to contain 'migrate', got %q", output)
+		t.Errorf("expected shipq db help to contain 'migrate', got %q", output)
 	}
 }
 
@@ -161,7 +161,7 @@ func TestRun_DB_NoArgs(t *testing.T) {
 	stdout := &bytes.Buffer{}
 	stderr := &bytes.Buffer{}
 
-	// 'shipq db' with no args should show PortSQL help
+	// 'shipq db' with no args should show shipq db help
 	code := runWithOutput([]string{"db"}, stdout, stderr)
 
 	if code != 0 {
@@ -169,8 +169,8 @@ func TestRun_DB_NoArgs(t *testing.T) {
 	}
 
 	output := stdout.String()
-	if !strings.Contains(output, "portsql") {
-		t.Errorf("expected db with no args to show PortSQL help, got %q", output)
+	if !strings.Contains(output, "shipq db") {
+		t.Errorf("expected db with no args to show shipq db help, got %q", output)
 	}
 }
 
@@ -233,8 +233,8 @@ func TestRun_API_Help(t *testing.T) {
 	}
 
 	output := stdout.String()
-	if !strings.Contains(output, "portapi") {
-		t.Errorf("expected api --help to show portapi help, got %q", output)
+	if !strings.Contains(output, "shipq api") {
+		t.Errorf("expected api --help to show shipq api help, got %q", output)
 	}
 }
 
@@ -261,11 +261,61 @@ func TestRun_API_Version(t *testing.T) {
 	}
 
 	output := stdout.String()
-	if !strings.Contains(output, "portapi version") {
-		t.Errorf("expected output to contain 'portapi version', got %q", output)
+	if !strings.Contains(output, "shipq api version") {
+		t.Errorf("expected output to contain 'shipq api version', got %q", output)
 	}
 	if !strings.Contains(output, "test-api-version") {
 		t.Errorf("expected output to contain version string, got %q", output)
+	}
+}
+
+func TestRun_API_ResourceHelp(t *testing.T) {
+	// Create a project directory for this test
+	dir := t.TempDir()
+	writeConfigFile(t, dir)
+	oldDir, _ := os.Getwd()
+	os.Chdir(dir)
+	defer os.Chdir(oldDir)
+
+	stdout := &bytes.Buffer{}
+	stderr := &bytes.Buffer{}
+
+	code := runWithOutput([]string{"api", "resource", "--help"}, stdout, stderr)
+
+	if code != 0 {
+		t.Errorf("expected exit code 0 for api resource --help, got %d", code)
+	}
+
+	output := stdout.String()
+	if !strings.Contains(output, "shipq api resource") {
+		t.Errorf("expected api resource --help to show resource help, got %q", output)
+	}
+	if !strings.Contains(output, "table") {
+		t.Errorf("expected api resource help to mention 'table', got %q", output)
+	}
+}
+
+func TestRun_API_ResourceNoArgs(t *testing.T) {
+	// Create a project directory for this test
+	dir := t.TempDir()
+	writeConfigFile(t, dir)
+	oldDir, _ := os.Getwd()
+	os.Chdir(dir)
+	defer os.Chdir(oldDir)
+
+	stdout := &bytes.Buffer{}
+	stderr := &bytes.Buffer{}
+
+	code := runWithOutput([]string{"api", "resource"}, stdout, stderr)
+
+	// Should fail because no table name provided
+	if code == 0 {
+		t.Errorf("expected non-zero exit code for api resource without table name")
+	}
+
+	errOutput := stderr.String()
+	if !strings.Contains(errOutput, "resource requires a table name") {
+		t.Errorf("expected error about table name, got %q", errOutput)
 	}
 }
 
@@ -289,8 +339,8 @@ func TestRun_DB_PassesArguments(t *testing.T) {
 	}
 
 	output := stdout.String()
-	if !strings.Contains(output, "portsql version") {
-		t.Errorf("expected output to contain 'portsql version', got %q", output)
+	if !strings.Contains(output, "shipq db version") {
+		t.Errorf("expected output to contain 'shipq db version', got %q", output)
 	}
 }
 
@@ -445,8 +495,8 @@ func TestRun_DB_FromSubdirectory(t *testing.T) {
 	}
 
 	output := stdout.String()
-	if !strings.Contains(output, "portsql") {
-		t.Errorf("expected PortSQL help output, got: %s", output)
+	if !strings.Contains(output, "shipq db") {
+		t.Errorf("expected shipq db help output, got: %s", output)
 	}
 }
 
@@ -476,8 +526,8 @@ func TestRun_API_FromSubdirectory(t *testing.T) {
 	}
 
 	output := stdout.String()
-	if !strings.Contains(output, "portapi") {
-		t.Errorf("expected portapi help output, got: %s", output)
+	if !strings.Contains(output, "shipq api") {
+		t.Errorf("expected shipq api help output, got: %s", output)
 	}
 }
 

@@ -7,10 +7,11 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 
-	"github.com/shipq/shipq/internal/config"
+	"github.com/shipq/shipq/config"
 )
 
 // Options configures the init command execution.
@@ -43,6 +44,7 @@ func Run(args []string, opts Options) int {
 	fs.SetOutput(opts.Stderr)
 
 	database := fs.String("database", "mysql", "database dialect (mysql, postgres, sqlite)")
+	moduleName := fs.String("module", "", "Go module name for go.mod (default: prompt user)")
 	force := fs.Bool("force", false, "overwrite existing shipq.ini")
 	logging := fs.Bool("logging", true, "include logging scaffold (default: true)")
 	noLogging := fs.Bool("no-logging", false, "disable logging scaffold")
@@ -77,7 +79,7 @@ func Run(args []string, opts Options) int {
 	}
 
 	// Execute the init
-	if err := execute(cwd, dialect, *force, includeLogging, opts.Stdout, opts.Stderr); err != nil {
+	if err := execute(cwd, dialect, *moduleName, *force, includeLogging, opts.Stdout, opts.Stderr); err != nil {
 		fmt.Fprintf(opts.Stderr, "Error: %v\n", err)
 		return 1
 	}
@@ -86,14 +88,24 @@ func Run(args []string, opts Options) int {
 }
 
 // execute performs the actual initialization.
-func execute(targetDir, dialect string, force, includeLogging bool, stdout, stderr io.Writer) error {
+func execute(targetDir, dialect, moduleName string, force, includeLogging bool, stdout, stderr io.Writer) error {
 	configPath := filepath.Join(targetDir, config.ConfigFilename)
+	goModPath := filepath.Join(targetDir, "go.mod")
 
 	// Check if config already exists
 	if _, err := os.Stat(configPath); err == nil {
 		if !force {
 			return fmt.Errorf("%s already exists\n"+
 				"  Use --force to overwrite", config.ConfigFilename)
+		}
+	}
+
+	// Check if go.mod already exists
+	goModExists := false
+	if _, err := os.Stat(goModPath); err == nil {
+		goModExists = true
+		if !force {
+			// go.mod exists and no --force, we'll skip creating it
 		}
 	}
 
@@ -156,8 +168,57 @@ func execute(targetDir, dialect string, force, includeLogging bool, stdout, stde
 		return fmt.Errorf("failed to finalize config file: %w", err)
 	}
 
+	// Create go.mod if it doesn't exist (or if --force is used)
+	if !goModExists || force {
+		// Determine module name
+		modName := moduleName
+		if modName == "" {
+			modName = defaultModuleName(targetDir)
+		}
+
+		if modName != "" {
+			if err := createGoMod(targetDir, modName); err != nil {
+				return fmt.Errorf("failed to create go.mod: %w", err)
+			}
+			fmt.Fprintf(stdout, "✓ Created go.mod (module %s)\n", modName)
+		}
+	} else {
+		fmt.Fprintln(stdout, "• go.mod already exists, skipping")
+	}
+
 	// Print success message
 	printSuccess(stdout, createdDirs, dialect, force, includeLogging)
+
+	return nil
+}
+
+// defaultModuleName returns a default Go module name based on the directory name.
+func defaultModuleName(targetDir string) string {
+	dirName := filepath.Base(targetDir)
+	return "example.com/" + dirName
+}
+
+// createGoMod creates a go.mod file with the given module name.
+func createGoMod(targetDir, moduleName string) error {
+	goModPath := filepath.Join(targetDir, "go.mod")
+
+	// Use 'go mod init' to create the file properly
+	cmd := exec.Command("go", "mod", "init", moduleName)
+	cmd.Dir = targetDir
+	if output, err := cmd.CombinedOutput(); err != nil {
+		return fmt.Errorf("go mod init failed: %w\nOutput: %s", err, output)
+	}
+
+	// Add shipq dependency
+	cmd = exec.Command("go", "get", "github.com/shipq/shipq@latest")
+	cmd.Dir = targetDir
+	// Ignore errors from go get - it might fail if shipq isn't published yet
+	cmd.CombinedOutput()
+
+	// Verify go.mod was created
+	if _, err := os.Stat(goModPath); os.IsNotExist(err) {
+		return fmt.Errorf("go.mod was not created")
+	}
 
 	return nil
 }
@@ -422,6 +483,7 @@ func printSuccess(w io.Writer, createdDirs []string, dialect string, wasForce, i
 	fmt.Fprintln(w)
 	fmt.Fprintf(w, "Database dialect: %s\n", dialect)
 	fmt.Fprintln(w)
+	fmt.Fprintln(w)
 }
 
 // printHelp prints the help message for the init command.
@@ -434,13 +496,15 @@ Usage:
 Flags:
   --database <dialect>  Database dialect to use (default: mysql)
                         Supported: mysql, postgres, sqlite
-  --force               Overwrite existing shipq.ini and logging files
+  --module <name>       Go module name for go.mod (default: prompt user)
+  --force               Overwrite existing shipq.ini, go.mod, and logging files
   --no-logging          Do not scaffold logging files
   --logging=false       Same as --no-logging
   --help, -h            Show this help message
 
 Description:
   Creates a new ShipQ project in the current directory with:
+  • go.mod          - Go module file (required for code generation)
   • shipq.ini       - Configuration file (single source of truth)
   • migrations/     - Database migration files
   • schematypes/    - Generated schema type definitions
@@ -453,11 +517,12 @@ Description:
   decoration middleware. Use --no-logging to skip this.
 
 Examples:
-  shipq init                      # Initialize with MySQL (default)
-  shipq init --database postgres  # Initialize with PostgreSQL
-  shipq init --database sqlite    # Initialize with SQLite
-  shipq init --no-logging         # Initialize without logging scaffold
-  shipq init --force              # Reinitialize, overwriting config
+  shipq init                              # Initialize with MySQL (default)
+  shipq init --module github.com/me/app   # Initialize with specific module name
+  shipq init --database postgres          # Initialize with PostgreSQL
+  shipq init --database sqlite            # Initialize with SQLite
+  shipq init --no-logging                 # Initialize without logging scaffold
+  shipq init --force                      # Reinitialize, overwriting config
 `
 	fmt.Fprint(w, help)
 }

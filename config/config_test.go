@@ -853,3 +853,191 @@ include_logging = `+tt.value)
 		})
 	}
 }
+
+// Tests for SetKey function
+
+func TestSetKey_UpdateExistingKey(t *testing.T) {
+	dir := t.TempDir()
+	writeFile(t, dir, "shipq.ini", `[db]
+url = postgres://old@localhost/olddb
+dialects = postgres
+`)
+
+	err := SetKey(dir, "db", "url", "postgres://new@localhost/newdb")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// Read back and verify
+	cfg, err := Load(dir)
+	if err != nil {
+		t.Fatalf("failed to reload config: %v", err)
+	}
+
+	if cfg.DB.URL != "postgres://new@localhost/newdb" {
+		t.Errorf("expected URL 'postgres://new@localhost/newdb', got %q", cfg.DB.URL)
+	}
+}
+
+func TestSetKey_UpdateEmptyKey(t *testing.T) {
+	dir := t.TempDir()
+	writeFile(t, dir, "shipq.ini", `[db]
+url =
+dialects = mysql
+`)
+
+	err := SetKey(dir, "db", "url", "mysql://root@localhost/mydb")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// Read back and verify
+	cfg, err := Load(dir)
+	if err != nil {
+		t.Fatalf("failed to reload config: %v", err)
+	}
+
+	if cfg.DB.URL != "mysql://root@localhost/mydb" {
+		t.Errorf("expected URL 'mysql://root@localhost/mydb', got %q", cfg.DB.URL)
+	}
+}
+
+func TestSetKey_UncommentAndSet(t *testing.T) {
+	dir := t.TempDir()
+	writeFile(t, dir, "shipq.ini", `[db]
+# url = postgres://example@localhost/example
+dialects = postgres
+`)
+
+	err := SetKey(dir, "db", "url", "postgres://real@localhost/realdb")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// Read back and verify
+	cfg, err := Load(dir)
+	if err != nil {
+		t.Fatalf("failed to reload config: %v", err)
+	}
+
+	if cfg.DB.URL != "postgres://real@localhost/realdb" {
+		t.Errorf("expected URL 'postgres://real@localhost/realdb', got %q", cfg.DB.URL)
+	}
+}
+
+func TestSetKey_AddToExistingSection(t *testing.T) {
+	dir := t.TempDir()
+	writeFile(t, dir, "shipq.ini", `[db]
+dialects = mysql
+`)
+
+	err := SetKey(dir, "db", "url", "mysql://root@localhost/newdb")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// Read back and verify
+	cfg, err := Load(dir)
+	if err != nil {
+		t.Fatalf("failed to reload config: %v", err)
+	}
+
+	if cfg.DB.URL != "mysql://root@localhost/newdb" {
+		t.Errorf("expected URL 'mysql://root@localhost/newdb', got %q", cfg.DB.URL)
+	}
+
+	// Also verify dialects wasn't lost
+	if len(cfg.DB.Dialects) != 1 || cfg.DB.Dialects[0] != "mysql" {
+		t.Errorf("expected dialects to remain ['mysql'], got %v", cfg.DB.Dialects)
+	}
+}
+
+func TestSetKey_CreateNewSection(t *testing.T) {
+	dir := t.TempDir()
+	writeFile(t, dir, "shipq.ini", `[project]
+include_logging = true
+`)
+
+	err := SetKey(dir, "db", "url", "mysql://root@localhost/newdb")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// Read back and verify
+	cfg, err := Load(dir)
+	if err != nil {
+		t.Fatalf("failed to reload config: %v", err)
+	}
+
+	if cfg.DB.URL != "mysql://root@localhost/newdb" {
+		t.Errorf("expected URL 'mysql://root@localhost/newdb', got %q", cfg.DB.URL)
+	}
+
+	// Also verify project section wasn't lost
+	if !cfg.Project.IncludeLogging {
+		t.Error("expected IncludeLogging to remain true")
+	}
+}
+
+func TestSetKey_PreservesComments(t *testing.T) {
+	dir := t.TempDir()
+	original := `# This is a comment
+[db]
+# Database URL
+url = old_value
+# Dialects to use
+dialects = mysql
+`
+	writeFile(t, dir, "shipq.ini", original)
+
+	err := SetKey(dir, "db", "url", "new_value")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// Read the raw file to check comments are preserved
+	content, err := os.ReadFile(filepath.Join(dir, "shipq.ini"))
+	if err != nil {
+		t.Fatalf("failed to read file: %v", err)
+	}
+
+	contentStr := string(content)
+	if !contains(contentStr, "# This is a comment") {
+		t.Error("expected top comment to be preserved")
+	}
+	if !contains(contentStr, "# Dialects to use") {
+		t.Error("expected inline comment to be preserved")
+	}
+}
+
+func TestSetKey_CaseInsensitive(t *testing.T) {
+	dir := t.TempDir()
+	writeFile(t, dir, "shipq.ini", `[DB]
+URL = old_value
+`)
+
+	err := SetKey(dir, "db", "url", "new_value")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// Read back and verify
+	cfg, err := Load(dir)
+	if err != nil {
+		t.Fatalf("failed to reload config: %v", err)
+	}
+
+	if cfg.DB.URL != "new_value" {
+		t.Errorf("expected URL 'new_value', got %q", cfg.DB.URL)
+	}
+}
+
+func TestSetKey_FileNotFound(t *testing.T) {
+	dir := t.TempDir()
+	// Don't create shipq.ini
+
+	err := SetKey(dir, "db", "url", "some_value")
+	if err == nil {
+		t.Fatal("expected error for missing shipq.ini")
+	}
+}

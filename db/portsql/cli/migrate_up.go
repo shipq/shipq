@@ -188,6 +188,13 @@ func MigrateUp(ctx context.Context, config *Config) error {
 	fmt.Printf("Generated: %s\n", schemaTypesPath)
 
 	fmt.Printf("\nSuccessfully applied %d migration(s).\n", len(pendingFiles))
+
+	// Generate queries package and db/generated package
+	GeneratePackages(ctx, config, GeneratePackagesOptions{
+		Stdout: os.Stdout,
+		Stderr: os.Stderr,
+	})
+
 	return nil
 }
 
@@ -417,7 +424,11 @@ func openDatabase(databaseURL string, dialect string) (*sql.DB, error) {
 
 // convertMySQLURL converts a URL-style connection string to MySQL DSN format.
 // From: user:pass@host:port/dbname
-// To:   user:pass@tcp(host:port)/dbname
+// To:   user:pass@tcp(host:port)/dbname?multiStatements=true
+//
+// The multiStatements=true parameter is required because migrations may generate
+// multiple SQL statements (e.g., CREATE TABLE followed by CREATE INDEX) that are
+// executed in a single Exec() call.
 func convertMySQLURL(urlStr string) string {
 	// Handle user:pass@host:port/dbname format
 	atIdx := strings.LastIndex(urlStr, "@")
@@ -436,5 +447,17 @@ func convertMySQLURL(urlStr string) string {
 	hostPort := hostDbname[:slashIdx]
 	dbname := hostDbname[slashIdx:]
 
-	return fmt.Sprintf("%s@tcp(%s)%s", userPass, hostPort, dbname)
+	dsn := fmt.Sprintf("%s@tcp(%s)%s", userPass, hostPort, dbname)
+
+	// Add multiStatements=true if not already present
+	// This is required for migrations that execute multiple statements
+	if !strings.Contains(dsn, "multiStatements=true") {
+		if strings.Contains(dsn, "?") {
+			dsn += "&multiStatements=true"
+		} else {
+			dsn += "?multiStatements=true"
+		}
+	}
+
+	return dsn
 }

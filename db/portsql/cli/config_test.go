@@ -21,6 +21,9 @@ func TestDefaultConfig(t *testing.T) {
 	if cfg.Paths.QueriesOut != "queries" {
 		t.Errorf("expected queries_out path 'queries', got %q", cfg.Paths.QueriesOut)
 	}
+	if cfg.Paths.RunnerPackage != "db/generated" {
+		t.Errorf("expected runner_package path 'db/generated', got %q", cfg.Paths.RunnerPackage)
+	}
 }
 
 func TestLoadConfigNoFile(t *testing.T) {
@@ -73,6 +76,55 @@ queries_out = gen/sql
 	}
 	if cfg.Paths.QueriesOut != "gen/sql" {
 		t.Errorf("expected queries_out path 'gen/sql', got %q", cfg.Paths.QueriesOut)
+	}
+}
+
+func TestLoadConfigRunnerPackage(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	// Create a shipq.ini config file with custom runner_package
+	iniContent := `[db]
+url = postgres://localhost/testdb
+runner_package = internal/dbrunner
+`
+	iniPath := filepath.Join(tmpDir, "shipq.ini")
+	if err := os.WriteFile(iniPath, []byte(iniContent), 0644); err != nil {
+		t.Fatalf("failed to write ini file: %v", err)
+	}
+
+	cfg, err := LoadConfig(tmpDir)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if cfg.Paths.RunnerPackage != "internal/dbrunner" {
+		t.Errorf("expected runner_package path 'internal/dbrunner', got %q", cfg.Paths.RunnerPackage)
+	}
+	if cfg.Database.RunnerPackage != "internal/dbrunner" {
+		t.Errorf("expected Database.RunnerPackage 'internal/dbrunner', got %q", cfg.Database.RunnerPackage)
+	}
+}
+
+func TestLoadConfigRunnerPackageDefault(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	// Create a shipq.ini config file WITHOUT runner_package (should use default)
+	iniContent := `[db]
+url = postgres://localhost/testdb
+`
+	iniPath := filepath.Join(tmpDir, "shipq.ini")
+	if err := os.WriteFile(iniPath, []byte(iniContent), 0644); err != nil {
+		t.Fatalf("failed to write ini file: %v", err)
+	}
+
+	cfg, err := LoadConfig(tmpDir)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// Should use default value
+	if cfg.Paths.RunnerPackage != "db/generated" {
+		t.Errorf("expected default runner_package 'db/generated', got %q", cfg.Paths.RunnerPackage)
 	}
 }
 

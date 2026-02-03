@@ -112,7 +112,9 @@ var mainTmpl = template.Must(template.New("main").Funcs(templateFuncs).Parse(`//
 package {{.Package}}
 
 import (
+{{- if .HasMiddleware}}
 	"context"
+{{- end}}
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -864,7 +866,7 @@ func Generate(m Manifest, pkgName string, targetPkgPath string) (string, error) 
 	formatted, err := format.Source(buf.Bytes())
 	if err != nil {
 		// Return unformatted code with error for debugging
-		return buf.String(), fmt.Errorf("gofmt failed: %w", err)
+		return buf.String(), fmt.Errorf("gofmt failed: %w\n\nGenerated code:\n%s", err, buf.String())
 	}
 
 	return string(formatted), nil

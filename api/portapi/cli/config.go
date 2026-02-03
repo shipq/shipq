@@ -6,7 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/shipq/shipq/internal/config"
+	"github.com/shipq/shipq/config"
 )
 
 // Config holds the parsed configuration for the PortAPI generator.
@@ -30,6 +30,12 @@ type Config struct {
 	// Test client settings
 	TestClientEnabled  bool   // Enable test client generation
 	TestClientFilename string // Output filename (default: "zz_generated_testclient_test.go")
+
+	// DB Runner integration
+	DBRunnerImport  string   // Import path for DB runner package (optional, derived from db.runner_package if not set)
+	DBRunnerPackage string   // Directory where runner.go is generated (from [db] section)
+	QueriesOut      string   // Directory where queries are generated (from [db] section)
+	Dialects        []string // Database dialects (e.g., ["sqlite", "postgres"])
 }
 
 // FindConfig locates the shipq.ini configuration file.
@@ -74,6 +80,10 @@ func ConfigFromShipq(shipqCfg *config.ShipqConfig) *Config {
 		OpenAPIJSONPath:    apiCfg.OpenAPIJSONPath,
 		TestClientEnabled:  apiCfg.TestClientEnabled,
 		TestClientFilename: apiCfg.TestClientFilename,
+		DBRunnerImport:     apiCfg.DBRunnerImport,
+		DBRunnerPackage:    shipqCfg.DB.RunnerPackage,
+		QueriesOut:         shipqCfg.DB.QueriesOut,
+		Dialects:           shipqCfg.DB.Dialects,
 	}
 
 	// Apply local normalization if needed

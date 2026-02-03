@@ -45,6 +45,31 @@ func (e HTTPError) ErrorCode() string {
 	return e.Code
 }
 
+// NotFoundError returns an HTTPError with status 404.
+func NotFoundError(message string) error {
+	return HTTPError{Status: 404, Code: "not_found", Msg: message}
+}
+
+// BadRequestError returns an HTTPError with status 400.
+func BadRequestError(message string) error {
+	return HTTPError{Status: 400, Code: "bad_request", Msg: message}
+}
+
+// UnauthorizedError returns an HTTPError with status 401.
+func UnauthorizedError(message string) error {
+	return HTTPError{Status: 401, Code: "unauthorized", Msg: message}
+}
+
+// ForbiddenError returns an HTTPError with status 403.
+func ForbiddenError(message string) error {
+	return HTTPError{Status: 403, Code: "forbidden", Msg: message}
+}
+
+// InternalError returns an HTTPError with status 500.
+func InternalError(message string) error {
+	return HTTPError{Status: 500, Code: "internal_error", Msg: message}
+}
+
 // HandlerResult represents a direct response from middleware or handlers.
 type HandlerResult struct {
 	Status    int  // HTTP status code

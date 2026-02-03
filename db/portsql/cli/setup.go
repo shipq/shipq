@@ -12,6 +12,9 @@ import (
 
 	_ "github.com/go-sql-driver/mysql"
 	_ "github.com/jackc/pgx/v5/stdlib"
+
+	"github.com/shipq/shipq/config"
+	"github.com/shipq/shipq/db/portsql/codegen"
 )
 
 // Default connection settings for local database servers started by `shipq db start`
@@ -29,9 +32,11 @@ const (
 func Setup(cfg *Config, stdout, stderr io.Writer) error {
 	// Get the database URL, with fallback to dialect-based defaults
 	dbURL := cfg.Database.URL
+	urlWasInferred := false
 	if dbURL == "" {
 		// Try to infer URL from configured dialects
 		dbURL = inferDefaultURL(cfg, stderr)
+		urlWasInferred = true
 	}
 	if dbURL == "" {
 		return fmt.Errorf("no database URL configured\n" +
@@ -81,15 +86,321 @@ func Setup(cfg *Config, stdout, stderr io.Writer) error {
 	fmt.Fprintf(stdout, "  Test database: %s\n\n", testName)
 
 	// Dispatch to dialect-specific setup
+	var setupErr error
 	switch parsed.Dialect {
 	case "postgres":
-		return setupPostgres(parsed, devName, testName, stdout, stderr)
+		setupErr = setupPostgres(parsed, devName, testName, stdout, stderr)
 	case "mysql":
-		return setupMySQL(parsed, devName, testName, stdout, stderr)
+		setupErr = setupMySQL(parsed, devName, testName, stdout, stderr)
 	case "sqlite":
-		return setupSQLite(parsed, devName, testName, stdout, stderr)
+		setupErr = setupSQLite(parsed, devName, testName, stdout, stderr)
 	default:
 		return fmt.Errorf("unsupported dialect for setup: %s", parsed.Dialect)
+	}
+
+	if setupErr != nil {
+		return setupErr
+	}
+
+	// If the URL was inferred (not configured), save it to shipq.ini
+	if urlWasInferred {
+		devURL := parsed.WithDatabase(devName)
+		if err := config.SetKey("", "db", "url", devURL); err != nil {
+			fmt.Fprintf(stderr, "\nWarning: failed to save db.url to shipq.ini: %v\n", err)
+			fmt.Fprintf(stderr, "  You can manually add this to your shipq.ini:\n")
+			fmt.Fprintf(stderr, "    [db]\n")
+			fmt.Fprintf(stderr, "    url = %s\n", devURL)
+		} else {
+			fmt.Fprintf(stdout, "\n✓ Saved db.url to shipq.ini\n")
+		}
+	}
+
+	// Generate queries package and db/generated package
+	GeneratePackages(context.Background(), cfg, GeneratePackagesOptions{
+		Stdout: stdout,
+		Stderr: stderr,
+	})
+
+	return nil
+}
+
+// generateRunnerPackage generates the DB runner package containing runner.go and schema.json.
+// This package can be imported by the application to run migrations at startup.
+func generateRunnerPackage(cfg *Config, stdout, stderr io.Writer) error {
+	// Get the runner package output directory
+	runnerDir := cfg.Paths.RunnerPackage
+	if runnerDir == "" {
+		runnerDir = "db/generated"
+	}
+
+	// Normalize the path (remove ./ prefix if present)
+	runnerDir = strings.TrimPrefix(runnerDir, "./")
+
+	// Check if schema.json exists in migrations directory
+	schemaPath := filepath.Join(cfg.Paths.Migrations, "schema.json")
+	schemaData, err := os.ReadFile(schemaPath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			fmt.Fprintf(stderr, "\nNote: schema.json not found at %s\n", schemaPath)
+			fmt.Fprintf(stderr, "  Run 'shipq db migrate up' first to generate the schema,\n")
+			fmt.Fprintf(stderr, "  then run 'shipq db setup' again to generate the runner package.\n")
+			return nil // Not an error - just skip runner generation
+		}
+		return fmt.Errorf("failed to read schema.json: %w", err)
+	}
+
+	// Create the runner package directory
+	if err := os.MkdirAll(runnerDir, 0755); err != nil {
+		return fmt.Errorf("failed to create runner package directory: %w", err)
+	}
+
+	// Copy schema.json to the runner package directory
+	destSchemaPath := filepath.Join(runnerDir, "schema.json")
+	if err := os.WriteFile(destSchemaPath, schemaData, 0644); err != nil {
+		return fmt.Errorf("failed to write schema.json: %w", err)
+	}
+
+	// Determine the package name from the directory base
+	pkgName := filepath.Base(runnerDir)
+
+	// Generate runner.go
+	runnerCode, err := codegen.GenerateRunner(pkgName)
+	if err != nil {
+		return fmt.Errorf("failed to generate runner.go: %w", err)
+	}
+
+	runnerPath := filepath.Join(runnerDir, "runner.go")
+	if err := os.WriteFile(runnerPath, runnerCode, 0644); err != nil {
+		return fmt.Errorf("failed to write runner.go: %w", err)
+	}
+
+	// Generate db.go with DB connection and Querier export
+	dbCode, err := generateDBFile(cfg, pkgName)
+	if err != nil {
+		return fmt.Errorf("failed to generate db.go: %w", err)
+	}
+	dbPath := filepath.Join(runnerDir, "db.go")
+	if err := os.WriteFile(dbPath, []byte(dbCode), 0644); err != nil {
+		return fmt.Errorf("failed to write db.go: %w", err)
+	}
+
+	fmt.Fprintf(stdout, "\n✓ Generated DB runner package\n")
+	fmt.Fprintf(stdout, "  Directory: %s\n", runnerDir)
+	fmt.Fprintf(stdout, "  Files:     runner.go, schema.json, db.go\n")
+
+	// Print import path hint
+	modulePath, err := getModulePathForRunner()
+	if err == nil {
+		importPath := modulePath + "/" + runnerDir
+		fmt.Fprintf(stdout, "  Import:    %s\n", importPath)
+		fmt.Fprintf(stdout, "\nTo run migrations at app startup, add:\n")
+		fmt.Fprintf(stdout, "  import \"%s\"\n", importPath)
+		fmt.Fprintf(stdout, "  ...\n")
+		fmt.Fprintf(stdout, "  if err := %s.Run(ctx, db, dialect); err != nil { ... }\n", pkgName)
+	}
+
+	return nil
+}
+
+// generateDBFile generates the db.go file that exports DB connection and Querier.
+// The generated code checks DATABASE_URL env var first, falls back to localhost URL from shipq.ini.
+func generateDBFile(cfg *Config, pkgName string) (string, error) {
+	// Get module path
+	modulePath, _, err := getModulePath()
+	if err != nil {
+		return "", fmt.Errorf("failed to get module path: %w", err)
+	}
+
+	// Get first dialect
+	dialects := cfg.Database.Dialects
+	if len(dialects) == 0 {
+		dialects = []string{"sqlite"}
+	}
+	dialect := dialects[0]
+
+	// Get queries output path
+	queriesOut := cfg.Paths.QueriesOut
+	if queriesOut == "" {
+		queriesOut = "queries"
+	}
+	queriesOut = strings.TrimPrefix(queriesOut, "./")
+	queriesImport := modulePath + "/" + queriesOut
+	dialectImport := queriesImport + "/" + dialect
+
+	// Determine the driver import and name based on dialect
+	var driverImport string
+	var driverName string
+	switch dialect {
+	case "postgres":
+		driverImport = `_ "github.com/jackc/pgx/v5/stdlib"`
+		driverName = "pgx"
+	case "mysql":
+		driverImport = `_ "github.com/go-sql-driver/mysql"`
+		driverName = "mysql"
+	case "sqlite":
+		driverImport = `_ "modernc.org/sqlite"`
+		driverName = "sqlite"
+	default:
+		driverImport = `// Unknown dialect`
+		driverName = dialect
+	}
+
+	// Get the localhost URL from config (read at code generation time)
+	localhostURL := cfg.Database.URL
+	if localhostURL == "" {
+		// If no URL configured, use dialect-based default
+		switch dialect {
+		case "postgres":
+			localhostURL = defaultPostgresURL
+		case "mysql":
+			localhostURL = defaultMySQLURL
+		case "sqlite":
+			localhostURL = "sqlite://shipq.db"
+		}
+	}
+
+	return fmt.Sprintf(`// Code generated by shipq. DO NOT EDIT.
+package %s
+
+import (
+	"database/sql"
+	"fmt"
+	"os"
+
+	%s
+	%q
+)
+
+// localhostURL is the fallback URL from shipq.ini at code generation time.
+// This is used for local development when DATABASE_URL is not set.
+const localhostURL = %q
+
+var (
+	// DB is the database connection, initialized at package load time.
+	DB *sql.DB
+
+	// Querier is the query runner, initialized at package load time.
+	Querier *%s.QueryRunner
+
+	// Dialect is the database dialect being used.
+	Dialect = %q
+)
+
+func init() {
+	var err error
+
+	// Check DATABASE_URL environment variable first
+	dbURL := os.Getenv("DATABASE_URL")
+	if dbURL == "" {
+		// Fall back to localhost URL from shipq.ini (injected at code generation time)
+		fmt.Fprintln(os.Stderr, "shipq: DATABASE_URL not set, using localhost fallback: "+localhostURL)
+		dbURL = localhostURL
+	}
+
+	if dbURL == "" {
+		panic("shipq: no database URL available (set DATABASE_URL or configure db.url in shipq.ini)")
+	}
+
+	// Parse and convert URL to driver-specific format
+	driverURL := convertURL(dbURL, %q)
+
+	DB, err = sql.Open(%q, driverURL)
+	if err != nil {
+		panic(fmt.Sprintf("shipq: failed to open database: %%v", err))
+	}
+
+	// Verify connection works
+	if err := DB.Ping(); err != nil {
+		panic(fmt.Sprintf("shipq: failed to connect to database: %%v", err))
+	}
+
+	Querier = %s.NewQueryRunner(DB)
+}
+
+// convertURL converts a shipq URL (e.g., "sqlite://path.db") to driver format.
+func convertURL(url string, dialect string) string {
+	switch dialect {
+	case "sqlite":
+		// sqlite://path.db -> path.db
+		if len(url) > 9 && url[:9] == "sqlite://" {
+			return url[9:]
+		}
+		return url
+	case "postgres":
+		// postgres://... -> postgres://... (already correct format for pgx)
+		return url
+	case "mysql":
+		// mysql://user:pass@host:port/db -> user:pass@tcp(host:port)/db
+		if len(url) > 8 && url[:8] == "mysql://" {
+			return convertMySQLURL(url[8:])
+		}
+		return url
+	default:
+		return url
+	}
+}
+
+// convertMySQLURL converts MySQL URL format to DSN format.
+func convertMySQLURL(url string) string {
+	// Simple conversion: user:pass@host:port/db -> user:pass@tcp(host:port)/db
+	atIdx := -1
+	for i, c := range url {
+		if c == '@' {
+			atIdx = i
+			break
+		}
+	}
+	if atIdx == -1 {
+		return url
+	}
+
+	slashIdx := -1
+	for i := atIdx; i < len(url); i++ {
+		if url[i] == '/' {
+			slashIdx = i
+			break
+		}
+	}
+	if slashIdx == -1 {
+		return url
+	}
+
+	userPass := url[:atIdx]
+	hostPort := url[atIdx+1 : slashIdx]
+	dbName := url[slashIdx:]
+
+	return userPass + "@tcp(" + hostPort + ")" + dbName
+}
+`, pkgName, driverImport, dialectImport, localhostURL, dialect, dialect, dialect, driverName, dialect), nil
+}
+
+// getModulePathForRunner gets the module path by searching up the directory tree for go.mod.
+func getModulePathForRunner() (string, error) {
+	dir, err := os.Getwd()
+	if err != nil {
+		return "", err
+	}
+
+	for {
+		goModPath := filepath.Join(dir, "go.mod")
+		data, err := os.ReadFile(goModPath)
+		if err == nil {
+			// Found go.mod, parse it
+			lines := strings.Split(string(data), "\n")
+			for _, line := range lines {
+				line = strings.TrimSpace(line)
+				if strings.HasPrefix(line, "module ") {
+					return strings.TrimPrefix(line, "module "), nil
+				}
+			}
+			return "", fmt.Errorf("module declaration not found in go.mod")
+		}
+
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			return "", fmt.Errorf("go.mod not found")
+		}
+		dir = parent
 	}
 }
 

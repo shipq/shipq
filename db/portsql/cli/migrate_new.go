@@ -68,12 +68,14 @@ import "github.com/shipq/shipq/db/portsql/migrate"
 func %s(plan *migrate.MigrationPlan) error {
 	// TODO: Define your migration
 	// Example:
-	// plan.AddEmptyTable("users", func(tb *ddl.TableBuilder) error {
-	//     tb.Bigint("id").PrimaryKey()
+	// plan.AddTable("accounts", func(tb *ddl.TableBuilder) error {
 	//     tb.String("name")
 	//     tb.String("email").Unique()
 	//     return nil
 	// })
+	// ID, PublicID, CreatedAt, UpdatedAt, and DeletedAt are defined
+	// automatically for you. If you don't want some of those columns,
+	// you can use plan.AddEmptyTable instead.
 	return nil
 }
 `, funcName)

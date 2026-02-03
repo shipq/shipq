@@ -1,4 +1,4 @@
-// Package cli provides the PortSQL command-line interface.
+// Package cli provides the shipq db command-line interface.
 package cli
 
 import (

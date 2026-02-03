@@ -5,13 +5,13 @@ import (
 	"os"
 	"strings"
 
-	"github.com/shipq/shipq/internal/config"
+	"github.com/shipq/shipq/config"
 )
 
 // ValidDialects is the list of supported database dialects.
 var ValidDialects = []string{"postgres", "mysql", "sqlite"}
 
-// Config holds the portsql configuration.
+// Config holds the shipq db configuration.
 type Config struct {
 	Database DatabaseConfig
 	Paths    PathsConfig
@@ -29,6 +29,9 @@ type DatabaseConfig struct {
 	TestName  string // Explicit test database name (overrides derivation)
 	DataDir   string // Directory for local DB data (e.g., .shipq/db/postgres)
 	LocalPort string // Port for local DB servers
+
+	// Runner package settings
+	RunnerPackage string // Directory where runner.go is generated (default: db/generated)
 }
 
 // GetDialects returns the list of dialects to generate code for.
@@ -48,10 +51,11 @@ func (c *DatabaseConfig) GetDialects() []string {
 
 // PathsConfig holds file path settings.
 type PathsConfig struct {
-	Migrations  string
-	Schematypes string
-	QueriesIn   string
-	QueriesOut  string
+	Migrations    string
+	Schematypes   string
+	QueriesIn     string
+	QueriesOut    string
+	RunnerPackage string // Directory where runner.go is generated (default: db/generated)
 }
 
 // CRUDConfig holds CRUD generation settings.
@@ -119,10 +123,11 @@ func DefaultConfig() *Config {
 			URL: os.Getenv("DATABASE_URL"),
 		},
 		Paths: PathsConfig{
-			Migrations:  "migrations",
-			Schematypes: "schematypes",
-			QueriesIn:   "querydef",
-			QueriesOut:  "queries",
+			Migrations:    "migrations",
+			Schematypes:   "schematypes",
+			QueriesIn:     "querydef",
+			QueriesOut:    "queries",
+			RunnerPackage: "db/generated",
 		},
 		CRUD: CRUDConfig{
 			GlobalScope: "",
@@ -145,7 +150,7 @@ func LoadConfig(configPath string) (*Config, error) {
 	return ConfigFromShipq(shipqCfg), nil
 }
 
-// ConfigFromShipq converts a unified ShipqConfig to a PortSQL Config.
+// ConfigFromShipq converts a unified ShipqConfig to a shipq db Config.
 func ConfigFromShipq(shipqCfg *config.ShipqConfig) *Config {
 	cfg := DefaultConfig()
 
@@ -159,12 +164,14 @@ func ConfigFromShipq(shipqCfg *config.ShipqConfig) *Config {
 	cfg.Database.TestName = shipqCfg.DB.TestName
 	cfg.Database.DataDir = shipqCfg.DB.DataDir
 	cfg.Database.LocalPort = shipqCfg.DB.LocalPort
+	cfg.Database.RunnerPackage = shipqCfg.DB.RunnerPackage
 
 	// Map paths
 	cfg.Paths.Migrations = shipqCfg.DB.Migrations
 	cfg.Paths.Schematypes = shipqCfg.DB.Schematypes
 	cfg.Paths.QueriesIn = shipqCfg.DB.QueriesIn
 	cfg.Paths.QueriesOut = shipqCfg.DB.QueriesOut
+	cfg.Paths.RunnerPackage = shipqCfg.DB.RunnerPackage
 
 	// Map CRUD settings
 	cfg.CRUD.GlobalScope = shipqCfg.DB.GlobalScope

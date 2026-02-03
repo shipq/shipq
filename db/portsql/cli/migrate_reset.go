@@ -25,7 +25,7 @@ This safety check prevents accidental data loss in production.
 
 If you really need to reset a remote database, do it manually:
 1. Drop all tables using your database client
-2. Run 'portsql migrate up' to recreate them`)
+2. Run 'shipq db migrate up' to recreate them`)
 	}
 
 	// Parse dialect

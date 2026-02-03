@@ -1,6 +1,6 @@
-= PortSQL CLI Design Specification
+= ShipQ DB CLI Design Specification
 
-This document specifies the design of the PortSQL command-line interface and runtime migration library.
+This document specifies the design of the ShipQ database command-line interface and runtime migration library.
 
 == Overview
 
@@ -14,22 +14,22 @@ The CLI provides tooling for:
 
 [source]
 ----
-portsql migrate new <name>     # Create new timestamped migration file
-portsql migrate up             # Run pending migrations, generate schematypes
-portsql migrate reset          # Drop all, re-run all migrations (localhost only)
-portsql compile                # Compile query definitions to SQL strings
-portsql help                   # Show help information
-portsql version                # Show version information
+shipq db migrate new <name>     # Create new timestamped migration file
+shipq db migrate up             # Run pending migrations, generate schematypes
+shipq db migrate reset          # Drop all, re-run all migrations (localhost only)
+shipq db compile                # Compile query definitions to SQL strings
+shipq db help                   # Show help information
+shipq db version                # Show version information
 ----
 
 == Project Structure
 
-A typical project using PortSQL:
+A typical project using ShipQ:
 
 [source]
 ----
 myapp/
-├── portsql.ini                 # Optional configuration file
+├── shipq.ini                   # Optional configuration file
 ├── migrations/                 # User's migration files
 │   ├── 20260111153000_create_users.go
 │   ├── 20260111160000_create_posts.go
@@ -45,7 +45,7 @@ myapp/
 
 == Configuration
 
-=== Config File: `portsql.ini`
+=== Config File: `shipq.ini`
 
 Located in the project root. All paths are relative to the project root.
 
@@ -322,7 +322,7 @@ import (
     "context"
     "database/sql"
     _ "embed"
-    
+
     "github.com/shipq/shipq/db/portsql/migrate"
 )
 
@@ -354,12 +354,12 @@ import "myapp/migrations"
 
 func main() {
     db, _ := sql.Open("postgres", os.Getenv("DATABASE_URL"))
-    
+
     // Run migrations - idempotent, safe to call on every startup
     if err := migrations.Run(context.Background(), db); err != nil {
         log.Fatal(err)
     }
-    
+
     // App continues...
 }
 ----
@@ -374,12 +374,12 @@ import "github.com/shipq/shipq/db/portsql/migrate"
 
 func main() {
     db, _ := sql.Open("postgres", os.Getenv("DATABASE_URL"))
-    
+
     // Build the migration plan manually
     plan := migrate.NewPlan()
     migrations.Migrate_20260111153000_create_users(plan)
     migrations.Migrate_20260111160000_create_posts(plan)
-    
+
     // Run migrations
     err := migrate.Run(ctx, db, plan)
     if err != nil {
@@ -417,18 +417,18 @@ package main
 import (
     "encoding/json"
     "os"
-    
+
     migrations "myapp/migrations"
     "github.com/shipq/shipq/db/portsql/migrate"
 )
 
 func main() {
     plan := migrate.NewPlan()
-    
+
     // Call each migration function in order
     migrations.Migrate_20260111153000_create_users(plan)
     migrations.Migrate_20260111160000_create_posts(plan)
-    
+
     // Output the plan as JSON
     json.NewEncoder(os.Stdout).Encode(plan)
 }

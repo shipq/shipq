@@ -48,6 +48,9 @@ type DBConfig struct {
 	DataDir   string // Directory for local DB data (e.g., .shipq/db/postgres)
 	LocalPort string // Port for local DB servers
 
+	// Runner package settings
+	RunnerPackage string // Directory where runner.go is generated (default: ./db/generated)
+
 	// CRUD settings
 	GlobalScope string
 	TableScopes map[string]string
@@ -76,6 +79,9 @@ type APIConfig struct {
 	// Test Client
 	TestClientEnabled  bool
 	TestClientFilename string
+
+	// DB Runner integration
+	DBRunnerImport string // Import path for DB runner package (optional, derived from db.runner_package if not set)
 }
 
 // Load reads shipq.ini from the given directory (or CWD if empty).
@@ -151,21 +157,22 @@ func LoadAPIOnly(dir string) (*ShipqConfig, error) {
 // defaultDBConfig returns DBConfig with default values.
 func defaultDBConfig() DBConfig {
 	return DBConfig{
-		URL:         "",
-		Dialects:    nil, // Will be inferred from URL if not set
-		Migrations:  "migrations",
-		Schematypes: "schematypes",
-		QueriesIn:   "querydef",
-		QueriesOut:  "queries",
-		Name:        "",
-		DevName:     "",
-		TestName:    "",
-		DataDir:     "",
-		LocalPort:   "",
-		GlobalScope: "",
-		TableScopes: make(map[string]string),
-		GlobalOrder: "",
-		TableOrders: make(map[string]string),
+		URL:           "",
+		Dialects:      nil, // Will be inferred from URL if not set
+		Migrations:    "migrations",
+		Schematypes:   "schematypes",
+		QueriesIn:     "querydef",
+		QueriesOut:    "queries",
+		Name:          "",
+		DevName:       "",
+		TestName:      "",
+		DataDir:       "",
+		LocalPort:     "",
+		RunnerPackage: "db/generated", // Default runner package directory
+		GlobalScope:   "",
+		TableScopes:   make(map[string]string),
+		GlobalOrder:   "",
+		TableOrders:   make(map[string]string),
 	}
 }
 
@@ -192,6 +199,7 @@ func defaultAPIConfig() APIConfig {
 		OpenAPIJSONPath:    "/openapi.json",
 		TestClientEnabled:  false,
 		TestClientFilename: "zz_generated_testclient_test.go",
+		DBRunnerImport:     "", // Derived from db.runner_package if not set
 	}
 }
 
@@ -262,6 +270,11 @@ func parseDBSection(f *inifile.File, cfg *DBConfig) error {
 		cfg.GlobalOrder = v
 	}
 
+	// Runner package setting
+	if v := f.Get("db", "runner_package"); v != "" {
+		cfg.RunnerPackage = v
+	}
+
 	return nil
 }
 
@@ -322,6 +335,11 @@ func parseAPISection(f *inifile.File, cfg *APIConfig) error {
 	}
 	if v := f.Get("api", "test_client_filename"); v != "" {
 		cfg.TestClientFilename = v
+	}
+
+	// DB Runner integration
+	if v := f.Get("api", "db_runner_import"); v != "" {
+		cfg.DBRunnerImport = v
 	}
 
 	// Normalize and validate API config
@@ -526,3 +544,120 @@ func Exists(dir string) (bool, error) {
 
 // ErrConfigNotFound is returned when shipq.ini is not found.
 var ErrConfigNotFound = errors.New("shipq.ini not found")
+
+// SetKey updates a key in shipq.ini, preserving comments and structure.
+// If the key exists, its value is updated. If the key doesn't exist but
+// exists as a commented line (e.g., "# key =" or "# key="), it's uncommented
+// and the value is set. Otherwise, the key is appended to the section.
+// If the section doesn't exist, it's created at the end of the file.
+func SetKey(dir, section, key, value string) error {
+	if dir == "" {
+		var err error
+		dir, err = os.Getwd()
+		if err != nil {
+			return fmt.Errorf("failed to get current directory: %w", err)
+		}
+	}
+
+	iniPath := filepath.Join(dir, ConfigFilename)
+
+	// Read the file
+	content, err := os.ReadFile(iniPath)
+	if err != nil {
+		return fmt.Errorf("failed to read %s: %w", ConfigFilename, err)
+	}
+
+	// Process line by line
+	lines := strings.Split(string(content), "\n")
+	section = strings.ToLower(section)
+	key = strings.ToLower(key)
+
+	var result []string
+	inTargetSection := false
+	keySet := false
+	sectionFound := false
+	sectionHeader := "[" + section + "]"
+
+	for i, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		trimmedLower := strings.ToLower(trimmed)
+
+		// Check for section headers
+		if strings.HasPrefix(trimmedLower, "[") && strings.HasSuffix(trimmedLower, "]") {
+			// If we were in the target section and haven't set the key yet, add it before leaving
+			if inTargetSection && !keySet {
+				result = append(result, key+" = "+value)
+				keySet = true
+			}
+
+			inTargetSection = (trimmedLower == sectionHeader)
+			if inTargetSection {
+				sectionFound = true
+			}
+			result = append(result, line)
+			continue
+		}
+
+		if inTargetSection && !keySet {
+			// Check if this is the key we're looking for (with or without comment)
+			// Handle: "key = value", "key=value", "# key = value", "# key=value"
+			lineToCheck := trimmedLower
+			isCommented := false
+			if strings.HasPrefix(lineToCheck, "#") || strings.HasPrefix(lineToCheck, ";") {
+				lineToCheck = strings.TrimSpace(lineToCheck[1:])
+				isCommented = true
+			}
+
+			// Check if this line is for our key
+			if strings.HasPrefix(lineToCheck, key+"=") || strings.HasPrefix(lineToCheck, key+" =") || lineToCheck == key {
+				// Replace this line with the new value
+				result = append(result, key+" = "+value)
+				keySet = true
+				continue
+			}
+
+			// Special case: if we're at "url =" or "url=" (empty value) line
+			if !isCommented {
+				parts := strings.SplitN(trimmed, "=", 2)
+				if len(parts) >= 1 && strings.ToLower(strings.TrimSpace(parts[0])) == key {
+					result = append(result, key+" = "+value)
+					keySet = true
+					continue
+				}
+			}
+		}
+
+		result = append(result, line)
+
+		// If this is the last line, we're in the target section, and we haven't set the key
+		if i == len(lines)-1 && inTargetSection && !keySet {
+			result = append(result, key+" = "+value)
+			keySet = true
+		}
+	}
+
+	// If section wasn't found, create it at the end
+	if !sectionFound {
+		// Add a blank line if the file doesn't end with one
+		if len(result) > 0 && strings.TrimSpace(result[len(result)-1]) != "" {
+			result = append(result, "")
+		}
+		result = append(result, sectionHeader)
+		result = append(result, key+" = "+value)
+		keySet = true
+	}
+
+	// Write back atomically
+	newContent := strings.Join(result, "\n")
+	tmpPath := iniPath + ".tmp"
+	if err := os.WriteFile(tmpPath, []byte(newContent), 0644); err != nil {
+		return fmt.Errorf("failed to write %s: %w", ConfigFilename, err)
+	}
+
+	if err := os.Rename(tmpPath, iniPath); err != nil {
+		os.Remove(tmpPath)
+		return fmt.Errorf("failed to update %s: %w", ConfigFilename, err)
+	}
+
+	return nil
+}

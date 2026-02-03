@@ -81,6 +81,43 @@ func TestLoadConfig(t *testing.T) {
 		}
 	})
 
+	t.Run("loads DB integration config", func(t *testing.T) {
+		dir := writeShipqConfig(t, `[api]
+package = ./api
+db_runner_import = myapp/db/generated
+
+[db]
+queries_out = queries
+runner_package = db/generated
+`)
+
+		cfg, err := LoadConfig(dir)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if cfg.DBRunnerImport != "myapp/db/generated" {
+			t.Errorf("got DBRunnerImport %q, want %q", cfg.DBRunnerImport, "myapp/db/generated")
+		}
+		if cfg.QueriesOut != "queries" {
+			t.Errorf("got QueriesOut %q, want %q", cfg.QueriesOut, "queries")
+		}
+		if cfg.DBRunnerPackage != "db/generated" {
+			t.Errorf("got DBRunnerPackage %q, want %q", cfg.DBRunnerPackage, "db/generated")
+		}
+	})
+
+	t.Run("DB integration defaults are empty", func(t *testing.T) {
+		dir := writeShipqConfig(t, "[api]\npackage = ./api\n")
+
+		cfg, err := LoadConfig(dir)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if cfg.DBRunnerImport != "" {
+			t.Errorf("got DBRunnerImport %q, want empty", cfg.DBRunnerImport)
+		}
+	})
+
 	t.Run("error if shipq.ini not found", func(t *testing.T) {
 		tmpDir := t.TempDir()
 		_, err := LoadConfig(tmpDir)

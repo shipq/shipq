@@ -145,6 +145,14 @@ func readReplaceDirectives(modDir string) (map[string]string, error) {
 				replacement := strings.TrimSpace(parts[1])
 				// Only include local path replacements (not version replacements)
 				if !strings.Contains(replacement, " ") && (strings.HasPrefix(replacement, "/") || strings.HasPrefix(replacement, ".")) {
+					// Convert relative paths to absolute paths so they work from temp directories
+					if strings.HasPrefix(replacement, ".") {
+						absPath := filepath.Join(modDir, replacement)
+						absPath, err := filepath.Abs(absPath)
+						if err == nil {
+							replacement = absPath
+						}
+					}
 					replaces[modPath] = replacement
 				}
 			}
@@ -434,7 +442,8 @@ func main() {
 		}
 
 		if info.ReqType != nil {
-			me.ReqType = info.ReqType.String()
+			// Use full package path + type name for proper import resolution
+			me.ReqType = fullTypeName(info.ReqType)
 			reqRespTypes = append(reqRespTypes, info.ReqType)
 
 			// Validate binding conflicts before analyzing bindings
@@ -453,7 +462,8 @@ func main() {
 			me.Bindings = convertBindingInfo(bindingInfo)
 		}
 		if info.RespType != nil {
-			me.RespType = info.RespType.String()
+			// Use full package path + type name for proper import resolution
+			me.RespType = fullTypeName(info.RespType)
 			reqRespTypes = append(reqRespTypes, info.RespType)
 		}
 
@@ -907,6 +917,26 @@ func analyzeType(t reflect.Type) (typeKind string, isPointer, isSlice bool, elem
 	return
 }
 
+// fullTypeName returns the fully qualified type name for a reflect.Type.
+// It handles slice, pointer, and named types properly.
+func fullTypeName(t reflect.Type) string {
+	switch t.Kind() {
+	case reflect.Slice:
+		return "[]" + fullTypeName(t.Elem())
+	case reflect.Ptr:
+		return "*" + fullTypeName(t.Elem())
+	case reflect.Map:
+		return "map[" + fullTypeName(t.Key()) + "]" + fullTypeName(t.Elem())
+	default:
+		// For named types, use PkgPath + Name
+		if t.PkgPath() != "" {
+			return t.PkgPath() + "." + t.Name()
+		}
+		// For builtin types (int, string, etc.), just return the name
+		return t.Name()
+	}
+}
+
 func extractHandlerInfo(handler any) (pkg, name string) {
 	v := reflect.ValueOf(handler)
 	if v.Kind() != reflect.Func {
@@ -920,7 +950,26 @@ func extractHandlerInfo(handler any) (pkg, name string) {
 	}
 
 	fullName := fn.Name()
-	// fullName is like "github.com/example/pkg.FuncName" or "github.com/example/pkg.(*T).Method"
+	// fullName is like "github.com/example/pkg.FuncName" or "github.com/example/pkg.(*T).Method-fm"
+
+	// Check if this is a method value (has receiver type in the name)
+	// Method values look like: "pkg.(*Type).Method-fm" or "pkg.Type.Method-fm"
+	if idx := strings.Index(fullName, ".("); idx != -1 {
+		// This is a method with a receiver
+		// Extract the package path (everything before the receiver)
+		pkg = fullName[:idx]
+
+		// Extract the method name (after the last dot, strip -fm suffix)
+		lastDot := strings.LastIndex(fullName, ".")
+		if lastDot != -1 {
+			name = fullName[lastDot+1:]
+			// Strip -fm suffix that Go adds for method values
+			name = strings.TrimSuffix(name, "-fm")
+		}
+		return pkg, name
+	}
+
+	// Regular function (not a method)
 	lastDot := strings.LastIndex(fullName, ".")
 	if lastDot == -1 {
 		return "", fullName
@@ -928,14 +977,6 @@ func extractHandlerInfo(handler any) (pkg, name string) {
 
 	pkg = fullName[:lastDot]
 	name = fullName[lastDot+1:]
-
-	// Handle method receivers like "(*T).Method"
-	if strings.HasPrefix(name, "(") {
-		// Find the actual method name after "(*T)."
-		if idx := strings.LastIndex(name, "."); idx != -1 {
-			name = name[idx+1:]
-		}
-	}
 
 	return pkg, name
 }

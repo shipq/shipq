@@ -151,12 +151,9 @@ func generateListSQL(table ddl.Table, analysis TableAnalysis, dialect SQLDialect
 
 	b.WriteString("SELECT ")
 
-	// Select result columns (excluding updated_at for list brevity)
+	// Select all result columns
 	first := true
 	for _, col := range analysis.ResultColumns {
-		if col.Name == "updated_at" {
-			continue
-		}
 		if !first {
 			b.WriteString(", ")
 		}

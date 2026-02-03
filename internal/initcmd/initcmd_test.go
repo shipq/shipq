@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/shipq/shipq/internal/config"
+	"github.com/shipq/shipq/config"
 )
 
 func TestRun_HappyPath(t *testing.T) {
@@ -29,6 +29,16 @@ func TestRun_HappyPath(t *testing.T) {
 		t.Fatal("shipq.ini was not created")
 	}
 
+	// Check go.mod was created
+	goModPath := filepath.Join(dir, "go.mod")
+	if _, err := os.Stat(goModPath); os.IsNotExist(err) {
+		t.Fatal("go.mod was not created")
+	}
+	goModContent := readFile(t, dir, "go.mod")
+	if !strings.Contains(goModContent, "module example.com/") {
+		t.Errorf("expected go.mod to contain module declaration, got: %s", goModContent)
+	}
+
 	// Check directories were created
 	for _, d := range directories {
 		dirPath := filepath.Join(dir, d)
@@ -47,8 +57,37 @@ func TestRun_HappyPath(t *testing.T) {
 	if !strings.Contains(output, "Created shipq.ini") {
 		t.Errorf("expected success message, got: %s", output)
 	}
+	if !strings.Contains(output, "Created go.mod") {
+		t.Errorf("expected go.mod success message, got: %s", output)
+	}
 	if !strings.Contains(output, "Next steps") {
 		t.Errorf("expected next steps message, got: %s", output)
+	}
+}
+
+func TestRun_CustomModuleName(t *testing.T) {
+	dir := t.TempDir()
+	changeDir(t, dir)
+
+	stdout := &bytes.Buffer{}
+	stderr := &bytes.Buffer{}
+
+	code := Run([]string{"--module", "github.com/myorg/myapp"}, Options{Stdout: stdout, Stderr: stderr})
+
+	if code != 0 {
+		t.Fatalf("expected exit code 0, got %d; stderr: %s", code, stderr.String())
+	}
+
+	// Check go.mod has the custom module name
+	goModContent := readFile(t, dir, "go.mod")
+	if !strings.Contains(goModContent, "module github.com/myorg/myapp") {
+		t.Errorf("expected go.mod to contain custom module name, got: %s", goModContent)
+	}
+
+	// Check success message mentions the module
+	output := stdout.String()
+	if !strings.Contains(output, "github.com/myorg/myapp") {
+		t.Errorf("expected output to mention custom module name, got: %s", output)
 	}
 }
 

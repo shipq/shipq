@@ -188,9 +188,9 @@ func StartMySQL(cfg *Config, stdout, stderr io.Writer) error {
 		// Received shutdown signal
 		fmt.Fprintf(stdout, "\nReceived %v, shutting down MySQL...\n", sig)
 
-		// Forward signal to child process
+		// MySQL requires SIGTERM for graceful shutdown (SIGINT is ignored)
 		if mysqlCmd.Process != nil {
-			mysqlCmd.Process.Signal(sig)
+			mysqlCmd.Process.Signal(syscall.SIGTERM)
 		}
 
 		// Wait for process to exit

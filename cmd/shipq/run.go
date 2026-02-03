@@ -139,7 +139,7 @@ func runInit(args []string, stdout, stderr io.Writer) int {
 
 // printHelp prints the top-level help message.
 func printHelp(w io.Writer) {
-	help := `shipq - Unified CLI for ShipQ tools
+	help := `shipq - Generate boilerplate for web applications
 
 Usage:
   shipq <command> [arguments]
@@ -177,9 +177,6 @@ Examples:
   shipq --project /path/to/myproject db migrate up
 
 Run 'shipq <command> --help' for more information on a specific command.
-
-Note: 'shipq db' exposes the PortSQL command set.
-      'shipq api' exposes the PortAPI generator command set.
 `
 	fmt.Fprint(w, help)
 }

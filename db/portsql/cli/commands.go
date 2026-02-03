@@ -116,7 +116,7 @@ func (c *CLI) runMigrate(args []string) int {
 func (c *CLI) runMigrateNew(args []string) int {
 	if len(args) == 0 {
 		fmt.Fprintf(c.stderr, "Error: migrate new requires a migration name\n")
-		fmt.Fprintf(c.stderr, "Usage: portsql migrate new <name>\n")
+		fmt.Fprintf(c.stderr, "Usage: shipq db migrate new <name>\n")
 		return ExitError
 	}
 
@@ -272,10 +272,10 @@ func (c *CLI) runSetup(args []string) int {
 
 // printHelp prints the main help message.
 func (c *CLI) printHelp() {
-	help := `portsql - Type-safe SQL query builder and migration tool
+	help := `shipq db - Type-safe SQL query builder and migration tool
 
 Usage:
-  portsql <command> [arguments]
+  shipq db <command> [arguments]
 
 Commands:
   migrate new <name>   Create a new timestamped migration file
@@ -293,7 +293,7 @@ Flags:
   --version, -v        Show version information
 
 Configuration:
-  portsql looks for a shipq.ini file in the current directory.
+  shipq db looks for a shipq.ini file in the current directory.
   If not found, it uses DATABASE_URL environment variable for the database URL.
 
   Example shipq.ini:
@@ -303,19 +303,20 @@ Configuration:
     schematypes = schematypes
     queries_in = querydef
     queries_out = queries
+    runner_package = db/generated
 
-Run 'portsql <command> --help' for more information on a command.
+Run 'shipq db <command> --help' for more information on a specific command.
 `
 	fmt.Fprint(c.stdout, help)
 }
 
 // printMigrateHelp prints help for the migrate command.
 func (c *CLI) printMigrateHelp() {
-	help := `Usage: portsql migrate <subcommand> [arguments]
+	help := `Usage: shipq db migrate <subcommand> [arguments]
 
 Subcommands:
   new <name>    Create a new timestamped migration file
-                Example: portsql migrate new create_users
+                Example: shipq db migrate new create_users
                 Creates: migrations/YYYYMMDDHHMMSS_create_users.go
 
   up            Run all pending migrations and generate schematypes
@@ -333,7 +334,7 @@ Subcommands:
 
 // printStartHelp prints help for the start command.
 func (c *CLI) printStartHelp() {
-	help := `Usage: portsql start <database>
+	help := `Usage: shipq db start <database>
 
 Databases:
   postgres    Start a local Postgres server
@@ -357,18 +358,19 @@ Requirements:
               Install via: brew install mysql (macOS)
 
 Examples:
-  portsql start postgres    # Start Postgres, initialize if needed
-  portsql start mysql       # Start MySQL, initialize if needed
+  shipq db start postgres    # Start Postgres, initialize if needed
+  shipq db start mysql       # Start MySQL, initialize if needed
 `
 	fmt.Fprint(c.stdout, help)
 }
 
 // printSetupHelp prints help for the setup command.
 func (c *CLI) printSetupHelp() {
-	help := `Usage: portsql setup
+	help := `Usage: shipq db setup
 
 Description:
-  Creates the development and test databases for your project.
+  Creates the development and test databases for your project, and generates
+  a reusable DB runner package that can be imported by your application.
 
   By default, database names are derived from the project folder name:
     - Dev database:  <folder_name>
@@ -376,24 +378,31 @@ Description:
 
   This command only works with localhost databases for safety.
 
+Runner Package:
+  If migrations/schema.json exists, setup also generates a runner package:
+    - Default location: db/generated/
+    - Contains: runner.go, schema.json
+    - Use at app startup: generated.Run(ctx, db, dialect)
+
 Configuration:
-  Override database names in shipq.ini:
+  Override settings in shipq.ini:
 
     [db]
     url = postgres://localhost/mydb
-    name = myproject          # Base name (optional)
-    dev_name = myproject_dev  # Explicit dev DB name (optional)
-    test_name = myproject_test # Explicit test DB name (optional)
+    name = myproject              # Base name (optional)
+    dev_name = myproject_dev      # Explicit dev DB name (optional)
+    test_name = myproject_test    # Explicit test DB name (optional)
+    runner_package = db/generated # Runner package directory (optional)
 
 Examples:
-  portsql setup             # Create dev and test databases
+  shipq db setup             # Create databases and generate runner package
 `
 	fmt.Fprint(c.stdout, help)
 }
 
 // printVersion prints the version string.
 func (c *CLI) printVersion() {
-	fmt.Fprintf(c.stdout, "portsql version %s\n", c.version)
+	fmt.Fprintf(c.stdout, "shipq db version %s\n", c.version)
 }
 
 // parseFlags is a simple flag parser that extracts flags from args.

@@ -1,4 +1,4 @@
-= PortSQL
+= ShipQ Database
 
 A database-agnostic, SQL-first code generation tool for Go.
 
@@ -10,7 +10,7 @@ Most Go database tools fall into two camps:
 
 2. **SQL-first tools** (sqlc) - Write raw SQL, generate Go code. Great for control, but you're locked into one database dialect.
 
-**PortSQL takes a different approach**: define your schema and queries in Go, and we generate type-safe, raw SQL for PostgreSQL, MySQL, and SQLite. You get:
+**ShipQ takes a different approach**: define your schema and queries in Go, and we generate type-safe, raw SQL for PostgreSQL, MySQL, and SQLite. You get:
 
 - **Full control** over the exact SQL that runs
 - **Type safety** at compile time
@@ -19,7 +19,7 @@ Most Go database tools fall into two camps:
 
 == The Two-Phase Workflow
 
-PortSQL uses two code generation phases:
+ShipQ uses two code generation phases:
 
 [source]
 ----
@@ -105,7 +105,7 @@ func Migrate_20260111170700_create_posts(plan *migrate.MigrationPlan) error {
 }
 ----
 
-**Run `portsql migrate up`** → Generates `schematypes/tables.go`:
+**Run `shipq db migrate up`** → Generates `schematypes/tables.go`:
 
 [source,go]
 ----
@@ -215,7 +215,7 @@ func init() {
 
 === Step 3: Use Generated Code in Your Application
 
-**Run `portsql compile`** → Generates dialect-specific packages:
+**Run `shipq db compile`** → Generates dialect-specific packages:
 
 [source]
 ----
@@ -545,11 +545,11 @@ For tables created with `AddTable` (which includes standard columns: `id`, `publ
 
 === Basic CRUD Generation
 
-When you run `portsql compile`, CRUD is generated for eligible tables:
+When you run `shipq db compile`, CRUD is generated for eligible tables:
 
 [source,bash]
 ----
-$ portsql compile
+$ shipq db compile
 Generating for dialects: [sqlite]
 Found 3 registered queries
   Compiling: GetUserByEmail (one)
@@ -744,27 +744,27 @@ queries/
 [source,bash]
 ----
 # Create a new timestamped migration file
-portsql migrate new create_users
+shipq db migrate new create_users
 # Creates: migrations/YYYYMMDDHHMMSS_create_users.go
 
 # Run pending migrations and regenerate schematypes
-portsql migrate up
+shipq db migrate up
 
 # Drop all tables and re-run migrations (localhost only, for development)
-portsql migrate reset
+shipq db migrate reset
 
 # Compile query definitions to SQL strings
-portsql compile
+shipq db compile
 
 # Show help
-portsql help
+shipq db help
 ----
 
 == Project Structure
 
 [source]
 ----
-portsql/
+shipq/
 ├── src/
 │   ├── ddl/              # Table/column definition builders
 │   │   ├── types.go      # Column types, Table, Index definitions
@@ -794,8 +794,8 @@ portsql/
 │   │   └── crud_gen.go       # CRUD query generation
 │   │
 │   └── cli/              # CLI commands
-│       ├── compile.go    # portsql compile
-│       ├── migrate_up.go # portsql migrate up
+│       ├── compile.go    # shipq db compile
+│       ├── migrate_up.go # shipq db migrate up
 │       └── config.go     # Configuration loading
 │
 └── proptest/             # Property-based testing utilities

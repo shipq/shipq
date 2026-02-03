@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -497,6 +498,266 @@ dialects = sqlite
 				}
 			}
 		})
+	}
+}
+
+func TestSetup_GeneratesRunnerPackage(t *testing.T) {
+	// Create temp dir with a valid project name and schema.json
+	tmpBase := t.TempDir()
+	tmpDir := filepath.Join(tmpBase, "testproject")
+	if err := os.MkdirAll(tmpDir, 0755); err != nil {
+		t.Fatalf("failed to create dir: %v", err)
+	}
+
+	// Create migrations directory with schema.json
+	migrationsDir := filepath.Join(tmpDir, "migrations")
+	if err := os.MkdirAll(migrationsDir, 0755); err != nil {
+		t.Fatalf("failed to create migrations dir: %v", err)
+	}
+
+	schemaJSON := `{
+		"schema": {
+			"name": "",
+			"tables": {
+				"users": {
+					"name": "users",
+					"columns": [
+						{"name": "id", "type": "bigint", "primary_key": true},
+						{"name": "email", "type": "string"}
+					]
+				}
+			}
+		},
+		"migrations": []
+	}`
+	if err := os.WriteFile(filepath.Join(migrationsDir, "schema.json"), []byte(schemaJSON), 0644); err != nil {
+		t.Fatalf("failed to write schema.json: %v", err)
+	}
+
+	// Create go.mod for module path detection
+	goMod := "module testproject\n\ngo 1.21\n"
+	if err := os.WriteFile(filepath.Join(tmpDir, "go.mod"), []byte(goMod), 0644); err != nil {
+		t.Fatalf("failed to write go.mod: %v", err)
+	}
+
+	// Write shipq.ini with SQLite (no server needed)
+	iniContent := "[db]\nurl = sqlite://test.db\nrunner_package = db/generated\n"
+	if err := os.WriteFile(filepath.Join(tmpDir, "shipq.ini"), []byte(iniContent), 0644); err != nil {
+		t.Fatalf("failed to write shipq.ini: %v", err)
+	}
+
+	// Change to temp dir
+	oldWd, _ := os.Getwd()
+	defer os.Chdir(oldWd)
+	if err := os.Chdir(tmpDir); err != nil {
+		t.Fatalf("failed to chdir: %v", err)
+	}
+
+	cfg, err := LoadConfig("")
+	if err != nil {
+		t.Fatalf("failed to load config: %v", err)
+	}
+
+	var stdout, stderr bytes.Buffer
+	err = Setup(cfg, &stdout, &stderr)
+
+	if err != nil {
+		t.Errorf("Setup failed: %v", err)
+	}
+
+	// Check that runner package was generated
+	runnerPath := filepath.Join(tmpDir, "db", "generated", "runner.go")
+	if _, err := os.Stat(runnerPath); os.IsNotExist(err) {
+		t.Errorf("expected runner.go to be created at %s", runnerPath)
+	}
+
+	// Check that schema.json was copied
+	schemaPath := filepath.Join(tmpDir, "db", "generated", "schema.json")
+	if _, err := os.Stat(schemaPath); os.IsNotExist(err) {
+		t.Errorf("expected schema.json to be copied to %s", schemaPath)
+	}
+
+	// Check runner.go content
+	runnerContent, err := os.ReadFile(runnerPath)
+	if err != nil {
+		t.Fatalf("failed to read runner.go: %v", err)
+	}
+
+	expectedElements := []string{
+		"package generated",
+		"//go:embed schema.json",
+		"func Plan()",
+		"func Run(ctx context.Context, db *sql.DB, dialect string) error",
+	}
+
+	for _, expected := range expectedElements {
+		if !strings.Contains(string(runnerContent), expected) {
+			t.Errorf("runner.go missing %q", expected)
+		}
+	}
+
+	// Check that db.go was generated
+	dbPath := filepath.Join(tmpDir, "db", "generated", "db.go")
+	if _, err := os.Stat(dbPath); os.IsNotExist(err) {
+		t.Errorf("expected db.go to be created at %s", dbPath)
+	}
+
+	// Check db.go content has the expected structure
+	dbContent, err := os.ReadFile(dbPath)
+	if err != nil {
+		t.Fatalf("failed to read db.go: %v", err)
+	}
+
+	dbExpectedElements := []string{
+		"package generated",
+		`const localhostURL = "sqlite://test.db"`, // URL from shipq.ini injected at codegen time
+		`os.Getenv("DATABASE_URL")`,               // Checks DATABASE_URL env var first
+		"DB *sql.DB",                              // Part of var block
+		"func convertURL(",
+	}
+
+	for _, expected := range dbExpectedElements {
+		if !strings.Contains(string(dbContent), expected) {
+			t.Errorf("db.go missing %q", expected)
+		}
+	}
+
+	// Verify db.go does NOT contain the old runtime config loading
+	oldPatterns := []string{
+		"runtime.Caller",
+		"config.Load",
+		"filepath.Dir",
+	}
+	for _, old := range oldPatterns {
+		if strings.Contains(string(dbContent), old) {
+			t.Errorf("db.go should not contain old runtime config loading pattern %q", old)
+		}
+	}
+
+	// Check output mentions the runner package
+	output := stdout.String()
+	if !strings.Contains(output, "Generated DB runner package") {
+		t.Errorf("expected output to mention runner package generation, got: %s", output)
+	}
+}
+
+func TestSetup_RunnerPackageCustomDirectory(t *testing.T) {
+	// Test with a custom runner package directory
+	tmpBase := t.TempDir()
+	tmpDir := filepath.Join(tmpBase, "testproject")
+	if err := os.MkdirAll(tmpDir, 0755); err != nil {
+		t.Fatalf("failed to create dir: %v", err)
+	}
+
+	// Create migrations directory with schema.json
+	migrationsDir := filepath.Join(tmpDir, "migrations")
+	if err := os.MkdirAll(migrationsDir, 0755); err != nil {
+		t.Fatalf("failed to create migrations dir: %v", err)
+	}
+
+	schemaJSON := `{"schema": {"name": "", "tables": {}}, "migrations": []}`
+	if err := os.WriteFile(filepath.Join(migrationsDir, "schema.json"), []byte(schemaJSON), 0644); err != nil {
+		t.Fatalf("failed to write schema.json: %v", err)
+	}
+
+	// Create go.mod
+	goMod := "module testproject\n\ngo 1.21\n"
+	if err := os.WriteFile(filepath.Join(tmpDir, "go.mod"), []byte(goMod), 0644); err != nil {
+		t.Fatalf("failed to write go.mod: %v", err)
+	}
+
+	// Write shipq.ini with custom runner package directory
+	iniContent := "[db]\nurl = sqlite://test.db\nrunner_package = internal/dbrunner\n"
+	if err := os.WriteFile(filepath.Join(tmpDir, "shipq.ini"), []byte(iniContent), 0644); err != nil {
+		t.Fatalf("failed to write shipq.ini: %v", err)
+	}
+
+	// Change to temp dir
+	oldWd, _ := os.Getwd()
+	defer os.Chdir(oldWd)
+	if err := os.Chdir(tmpDir); err != nil {
+		t.Fatalf("failed to chdir: %v", err)
+	}
+
+	cfg, err := LoadConfig("")
+	if err != nil {
+		t.Fatalf("failed to load config: %v", err)
+	}
+
+	var stdout, stderr bytes.Buffer
+	err = Setup(cfg, &stdout, &stderr)
+
+	if err != nil {
+		t.Errorf("Setup failed: %v", err)
+	}
+
+	// Check that runner package was generated in custom directory
+	runnerPath := filepath.Join(tmpDir, "internal", "dbrunner", "runner.go")
+	if _, err := os.Stat(runnerPath); os.IsNotExist(err) {
+		t.Errorf("expected runner.go to be created at %s", runnerPath)
+	}
+
+	// Check package name matches directory base
+	runnerContent, err := os.ReadFile(runnerPath)
+	if err != nil {
+		t.Fatalf("failed to read runner.go: %v", err)
+	}
+
+	if !strings.Contains(string(runnerContent), "package dbrunner") {
+		t.Errorf("runner.go should have package dbrunner, got: %s", string(runnerContent))
+	}
+}
+
+func TestSetup_RunnerPackageSkippedWhenNoSchema(t *testing.T) {
+	// Test that runner package generation is skipped gracefully when schema.json doesn't exist
+	tmpBase := t.TempDir()
+	tmpDir := filepath.Join(tmpBase, "testproject")
+	if err := os.MkdirAll(tmpDir, 0755); err != nil {
+		t.Fatalf("failed to create dir: %v", err)
+	}
+
+	// Create migrations directory WITHOUT schema.json
+	migrationsDir := filepath.Join(tmpDir, "migrations")
+	if err := os.MkdirAll(migrationsDir, 0755); err != nil {
+		t.Fatalf("failed to create migrations dir: %v", err)
+	}
+
+	// Write shipq.ini with SQLite
+	iniContent := "[db]\nurl = sqlite://test.db\n"
+	if err := os.WriteFile(filepath.Join(tmpDir, "shipq.ini"), []byte(iniContent), 0644); err != nil {
+		t.Fatalf("failed to write shipq.ini: %v", err)
+	}
+
+	// Change to temp dir
+	oldWd, _ := os.Getwd()
+	defer os.Chdir(oldWd)
+	if err := os.Chdir(tmpDir); err != nil {
+		t.Fatalf("failed to chdir: %v", err)
+	}
+
+	cfg, err := LoadConfig("")
+	if err != nil {
+		t.Fatalf("failed to load config: %v", err)
+	}
+
+	var stdout, stderr bytes.Buffer
+	err = Setup(cfg, &stdout, &stderr)
+
+	// Setup should succeed even without schema.json
+	if err != nil {
+		t.Errorf("Setup should not fail when schema.json is missing: %v", err)
+	}
+
+	// Should mention that schema.json is not found
+	stderrStr := stderr.String()
+	if !strings.Contains(stderrStr, "schema.json not found") {
+		t.Errorf("expected note about missing schema.json, got: %s", stderrStr)
+	}
+
+	// Runner package should not be created
+	runnerPath := filepath.Join(tmpDir, "db", "generated", "runner.go")
+	if _, err := os.Stat(runnerPath); !os.IsNotExist(err) {
+		t.Errorf("runner.go should not be created when schema.json is missing")
 	}
 }
 

@@ -33,8 +33,8 @@ func TestRunHelp(t *testing.T) {
 			}
 
 			output := stdout.String()
-			if !strings.Contains(output, "portsql") {
-				t.Errorf("expected help output to contain 'portsql', got %q", output)
+			if !strings.Contains(output, "shipq db") {
+				t.Errorf("expected help output to contain 'shipq db', got %q", output)
 			}
 			if !strings.Contains(output, "migrate") {
 				t.Errorf("expected help output to contain 'migrate', got %q", output)
@@ -329,14 +329,14 @@ func TestRunCompileNoQueries(t *testing.T) {
 
 	code := cli.Execute()
 
-	// Should fail because querydef directory doesn't exist
+	// Should fail because no queries and no CRUD tables
 	if code != ExitError {
 		t.Errorf("expected exit code %d, got %d", ExitError, code)
 	}
 
 	errOutput := stderr.String()
-	if !strings.Contains(errOutput, "queries directory") {
-		t.Errorf("expected error about queries directory, got %q", errOutput)
+	if !strings.Contains(errOutput, "nothing to generate") {
+		t.Errorf("expected error about nothing to generate, got %q", errOutput)
 	}
 }
 
