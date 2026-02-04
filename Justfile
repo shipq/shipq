@@ -16,4 +16,4 @@ start-dbs:  # Start all databases (MySQL, PostgreSQL, SQLite)
     cd db/databases && goreman start
 
 test-all:  # Run all tests
-    go test -v ./... -tags=integration,property | tee -a $(date +%s).log
+    go test -v ./... -tags=integration,property | tee -a test_results/$(date +%s).log

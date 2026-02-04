@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/shipq/shipq/inifile"
+	"github.com/shipq/shipq/internal/dbops"
 	"github.com/shipq/shipq/project"
 )
 
@@ -40,7 +41,7 @@ func TestMysqlURLToDSN(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got, err := mysqlURLToDSN(tt.url)
+			got, err := dbops.MySQLURLToDSN(tt.url)
 			if tt.wantErr {
 				if err == nil {
 					t.Error("expected error, got nil")
@@ -59,43 +60,58 @@ func TestMysqlURLToDSN(t *testing.T) {
 
 func TestQuoteIdentifier(t *testing.T) {
 	tests := []struct {
-		name string
-		want string
+		name    string
+		dialect string
+		want    string
 	}{
 		{
-			name: "simple",
-			want: `"simple"`,
+			name:    "simple",
+			dialect: "postgres",
+			want:    `"simple"`,
 		},
 		{
-			name: "with_underscore",
-			want: `"with_underscore"`,
+			name:    "with_underscore",
+			dialect: "postgres",
+			want:    `"with_underscore"`,
 		},
 		{
-			name: `with"quote`,
-			want: `"with""quote"`,
+			name:    `with"quote`,
+			dialect: "postgres",
+			want:    `"with""quote"`,
 		},
 		{
-			name: `multiple"quotes"here`,
-			want: `"multiple""quotes""here"`,
+			name:    `multiple"quotes"here`,
+			dialect: "postgres",
+			want:    `"multiple""quotes""here"`,
+		},
+		{
+			name:    "simple",
+			dialect: "mysql",
+			want:    "`simple`",
+		},
+		{
+			name:    "with`backtick",
+			dialect: "mysql",
+			want:    "`with``backtick`",
 		},
 	}
 
 	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			got := quoteIdentifier(tt.name)
+		t.Run(tt.name+"_"+tt.dialect, func(t *testing.T) {
+			got := dbops.QuoteIdentifier(tt.name, tt.dialect)
 			if got != tt.want {
-				t.Errorf("quoteIdentifier(%q) = %q, want %q", tt.name, got, tt.want)
+				t.Errorf("QuoteIdentifier(%q, %q) = %q, want %q", tt.name, tt.dialect, got, tt.want)
 			}
 		})
 	}
 }
 
-func TestTouchFile(t *testing.T) {
+func TestCreateSQLiteDB(t *testing.T) {
 	t.Run("creates new file", func(t *testing.T) {
 		tmpDir := t.TempDir()
 		filePath := filepath.Join(tmpDir, "newfile.db")
 
-		err := touchFile(filePath)
+		err := dbops.CreateSQLiteDB(filePath)
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
@@ -114,7 +130,7 @@ func TestTouchFile(t *testing.T) {
 		}
 	})
 
-	t.Run("does not modify existing file", func(t *testing.T) {
+	t.Run("does not error on existing file", func(t *testing.T) {
 		tmpDir := t.TempDir()
 		filePath := filepath.Join(tmpDir, "existing.db")
 
@@ -124,18 +140,49 @@ func TestTouchFile(t *testing.T) {
 			t.Fatalf("failed to create test file: %v", err)
 		}
 
-		err := touchFile(filePath)
+		err := dbops.CreateSQLiteDB(filePath)
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
 
-		// Verify content is unchanged
+		// Verify content is unchanged (CreateSQLiteDB should not modify existing files)
 		gotContent, err := os.ReadFile(filePath)
 		if err != nil {
 			t.Fatalf("failed to read file: %v", err)
 		}
 		if string(gotContent) != string(content) {
 			t.Errorf("file content was modified")
+		}
+	})
+}
+
+func TestDropSQLiteDB(t *testing.T) {
+	t.Run("deletes existing file", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		filePath := filepath.Join(tmpDir, "test.db")
+
+		// Create file
+		if err := os.WriteFile(filePath, []byte("data"), 0644); err != nil {
+			t.Fatalf("failed to create test file: %v", err)
+		}
+
+		err := dbops.DropSQLiteDB(filePath)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+
+		if fileExists(filePath) {
+			t.Error("expected file to be deleted")
+		}
+	})
+
+	t.Run("does not error on non-existent file", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		filePath := filepath.Join(tmpDir, "nonexistent.db")
+
+		err := dbops.DropSQLiteDB(filePath)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
 		}
 	})
 }
@@ -284,4 +331,99 @@ func TestDbSetupValidation(t *testing.T) {
 			// The actual command would call cli.Fatal here
 		}
 	})
+}
+
+func TestSQLiteURLToPath(t *testing.T) {
+	tests := []struct {
+		name string
+		url  string
+		want string
+	}{
+		{
+			name: "sqlite:// prefix",
+			url:  "sqlite:///path/to/db.sqlite",
+			want: "/path/to/db.sqlite",
+		},
+		{
+			name: "sqlite: prefix",
+			url:  "sqlite:/path/to/db.sqlite",
+			want: "/path/to/db.sqlite",
+		},
+		{
+			name: "no prefix",
+			url:  "/path/to/db.sqlite",
+			want: "/path/to/db.sqlite",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := dbops.SQLiteURLToPath(tt.url)
+			if got != tt.want {
+				t.Errorf("SQLiteURLToPath(%q) = %q, want %q", tt.url, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestGenerateDropSQL(t *testing.T) {
+	tests := []struct {
+		name    string
+		dbName  string
+		dialect string
+		want    string
+	}{
+		{
+			name:    "postgres simple",
+			dbName:  "mydb",
+			dialect: "postgres",
+			want:    `DROP DATABASE IF EXISTS "mydb"`,
+		},
+		{
+			name:    "mysql simple",
+			dbName:  "mydb",
+			dialect: "mysql",
+			want:    "DROP DATABASE IF EXISTS `mydb`",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := dbops.GenerateDropSQL(tt.dbName, tt.dialect)
+			if got != tt.want {
+				t.Errorf("GenerateDropSQL(%q, %q) = %q, want %q", tt.dbName, tt.dialect, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestGenerateCreateSQL(t *testing.T) {
+	tests := []struct {
+		name    string
+		dbName  string
+		dialect string
+		want    string
+	}{
+		{
+			name:    "postgres simple",
+			dbName:  "mydb",
+			dialect: "postgres",
+			want:    `CREATE DATABASE "mydb"`,
+		},
+		{
+			name:    "mysql simple",
+			dbName:  "mydb",
+			dialect: "mysql",
+			want:    "CREATE DATABASE IF NOT EXISTS `mydb`",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := dbops.GenerateCreateSQL(tt.dbName, tt.dialect)
+			if got != tt.want {
+				t.Errorf("GenerateCreateSQL(%q, %q) = %q, want %q", tt.dbName, tt.dialect, got, tt.want)
+			}
+		})
+	}
 }

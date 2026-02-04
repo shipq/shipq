@@ -107,3 +107,33 @@ func WithDatabaseName(dbURL, dbname string) (string, error) {
 	u.Path = "/" + dbname
 	return u.String(), nil
 }
+
+// TestDatabaseURL returns the test database URL for a given dev URL.
+// Convention: test database is named {dev_db}_test
+// For SQLite: foo.db -> foo_test.db
+func TestDatabaseURL(devURL string) (string, error) {
+	devDBName := ParseDatabaseName(devURL)
+	if devDBName == "" {
+		return "", fmt.Errorf("could not parse database name from URL")
+	}
+
+	dialect, err := InferDialectFromDBUrl(devURL)
+	if err != nil {
+		return "", err
+	}
+
+	var testDBName string
+	if dialect == DialectSQLite {
+		// For SQLite, insert _test before the .db extension
+		// path/to/foo.db -> path/to/foo_test.db
+		if strings.HasSuffix(devDBName, ".db") {
+			testDBName = strings.TrimSuffix(devDBName, ".db") + "_test.db"
+		} else {
+			testDBName = devDBName + "_test"
+		}
+	} else {
+		testDBName = devDBName + "_test"
+	}
+
+	return WithDatabaseName(devURL, testDBName)
+}

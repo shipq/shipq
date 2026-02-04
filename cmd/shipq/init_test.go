@@ -9,6 +9,125 @@ import (
 	"github.com/shipq/shipq/project"
 )
 
+func TestEnsureGitignore_CreatesNewFile(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	updated, err := ensureGitignore(tmpDir)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if !updated {
+		t.Error("expected updated=true for new file")
+	}
+
+	gitignorePath := filepath.Join(tmpDir, ".gitignore")
+	content, err := os.ReadFile(gitignorePath)
+	if err != nil {
+		t.Fatalf("failed to read .gitignore: %v", err)
+	}
+
+	if !strings.Contains(string(content), ".shipq/") {
+		t.Errorf("expected .shipq/ in .gitignore, got:\n%s", content)
+	}
+
+	if !strings.Contains(string(content), "# shipq generated files") {
+		t.Errorf("expected comment in .gitignore, got:\n%s", content)
+	}
+}
+
+func TestEnsureGitignore_AppendsToExisting(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	// Create existing .gitignore
+	existingContent := "node_modules/\n*.log\n"
+	gitignorePath := filepath.Join(tmpDir, ".gitignore")
+	if err := os.WriteFile(gitignorePath, []byte(existingContent), 0644); err != nil {
+		t.Fatalf("failed to create .gitignore: %v", err)
+	}
+
+	updated, err := ensureGitignore(tmpDir)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if !updated {
+		t.Error("expected updated=true when appending")
+	}
+
+	content, err := os.ReadFile(gitignorePath)
+	if err != nil {
+		t.Fatalf("failed to read .gitignore: %v", err)
+	}
+
+	contentStr := string(content)
+
+	// Should preserve existing content
+	if !strings.Contains(contentStr, "node_modules/") {
+		t.Error("existing content was not preserved")
+	}
+
+	// Should add .shipq/
+	if !strings.Contains(contentStr, ".shipq/") {
+		t.Error("expected .shipq/ to be added")
+	}
+}
+
+func TestEnsureGitignore_DoesNotDuplicate(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	// Create .gitignore that already has .shipq/
+	existingContent := "node_modules/\n.shipq/\n*.log\n"
+	gitignorePath := filepath.Join(tmpDir, ".gitignore")
+	if err := os.WriteFile(gitignorePath, []byte(existingContent), 0644); err != nil {
+		t.Fatalf("failed to create .gitignore: %v", err)
+	}
+
+	updated, err := ensureGitignore(tmpDir)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if updated {
+		t.Error("expected updated=false when .shipq/ already present")
+	}
+
+	content, err := os.ReadFile(gitignorePath)
+	if err != nil {
+		t.Fatalf("failed to read .gitignore: %v", err)
+	}
+
+	// Content should be unchanged
+	if string(content) != existingContent {
+		t.Errorf("content was modified when it shouldn't have been:\nexpected:\n%s\ngot:\n%s", existingContent, content)
+	}
+}
+
+func TestEnsureGitignore_RecognizesVariations(t *testing.T) {
+	variations := []string{".shipq/", ".shipq", "/.shipq/", "/.shipq"}
+
+	for _, variation := range variations {
+		t.Run(variation, func(t *testing.T) {
+			tmpDir := t.TempDir()
+
+			existingContent := "node_modules/\n" + variation + "\n"
+			gitignorePath := filepath.Join(tmpDir, ".gitignore")
+			if err := os.WriteFile(gitignorePath, []byte(existingContent), 0644); err != nil {
+				t.Fatalf("failed to create .gitignore: %v", err)
+			}
+
+			updated, err := ensureGitignore(tmpDir)
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+
+			if updated {
+				t.Errorf("expected updated=false for variation %q", variation)
+			}
+		})
+	}
+}
+
 func TestGetGoVersion(t *testing.T) {
 	version := getGoVersion()
 

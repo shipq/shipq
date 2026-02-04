@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"database/sql"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -13,6 +12,7 @@ import (
 	"github.com/shipq/shipq/cli"
 	"github.com/shipq/shipq/dburl"
 	"github.com/shipq/shipq/inifile"
+	"github.com/shipq/shipq/internal/dbops"
 	"github.com/shipq/shipq/project"
 )
 
@@ -87,28 +87,25 @@ func dbSetupCmd() {
 
 // setupPostgres creates PostgreSQL databases and returns the connection URL.
 func setupPostgres(databaseURL, projectName string) (string, error) {
-	// Connect to postgres database using pgx stdlib driver
-	db, err := sql.Open("pgx", databaseURL)
+	// Open maintenance connection to postgres database
+	db, err := dbops.OpenMaintenanceDB(databaseURL, "postgres")
 	if err != nil {
-		return "", fmt.Errorf("failed to connect to PostgreSQL: %w", err)
+		return "", err
 	}
 	defer db.Close()
 
 	ctx := context.Background()
-	if err := db.PingContext(ctx); err != nil {
-		return "", fmt.Errorf("failed to ping PostgreSQL: %w", err)
-	}
 
 	// Create main database
 	dbName := projectName
-	if err := createPostgresDB(ctx, db, dbName); err != nil {
+	if err := dbops.CreatePostgresDB(ctx, db, dbName); err != nil {
 		return "", err
 	}
 	cli.Successf("Created database: %s", dbName)
 
 	// Create test database
 	testDBName := projectName + "_test"
-	if err := createPostgresDB(ctx, db, testDBName); err != nil {
+	if err := dbops.CreatePostgresDB(ctx, db, testDBName); err != nil {
 		return "", err
 	}
 	cli.Successf("Created database: %s", testDBName)
@@ -120,61 +117,29 @@ func setupPostgres(databaseURL, projectName string) (string, error) {
 	}
 
 	return finalURL, nil
-}
-
-// createPostgresDB creates a PostgreSQL database if it doesn't exist.
-func createPostgresDB(ctx context.Context, db *sql.DB, dbName string) error {
-	// Check if database exists
-	var exists bool
-	err := db.QueryRowContext(ctx, "SELECT EXISTS(SELECT 1 FROM pg_database WHERE datname = $1)", dbName).Scan(&exists)
-	if err != nil {
-		return fmt.Errorf("failed to check if database exists: %w", err)
-	}
-
-	if exists {
-		cli.Infof("Database %s already exists", dbName)
-		return nil
-	}
-
-	// Create database (can't use prepared statement for CREATE DATABASE)
-	_, err = db.ExecContext(ctx, fmt.Sprintf("CREATE DATABASE %s", quoteIdentifier(dbName)))
-	if err != nil {
-		return fmt.Errorf("failed to create database %s: %w", dbName, err)
-	}
-
-	return nil
 }
 
 // setupMySQL creates MySQL databases and returns the connection URL.
 func setupMySQL(databaseURL, projectName string) (string, error) {
-	// Parse the URL to get connection parameters
-	// MySQL driver expects: user:password@tcp(host:port)/dbname
-	dsn, err := mysqlURLToDSN(databaseURL)
+	// Open maintenance connection
+	db, err := dbops.OpenMaintenanceDB(databaseURL, "mysql")
 	if err != nil {
-		return "", fmt.Errorf("failed to parse MySQL URL: %w", err)
-	}
-
-	db, err := sql.Open("mysql", dsn)
-	if err != nil {
-		return "", fmt.Errorf("failed to connect to MySQL: %w", err)
+		return "", err
 	}
 	defer db.Close()
 
 	ctx := context.Background()
-	if err := db.PingContext(ctx); err != nil {
-		return "", fmt.Errorf("failed to ping MySQL: %w", err)
-	}
 
 	// Create main database
 	dbName := projectName
-	if err := createMySQLDB(ctx, db, dbName); err != nil {
+	if err := dbops.CreateMySQLDB(ctx, db, dbName); err != nil {
 		return "", err
 	}
 	cli.Successf("Created database: %s", dbName)
 
 	// Create test database
 	testDBName := projectName + "_test"
-	if err := createMySQLDB(ctx, db, testDBName); err != nil {
+	if err := dbops.CreateMySQLDB(ctx, db, testDBName); err != nil {
 		return "", err
 	}
 	cli.Successf("Created database: %s", testDBName)
@@ -186,62 +151,6 @@ func setupMySQL(databaseURL, projectName string) (string, error) {
 	}
 
 	return finalURL, nil
-}
-
-// createMySQLDB creates a MySQL database if it doesn't exist.
-func createMySQLDB(ctx context.Context, db *sql.DB, dbName string) error {
-	// MySQL supports IF NOT EXISTS
-	_, err := db.ExecContext(ctx, fmt.Sprintf("CREATE DATABASE IF NOT EXISTS `%s`", dbName))
-	if err != nil {
-		return fmt.Errorf("failed to create database %s: %w", dbName, err)
-	}
-	return nil
-}
-
-// mysqlURLToDSN converts a mysql:// URL to a MySQL DSN.
-func mysqlURLToDSN(mysqlURL string) (string, error) {
-	// Parse mysql://user@host:port/dbname to user@tcp(host:port)/dbname
-	importURL := mysqlURL
-	if len(importURL) > 8 && importURL[:8] == "mysql://" {
-		importURL = importURL[8:]
-	}
-
-	// Find @ separator
-	atIdx := -1
-	for i, c := range importURL {
-		if c == '@' {
-			atIdx = i
-			break
-		}
-	}
-
-	if atIdx == -1 {
-		return "", fmt.Errorf("invalid MySQL URL: missing @ separator")
-	}
-
-	user := importURL[:atIdx]
-	rest := importURL[atIdx+1:]
-
-	// Find / separator for database
-	slashIdx := -1
-	for i, c := range rest {
-		if c == '/' {
-			slashIdx = i
-			break
-		}
-	}
-
-	var hostPort, dbName string
-	if slashIdx == -1 {
-		hostPort = rest
-		dbName = ""
-	} else {
-		hostPort = rest[:slashIdx]
-		dbName = rest[slashIdx+1:]
-	}
-
-	// Build DSN: user@tcp(host:port)/dbname
-	return fmt.Sprintf("%s@tcp(%s)/%s", user, hostPort, dbName), nil
 }
 
 // setupSQLite ensures the SQLite database file exists and returns the URL.
@@ -253,43 +162,17 @@ func setupSQLite(projectRoot, projectName string) (string, error) {
 
 	// Main database
 	dbPath := filepath.Join(dataDir, projectName+".db")
-	if err := touchFile(dbPath); err != nil {
+	if err := dbops.CreateSQLiteDB(dbPath); err != nil {
 		return "", err
 	}
 	cli.Successf("Created database file: %s", dbPath)
 
 	// Test database
 	testDBPath := filepath.Join(dataDir, projectName+"_test.db")
-	if err := touchFile(testDBPath); err != nil {
+	if err := dbops.CreateSQLiteDB(testDBPath); err != nil {
 		return "", err
 	}
 	cli.Successf("Created database file: %s", testDBPath)
 
 	return dburl.BuildSQLiteURL(dbPath), nil
-}
-
-// touchFile creates an empty file if it doesn't exist.
-func touchFile(path string) error {
-	if _, err := os.Stat(path); os.IsNotExist(err) {
-		file, err := os.Create(path)
-		if err != nil {
-			return fmt.Errorf("failed to create file %s: %w", path, err)
-		}
-		file.Close()
-	}
-	return nil
-}
-
-// quoteIdentifier quotes a PostgreSQL identifier to prevent SQL injection.
-func quoteIdentifier(name string) string {
-	// Simple quoting - in production, use a proper escaping function
-	result := ""
-	for _, c := range name {
-		if c == '"' {
-			result += "\"\""
-		} else {
-			result += string(c)
-		}
-	}
-	return "\"" + result + "\""
 }

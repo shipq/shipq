@@ -294,6 +294,64 @@ func TestParseDatabaseName(t *testing.T) {
 	}
 }
 
+func TestTestDatabaseURL(t *testing.T) {
+	tests := []struct {
+		name    string
+		devURL  string
+		want    string
+		wantErr bool
+	}{
+		{
+			name:   "postgres URL",
+			devURL: "postgres://user@localhost:5432/myapp",
+			want:   "postgres://user@localhost:5432/myapp_test",
+		},
+		{
+			name:   "mysql URL",
+			devURL: "mysql://root@localhost:3306/myapp",
+			want:   "mysql://root@localhost:3306/myapp_test",
+		},
+		{
+			name:   "sqlite URL with .db extension",
+			devURL: "sqlite:///path/to/myapp.db",
+			want:   "sqlite:///path/to/myapp_test.db",
+		},
+		{
+			name:   "sqlite URL without .db extension",
+			devURL: "sqlite:///path/to/myapp",
+			want:   "sqlite:///path/to/myapp_test",
+		},
+		{
+			name:    "empty database name",
+			devURL:  "postgres://user@localhost:5432/",
+			wantErr: true,
+		},
+		{
+			name:    "invalid URL",
+			devURL:  "://invalid",
+			wantErr: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := TestDatabaseURL(tt.devURL)
+			if tt.wantErr {
+				if err == nil {
+					t.Fatal("expected error, got nil")
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if got != tt.want {
+				t.Errorf("got %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
 func TestWithDatabaseName(t *testing.T) {
 	tests := []struct {
 		name    string
