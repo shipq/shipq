@@ -40,7 +40,7 @@ func handlerGenerateCmd(args []string) {
 	}
 
 	// Load the migration plan (schema.json)
-	schemaPath := filepath.Join(projectRoot, "shipq", "migrate", "schema.json")
+	schemaPath := filepath.Join(projectRoot, "shipq", "db", "migrate", "schema.json")
 	schemaData, err := os.ReadFile(schemaPath)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "error: failed to read schema.json: %v\n", err)

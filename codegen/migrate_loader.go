@@ -217,7 +217,7 @@ func GenerateMigrationRunnerForTest(migrations []MigrationFile) string {
 // LoadMigrationPlan loads the migration plan from schema.json.
 // Returns nil if schema.json doesn't exist.
 func LoadMigrationPlan(projectRoot string) (*migrate.MigrationPlan, error) {
-	schemaPath := filepath.Join(projectRoot, "shipq", "migrate", "schema.json")
+	schemaPath := filepath.Join(projectRoot, "shipq", "db", "migrate", "schema.json")
 
 	data, err := os.ReadFile(schemaPath)
 	if err != nil {

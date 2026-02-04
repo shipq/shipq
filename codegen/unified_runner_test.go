@@ -190,9 +190,9 @@ func TestGenerateUnifiedRunner_WithSchema(t *testing.T) {
 		t.Error("expected deleteUserSQL field")
 	}
 
-	// Should have CRUD methods
-	if !strings.Contains(codeStr, "func (r *QueryRunner) GetUser(ctx context.Context") {
-		t.Error("expected GetUser method")
+	// Should have CRUD methods with contract-based naming
+	if !strings.Contains(codeStr, "func (r *QueryRunner) GetUserByPublicID(ctx context.Context") {
+		t.Error("expected GetUserByPublicID method")
 	}
 	if !strings.Contains(codeStr, "func (r *QueryRunner) ListUsers(ctx context.Context") {
 		t.Error("expected ListUsers method")
@@ -200,11 +200,11 @@ func TestGenerateUnifiedRunner_WithSchema(t *testing.T) {
 	if !strings.Contains(codeStr, "func (r *QueryRunner) CreateUser(ctx context.Context") {
 		t.Error("expected CreateUser method")
 	}
-	if !strings.Contains(codeStr, "func (r *QueryRunner) UpdateUser(ctx context.Context") {
-		t.Error("expected UpdateUser method")
+	if !strings.Contains(codeStr, "func (r *QueryRunner) UpdateUserByPublicID(ctx context.Context") {
+		t.Error("expected UpdateUserByPublicID method")
 	}
-	if !strings.Contains(codeStr, "func (r *QueryRunner) DeleteUser(ctx context.Context") {
-		t.Error("expected DeleteUser method")
+	if !strings.Contains(codeStr, "func (r *QueryRunner) SoftDeleteUserByPublicID(ctx context.Context") {
+		t.Error("expected SoftDeleteUserByPublicID method")
 	}
 }
 
@@ -327,9 +327,8 @@ func TestGenerateSharedTypes_WithSchema(t *testing.T) {
 	codeStr := string(code)
 
 	// Should have CRUD types
-	if !strings.Contains(codeStr, "type GetUserParams struct") {
-		t.Error("expected GetUserParams struct")
-	}
+	// Check for CRUD types with contract-based naming
+	// No GetUserParams - Get takes publicID directly
 	if !strings.Contains(codeStr, "type GetUserResult struct") {
 		t.Error("expected GetUserResult struct")
 	}
@@ -338,6 +337,12 @@ func TestGenerateSharedTypes_WithSchema(t *testing.T) {
 	}
 	if !strings.Contains(codeStr, "type ListUsersItem struct") {
 		t.Error("expected ListUsersItem struct")
+	}
+	if !strings.Contains(codeStr, "type ListUsersResult struct") {
+		t.Error("expected ListUsersResult struct")
+	}
+	if !strings.Contains(codeStr, "type ListUsersCursor struct") {
+		t.Error("expected ListUsersCursor struct")
 	}
 	if !strings.Contains(codeStr, "type CreateUserParams struct") {
 		t.Error("expected CreateUserParams struct")
@@ -348,9 +353,10 @@ func TestGenerateSharedTypes_WithSchema(t *testing.T) {
 	if !strings.Contains(codeStr, "type UpdateUserParams struct") {
 		t.Error("expected UpdateUserParams struct")
 	}
-	if !strings.Contains(codeStr, "type DeleteUserParams struct") {
-		t.Error("expected DeleteUserParams struct")
+	if !strings.Contains(codeStr, "type UpdateUserResult struct") {
+		t.Error("expected UpdateUserResult struct")
 	}
+	// No DeleteUserParams - SoftDelete takes publicID directly
 }
 
 func TestGenerateUnifiedRunner_MySQLDialect(t *testing.T) {

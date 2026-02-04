@@ -32,7 +32,7 @@ func createBaseHandlers() error {
 	}
 
 	// Load the migration plan (schema.json)
-	schemaPath := filepath.Join(projectRoot, "shipq", "migrate", "schema.json")
+	schemaPath := filepath.Join(projectRoot, "shipq", "db", "migrate", "schema.json")
 	schemaData, err := os.ReadFile(schemaPath)
 	if err != nil {
 		return fmt.Errorf("failed to read schema.json: %w\nMake sure migrations have been run.", err)
@@ -112,6 +112,15 @@ func createBaseHandlers() error {
 			}
 			if changed {
 				changedFiles++
+			}
+		}
+
+		// Write .shipq-no-regen marker file to prevent future regeneration
+		markerPath := filepath.Join(apiDir, ".shipq-no-regen")
+		if _, err := os.Stat(markerPath); os.IsNotExist(err) {
+			markerContent := "# This file prevents shipq from regenerating handlers in this directory.\n# Delete this file if you want shipq to regenerate the handlers.\n"
+			if err := os.WriteFile(markerPath, []byte(markerContent), 0644); err != nil {
+				return fmt.Errorf("failed to write %s: %w", markerPath, err)
 			}
 		}
 

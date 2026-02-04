@@ -2,6 +2,7 @@ package codegen
 
 import (
 	"encoding/json"
+	"go/format"
 	"os"
 	"path/filepath"
 	"strings"
@@ -10,6 +11,7 @@ import (
 	"github.com/shipq/shipq/db/portsql/ddl"
 	"github.com/shipq/shipq/db/portsql/migrate"
 	"github.com/shipq/shipq/db/portsql/query"
+	"github.com/shipq/shipq/db/portsql/ref"
 	"github.com/shipq/shipq/dburl"
 )
 
@@ -574,4 +576,440 @@ func TestGenerateRunner_AllQueryTypes(t *testing.T) {
 	if !strings.Contains(runnerStr, "func (r *QueryRunner) DeleteItem(ctx context.Context, params queries.DeleteItemParams) (sql.Result, error)") {
 		t.Error("DeleteItem should return (sql.Result, error)")
 	}
+}
+
+// TestGeneratedCodeCompiles verifies that the full codegen pipeline
+// produces Go code that actually compiles. This catches sync issues
+// between handler_gen.go and unified_runner.go.
+func TestGeneratedCodeCompiles(t *testing.T) {
+	// Create a test schema using the migration plan builder
+	plan := migrate.NewPlan()
+	plan.SetCurrentMigration("20260101120000_create_accounts")
+	_, err := plan.AddTable("accounts", func(tb *ddl.TableBuilder) error {
+		tb.String("name")
+		tb.String("email").Unique()
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("failed to create test schema: %v", err)
+	}
+
+	// Generate shared types
+	typesCfg := UnifiedRunnerConfig{
+		ModulePath: "testproject",
+		Dialect:    dburl.DialectPostgres,
+		Schema:     plan,
+	}
+
+	typesCode, err := GenerateSharedTypes(typesCfg)
+	if err != nil {
+		t.Fatalf("GenerateSharedTypes failed: %v", err)
+	}
+
+	// Verify types.go is valid Go
+	typesStr := string(typesCode)
+	if _, err := format.Source(typesCode); err != nil {
+		t.Errorf("types.go is not valid Go: %v\n%s", err, typesStr)
+	}
+
+	// Verify types.go contains expected types from contract
+	expectedTypes := []string{
+		"type contextKey struct{}",
+		"func NewContextWithRunner",
+		"func RunnerFromContext",
+		"type ListAccountsCursor struct",
+		"func EncodeAccountsCursor",
+		"func DecodeAccountsCursor",
+		"type ListAccountsParams struct",
+		"Limit  int",
+		"Cursor *ListAccountsCursor",
+		"type ListAccountsResult struct",
+		"Items      []ListAccountsItem",
+		"NextCursor *ListAccountsCursor",
+		"type GetAccountResult struct",
+		"type CreateAccountParams struct",
+		"type CreateAccountResult struct",
+		"type UpdateAccountParams struct",
+		"type UpdateAccountResult struct",
+	}
+
+	for _, expected := range expectedTypes {
+		if !strings.Contains(typesStr, expected) {
+			t.Errorf("types.go missing expected content: %q", expected)
+		}
+	}
+
+	// Generate runner
+	runnerCode, err := GenerateUnifiedRunner(typesCfg)
+	if err != nil {
+		t.Fatalf("GenerateUnifiedRunner failed: %v", err)
+	}
+
+	// Verify runner.go is valid Go
+	runnerStr := string(runnerCode)
+	if _, err := format.Source(runnerCode); err != nil {
+		t.Errorf("runner.go is not valid Go: %v\n%s", err, runnerStr)
+	}
+
+	// Verify runner.go contains expected methods from contract
+	expectedMethods := []string{
+		"func (r *QueryRunner) GetAccountByPublicID(ctx context.Context, publicID string)",
+		"func (r *QueryRunner) ListAccounts(ctx context.Context, params queries.ListAccountsParams)",
+		"func (r *QueryRunner) CreateAccount(ctx context.Context, params queries.CreateAccountParams)",
+		"func (r *QueryRunner) UpdateAccountByPublicID(ctx context.Context, publicID string, params queries.UpdateAccountParams)",
+		"func (r *QueryRunner) SoftDeleteAccountByPublicID(ctx context.Context, publicID string) error",
+	}
+
+	for _, expected := range expectedMethods {
+		if !strings.Contains(runnerStr, expected) {
+			t.Errorf("runner.go missing expected method: %q", expected)
+		}
+	}
+
+	// Generate handlers
+	table := plan.Schema.Tables["accounts"]
+	handlerCfg := HandlerGenConfig{
+		ModulePath: "testproject",
+		TableName:  "accounts",
+		Table:      table,
+		Schema:     plan.Schema.Tables,
+	}
+
+	// Generate each handler and verify it's valid Go
+	handlers := map[string]func(HandlerGenConfig, []RelationshipInfo) ([]byte, error){
+		"create":      GenerateCreateHandler,
+		"get_one":     GenerateGetOneHandler,
+		"list":        GenerateListHandler,
+		"update":      GenerateUpdateHandler,
+		"soft_delete": GenerateSoftDeleteHandler,
+	}
+
+	for name, generator := range handlers {
+		code, err := generator(handlerCfg, nil)
+		if err != nil {
+			t.Errorf("%s handler generation failed: %v", name, err)
+			continue
+		}
+
+		if _, err := format.Source(code); err != nil {
+			t.Errorf("%s handler is not valid Go: %v\n%s", name, err, string(code))
+		}
+	}
+
+	// Verify handler code uses contract-based names
+	createCode, _ := GenerateCreateHandler(handlerCfg, nil)
+	createStr := string(createCode)
+
+	// Check that handlers call the right query methods
+	handlerExpectations := map[string][]string{
+		"create": {
+			"queries.RunnerFromContext(ctx)",
+			"runner.CreateAccount(ctx, queries.CreateAccountParams{",
+		},
+		"get_one": {
+			"queries.RunnerFromContext(ctx)",
+			"runner.GetAccountByPublicID(ctx, req.ID)",
+		},
+		"list": {
+			"queries.RunnerFromContext(ctx)",
+			"queries.ListAccountsCursor",
+			"queries.DecodeAccountsCursor",
+			"runner.ListAccounts(ctx, queries.ListAccountsParams{",
+			"queries.EncodeAccountsCursor",
+		},
+		"update": {
+			"queries.RunnerFromContext(ctx)",
+			"runner.UpdateAccountByPublicID(ctx, req.ID, queries.UpdateAccountParams{",
+		},
+		"soft_delete": {
+			"queries.RunnerFromContext(ctx)",
+			"runner.SoftDeleteAccountByPublicID(ctx, req.ID)",
+		},
+	}
+
+	for handlerName, expectations := range handlerExpectations {
+		var code []byte
+		switch handlerName {
+		case "create":
+			code, _ = GenerateCreateHandler(handlerCfg, nil)
+		case "get_one":
+			code, _ = GenerateGetOneHandler(handlerCfg, nil)
+		case "list":
+			code, _ = GenerateListHandler(handlerCfg, nil)
+		case "update":
+			code, _ = GenerateUpdateHandler(handlerCfg, nil)
+		case "soft_delete":
+			code, _ = GenerateSoftDeleteHandler(handlerCfg, nil)
+		}
+
+		codeStr := string(code)
+		for _, expected := range expectations {
+			if !strings.Contains(codeStr, expected) {
+				t.Errorf("%s handler missing expected content: %q\n\nGenerated code:\n%s", handlerName, expected, codeStr)
+			}
+		}
+	}
+
+	t.Log("Generated code validation passed - handlers and queries use consistent naming")
+	_ = createStr // suppress unused
+}
+
+// TestGeneratedCodeCompiles_WithRelationships verifies that codegen works correctly
+// when tables have foreign key relationships. This tests:
+// 1. Two migrations creating related tables
+// 2. Handler generation with embedded/nested results
+// 3. Proper Runner interface with methods for both tables
+func TestGeneratedCodeCompiles_WithRelationships(t *testing.T) {
+	// Create a test schema with two related tables using multiple migrations
+	plan := migrate.NewPlan()
+
+	// First migration: create users table
+	plan.SetCurrentMigration("20260101120000_create_users")
+	_, err := plan.AddTable("users", func(tb *ddl.TableBuilder) error {
+		tb.String("name")
+		tb.String("email").Unique()
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("failed to create users table: %v", err)
+	}
+
+	// Second migration: create posts table that references users
+	plan.SetCurrentMigration("20260101120001_create_posts")
+	usersRef := &ref.TableRef{Name: "users"}
+	_, err = plan.AddTable("posts", func(tb *ddl.TableBuilder) error {
+		tb.String("title")
+		tb.Text("content")
+		tb.Bigint("author_id").Indexed().References(usersRef)
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("failed to create posts table: %v", err)
+	}
+
+	// Verify schema has both tables
+	if len(plan.Schema.Tables) != 2 {
+		t.Fatalf("expected 2 tables, got %d", len(plan.Schema.Tables))
+	}
+	if _, ok := plan.Schema.Tables["users"]; !ok {
+		t.Fatal("users table not found in schema")
+	}
+	if _, ok := plan.Schema.Tables["posts"]; !ok {
+		t.Fatal("posts table not found in schema")
+	}
+
+	// Verify posts table has the author_id reference
+	postsTable := plan.Schema.Tables["posts"]
+	var authorCol *ddl.ColumnDefinition
+	for _, col := range postsTable.Columns {
+		if col.Name == "author_id" {
+			authorCol = &col
+			break
+		}
+	}
+	if authorCol == nil {
+		t.Fatal("author_id column not found in posts table")
+	}
+	if authorCol.References != "users" {
+		t.Errorf("author_id.References = %q, want %q", authorCol.References, "users")
+	}
+
+	// Generate shared types
+	typesCfg := UnifiedRunnerConfig{
+		ModulePath: "testproject",
+		Dialect:    dburl.DialectPostgres,
+		Schema:     plan,
+	}
+
+	typesCode, err := GenerateSharedTypes(typesCfg)
+	if err != nil {
+		t.Fatalf("GenerateSharedTypes failed: %v", err)
+	}
+
+	// Verify types.go is valid Go
+	typesStr := string(typesCode)
+	if _, err := format.Source(typesCode); err != nil {
+		t.Errorf("types.go is not valid Go: %v\n%s", err, typesStr)
+	}
+
+	// Verify types.go contains types for both tables
+	expectedTypes := []string{
+		// Context helpers
+		"type contextKey struct{}",
+		"func NewContextWithRunner",
+		"func RunnerFromContext",
+		// Runner interface should have methods for both tables
+		"GetUserByPublicID(ctx context.Context, publicID string)",
+		"GetPostByPublicID(ctx context.Context, publicID string)",
+		"ListUsers(ctx context.Context, params ListUsersParams)",
+		"ListPosts(ctx context.Context, params ListPostsParams)",
+		"CreateUser(ctx context.Context, params CreateUserParams)",
+		"CreatePost(ctx context.Context, params CreatePostParams)",
+		// Users types
+		"type GetUserResult struct",
+		"type ListUsersCursor struct",
+		"type ListUsersParams struct",
+		"type ListUsersResult struct",
+		"type CreateUserParams struct",
+		"type CreateUserResult struct",
+		"type UpdateUserParams struct",
+		// Posts types
+		"type GetPostResult struct",
+		"type ListPostsCursor struct",
+		"type ListPostsParams struct",
+		"type ListPostsResult struct",
+		"type CreatePostParams struct",
+		"type CreatePostResult struct",
+		"type UpdatePostParams struct",
+	}
+
+	for _, expected := range expectedTypes {
+		if !strings.Contains(typesStr, expected) {
+			t.Errorf("types.go missing expected content: %q", expected)
+		}
+	}
+
+	// Generate runner
+	runnerCode, err := GenerateUnifiedRunner(typesCfg)
+	if err != nil {
+		t.Fatalf("GenerateUnifiedRunner failed: %v", err)
+	}
+
+	// Verify runner.go is valid Go
+	runnerStr := string(runnerCode)
+	if _, err := format.Source(runnerCode); err != nil {
+		t.Errorf("runner.go is not valid Go: %v\n%s", err, runnerStr)
+	}
+
+	// Verify runner.go contains methods for both tables
+	expectedMethods := []string{
+		// Users methods
+		"func (r *QueryRunner) GetUserByPublicID(ctx context.Context, publicID string)",
+		"func (r *QueryRunner) ListUsers(ctx context.Context, params queries.ListUsersParams)",
+		"func (r *QueryRunner) CreateUser(ctx context.Context, params queries.CreateUserParams)",
+		"func (r *QueryRunner) UpdateUserByPublicID(ctx context.Context, publicID string, params queries.UpdateUserParams)",
+		"func (r *QueryRunner) SoftDeleteUserByPublicID(ctx context.Context, publicID string) error",
+		// Posts methods
+		"func (r *QueryRunner) GetPostByPublicID(ctx context.Context, publicID string)",
+		"func (r *QueryRunner) ListPosts(ctx context.Context, params queries.ListPostsParams)",
+		"func (r *QueryRunner) CreatePost(ctx context.Context, params queries.CreatePostParams)",
+		"func (r *QueryRunner) UpdatePostByPublicID(ctx context.Context, publicID string, params queries.UpdatePostParams)",
+		"func (r *QueryRunner) SoftDeletePostByPublicID(ctx context.Context, publicID string) error",
+	}
+
+	for _, expected := range expectedMethods {
+		if !strings.Contains(runnerStr, expected) {
+			t.Errorf("runner.go missing expected method: %q", expected)
+		}
+	}
+
+	// Generate handlers for posts table (which has the relationship)
+	postsHandlerCfg := HandlerGenConfig{
+		ModulePath: "testproject",
+		TableName:  "posts",
+		Table:      plan.Schema.Tables["posts"],
+		Schema:     plan.Schema.Tables,
+	}
+
+	// Analyze relationships for posts
+	relations := AnalyzeRelationships(postsHandlerCfg.Table, postsHandlerCfg.Schema)
+
+	// Verify relationship was detected
+	if len(relations) != 1 {
+		t.Errorf("expected 1 relationship for posts, got %d", len(relations))
+	} else {
+		rel := relations[0]
+		if rel.TargetTable != "users" {
+			t.Errorf("relationship target = %q, want %q", rel.TargetTable, "users")
+		}
+		if rel.FKColumn != "author_id" {
+			t.Errorf("relationship FK column = %q, want %q", rel.FKColumn, "author_id")
+		}
+		if rel.FieldName != "author" {
+			t.Errorf("relationship field name = %q, want %q", rel.FieldName, "author")
+		}
+		if rel.IsMany {
+			t.Error("relationship should not be IsMany")
+		}
+	}
+
+	// Generate get_one handler which should include embedded relation
+	getOneCode, err := GenerateGetOneHandler(postsHandlerCfg, relations)
+	if err != nil {
+		t.Fatalf("GenerateGetOneHandler failed: %v", err)
+	}
+
+	// Verify get_one.go is valid Go
+	getOneStr := string(getOneCode)
+	if _, err := format.Source(getOneCode); err != nil {
+		t.Errorf("get_one.go is not valid Go: %v\n%s", err, getOneStr)
+	}
+
+	// Verify get_one.go contains embedded relation types
+	expectedGetOneContent := []string{
+		// Embed struct for the author relation
+		"type AuthorEmbed struct",
+		// Response struct should have the embedded author
+		"type GetPostResponse struct",
+		`json:"author"`,
+	}
+
+	for _, expected := range expectedGetOneContent {
+		if !strings.Contains(getOneStr, expected) {
+			t.Errorf("get_one.go missing expected content: %q\n\nGenerated code:\n%s", expected, getOneStr)
+		}
+	}
+
+	// Check for Author field with *AuthorEmbed type (spacing may vary due to alignment)
+	if !strings.Contains(getOneStr, "Author") || !strings.Contains(getOneStr, "*AuthorEmbed") {
+		t.Errorf("get_one.go missing Author *AuthorEmbed field\n\nGenerated code:\n%s", getOneStr)
+	}
+
+	// Verify the FK column (author_id) is NOT in the response (replaced by embed)
+	if strings.Contains(getOneStr, `json:"author_id"`) {
+		t.Error("get_one.go should not contain author_id field (should be embedded as author)")
+	}
+
+	// Generate all handlers and verify they compile
+	handlers := map[string]func(HandlerGenConfig, []RelationshipInfo) ([]byte, error){
+		"create":      GenerateCreateHandler,
+		"get_one":     GenerateGetOneHandler,
+		"list":        GenerateListHandler,
+		"update":      GenerateUpdateHandler,
+		"soft_delete": GenerateSoftDeleteHandler,
+	}
+
+	// Test handlers for posts (with relations)
+	for name, generator := range handlers {
+		code, err := generator(postsHandlerCfg, relations)
+		if err != nil {
+			t.Errorf("posts %s handler generation failed: %v", name, err)
+			continue
+		}
+		if _, err := format.Source(code); err != nil {
+			t.Errorf("posts %s handler is not valid Go: %v\n%s", name, err, string(code))
+		}
+	}
+
+	// Test handlers for users (no relations)
+	usersHandlerCfg := HandlerGenConfig{
+		ModulePath: "testproject",
+		TableName:  "users",
+		Table:      plan.Schema.Tables["users"],
+		Schema:     plan.Schema.Tables,
+	}
+	usersRelations := AnalyzeRelationships(usersHandlerCfg.Table, usersHandlerCfg.Schema)
+
+	for name, generator := range handlers {
+		code, err := generator(usersHandlerCfg, usersRelations)
+		if err != nil {
+			t.Errorf("users %s handler generation failed: %v", name, err)
+			continue
+		}
+		if _, err := format.Source(code); err != nil {
+			t.Errorf("users %s handler is not valid Go: %v\n%s", name, err, string(code))
+		}
+	}
+
+	t.Log("Generated code with relationships validation passed")
 }

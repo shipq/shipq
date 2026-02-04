@@ -418,7 +418,7 @@ func TestGenerateCreateHandler(t *testing.T) {
 	}
 
 	// Check imports
-	if !strings.Contains(code, `"myapp/httperror"`) {
+	if !strings.Contains(code, `"github.com/shipq/shipq/httperror"`) {
 		t.Error("expected httperror import")
 	}
 	if !strings.Contains(code, `"myapp/shipq/queries"`) {
