@@ -1,0 +1,99 @@
+package main
+
+import (
+	"fmt"
+	"os"
+	"path/filepath"
+	"runtime"
+
+	"github.com/shipq/shipq/cli"
+	"github.com/shipq/shipq/inifile"
+	"github.com/shipq/shipq/project"
+)
+
+// initCmd implements the "shipq init" command.
+// It initializes a new shipq project by creating go.mod and shipq.ini if needed.
+func initCmd() {
+	cwd, err := os.Getwd()
+	if err != nil {
+		cli.FatalErr("failed to get current directory", err)
+	}
+
+	projectName := project.GetProjectName(cwd)
+	createdGoMod := false
+	createdShipqIni := false
+
+	// Create go.mod if it doesn't exist
+	if !project.HasGoMod(cwd) {
+		if err := createGoMod(cwd, projectName); err != nil {
+			cli.FatalErr("failed to create go.mod", err)
+		}
+		createdGoMod = true
+	}
+
+	// Create shipq.ini if it doesn't exist
+	if !project.HasShipqIni(cwd) {
+		if err := createShipqIni(cwd); err != nil {
+			cli.FatalErr("failed to create shipq.ini", err)
+		}
+		createdShipqIni = true
+	}
+
+	// Print results
+	if createdGoMod && createdShipqIni {
+		cli.Success("Initialized new shipq project")
+		cli.Infof("  Created go.mod (module: com.%s)", projectName)
+		cli.Info("  Created shipq.ini")
+	} else if createdGoMod {
+		cli.Success("Created go.mod")
+		cli.Infof("  Module: com.%s", projectName)
+	} else if createdShipqIni {
+		cli.Success("Created shipq.ini")
+	} else {
+		cli.Info("Project already initialized (go.mod and shipq.ini exist)")
+	}
+}
+
+// createGoMod creates a new go.mod file with the module name "com.<projectName>"
+func createGoMod(dir, projectName string) error {
+	goVersion := getGoVersion()
+	moduleName := fmt.Sprintf("com.%s", projectName)
+
+	content := fmt.Sprintf("module %s\n\ngo %s\n", moduleName, goVersion)
+
+	goModPath := filepath.Join(dir, project.GoModFile)
+	return os.WriteFile(goModPath, []byte(content), 0644)
+}
+
+// createShipqIni creates a new shipq.ini file with an empty [db] section
+func createShipqIni(dir string) error {
+	f := &inifile.File{}
+	// Create empty db section by setting a placeholder that we'll leave empty
+	// The Set function will create the section
+	f.Sections = append(f.Sections, inifile.Section{Name: "db"})
+
+	shipqIniPath := filepath.Join(dir, project.ShipqIniFile)
+	return f.WriteFile(shipqIniPath)
+}
+
+// getGoVersion returns the current Go version in "X.Y" format
+func getGoVersion() string {
+	version := runtime.Version()
+	// runtime.Version() returns something like "go1.21.5"
+	// We want "1.21"
+	if len(version) > 2 && version[:2] == "go" {
+		version = version[2:]
+	}
+
+	// Extract major.minor
+	dotCount := 0
+	for i, c := range version {
+		if c == '.' {
+			dotCount++
+			if dotCount == 2 {
+				return version[:i]
+			}
+		}
+	}
+	return version
+}

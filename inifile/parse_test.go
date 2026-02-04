@@ -1,6 +1,9 @@
 package inifile
 
 import (
+	"bytes"
+	"os"
+	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
@@ -206,6 +209,251 @@ func TestCaseSensitivity(t *testing.T) {
 		f, _ := Parse(strings.NewReader(ini))
 		if got := f.Get("section", "key"); got != "MixedCase Value" {
 			t.Errorf("got %q, want %q", got, "MixedCase Value")
+		}
+	})
+}
+
+func TestSet(t *testing.T) {
+	t.Run("set key in existing section", func(t *testing.T) {
+		ini := "[section]\nkey1 = value1\n"
+		f, _ := Parse(strings.NewReader(ini))
+		f.Set("section", "key2", "value2")
+		if got := f.Get("section", "key2"); got != "value2" {
+			t.Errorf("got %q, want %q", got, "value2")
+		}
+		// Original key should still exist
+		if got := f.Get("section", "key1"); got != "value1" {
+			t.Errorf("got %q, want %q", got, "value1")
+		}
+	})
+
+	t.Run("set key in new section", func(t *testing.T) {
+		ini := "[existing]\nkey = value\n"
+		f, _ := Parse(strings.NewReader(ini))
+		f.Set("newsection", "newkey", "newvalue")
+		if got := f.Get("newsection", "newkey"); got != "newvalue" {
+			t.Errorf("got %q, want %q", got, "newvalue")
+		}
+		// Original section should still exist
+		if got := f.Get("existing", "key"); got != "value" {
+			t.Errorf("got %q, want %q", got, "value")
+		}
+	})
+
+	t.Run("overwrite existing key", func(t *testing.T) {
+		ini := "[section]\nkey = original\n"
+		f, _ := Parse(strings.NewReader(ini))
+		f.Set("section", "key", "updated")
+		if got := f.Get("section", "key"); got != "updated" {
+			t.Errorf("got %q, want %q", got, "updated")
+		}
+		// Should not duplicate the key
+		s := f.Section("section")
+		if s == nil {
+			t.Fatal("expected section, got nil")
+		}
+		count := 0
+		for _, kv := range s.Values {
+			if kv.Key == "key" {
+				count++
+			}
+		}
+		if count != 1 {
+			t.Errorf("expected 1 occurrence of key, got %d", count)
+		}
+	})
+
+	t.Run("set key in empty file", func(t *testing.T) {
+		f := &File{}
+		f.Set("section", "key", "value")
+		if got := f.Get("section", "key"); got != "value" {
+			t.Errorf("got %q, want %q", got, "value")
+		}
+	})
+
+	t.Run("section and key names are normalized to lowercase", func(t *testing.T) {
+		f := &File{}
+		f.Set("SECTION", "KEY", "value")
+		if got := f.Get("section", "key"); got != "value" {
+			t.Errorf("got %q, want %q", got, "value")
+		}
+	})
+
+	t.Run("value preserves case", func(t *testing.T) {
+		f := &File{}
+		f.Set("section", "key", "MixedCase Value")
+		if got := f.Get("section", "key"); got != "MixedCase Value" {
+			t.Errorf("got %q, want %q", got, "MixedCase Value")
+		}
+	})
+}
+
+func TestWrite(t *testing.T) {
+	t.Run("write empty file", func(t *testing.T) {
+		f := &File{}
+		var buf bytes.Buffer
+		err := f.Write(&buf)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if buf.String() != "" {
+			t.Errorf("expected empty string, got %q", buf.String())
+		}
+	})
+
+	t.Run("write single section with one key", func(t *testing.T) {
+		f := &File{}
+		f.Set("section", "key", "value")
+		var buf bytes.Buffer
+		err := f.Write(&buf)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		want := "[section]\nkey = value\n"
+		if buf.String() != want {
+			t.Errorf("got %q, want %q", buf.String(), want)
+		}
+	})
+
+	t.Run("write multiple sections", func(t *testing.T) {
+		f := &File{}
+		f.Set("section1", "key1", "value1")
+		f.Set("section2", "key2", "value2")
+		var buf bytes.Buffer
+		err := f.Write(&buf)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		want := "[section1]\nkey1 = value1\n\n[section2]\nkey2 = value2\n"
+		if buf.String() != want {
+			t.Errorf("got %q, want %q", buf.String(), want)
+		}
+	})
+
+	t.Run("write section with multiple keys", func(t *testing.T) {
+		f := &File{}
+		f.Set("section", "key1", "value1")
+		f.Set("section", "key2", "value2")
+		var buf bytes.Buffer
+		err := f.Write(&buf)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		want := "[section]\nkey1 = value1\nkey2 = value2\n"
+		if buf.String() != want {
+			t.Errorf("got %q, want %q", buf.String(), want)
+		}
+	})
+}
+
+func TestWriteFile(t *testing.T) {
+	t.Run("write to file", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		path := filepath.Join(tmpDir, "test.ini")
+
+		f := &File{}
+		f.Set("db", "url", "postgres://localhost/test")
+		err := f.WriteFile(path)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+
+		// Read back and verify
+		content, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatalf("failed to read file: %v", err)
+		}
+		want := "[db]\nurl = postgres://localhost/test\n"
+		if string(content) != want {
+			t.Errorf("got %q, want %q", string(content), want)
+		}
+	})
+}
+
+func TestRoundTrip(t *testing.T) {
+	t.Run("parse and write preserves structure", func(t *testing.T) {
+		original := "[database]\nurl = postgres://localhost/db\npool_size = 10\n\n[paths]\nmigrations = ./migrations\n"
+		f, err := Parse(strings.NewReader(original))
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+
+		var buf bytes.Buffer
+		err = f.Write(&buf)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+
+		// Parse again and compare values
+		f2, err := Parse(strings.NewReader(buf.String()))
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+
+		if got := f2.Get("database", "url"); got != "postgres://localhost/db" {
+			t.Errorf("database.url: got %q, want %q", got, "postgres://localhost/db")
+		}
+		if got := f2.Get("database", "pool_size"); got != "10" {
+			t.Errorf("database.pool_size: got %q, want %q", got, "10")
+		}
+		if got := f2.Get("paths", "migrations"); got != "./migrations" {
+			t.Errorf("paths.migrations: got %q, want %q", got, "./migrations")
+		}
+	})
+
+	t.Run("round-trip with Set modification", func(t *testing.T) {
+		original := "[db]\nurl = old_value\n"
+		f, _ := Parse(strings.NewReader(original))
+		f.Set("db", "url", "new_value")
+
+		var buf bytes.Buffer
+		f.Write(&buf)
+
+		f2, _ := Parse(strings.NewReader(buf.String()))
+		if got := f2.Get("db", "url"); got != "new_value" {
+			t.Errorf("got %q, want %q", got, "new_value")
+		}
+
+		// Ensure no duplicate keys after round-trip
+		s := f2.Section("db")
+		count := 0
+		for _, kv := range s.Values {
+			if kv.Key == "url" {
+				count++
+			}
+		}
+		if count != 1 {
+			t.Errorf("expected 1 occurrence of url, got %d", count)
+		}
+	})
+
+	t.Run("full file round-trip through WriteFile and ParseFile", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		path := filepath.Join(tmpDir, "roundtrip.ini")
+
+		f := &File{}
+		f.Set("section1", "key1", "value1")
+		f.Set("section1", "key2", "value2")
+		f.Set("section2", "key3", "value3")
+
+		err := f.WriteFile(path)
+		if err != nil {
+			t.Fatalf("WriteFile failed: %v", err)
+		}
+
+		f2, err := ParseFile(path)
+		if err != nil {
+			t.Fatalf("ParseFile failed: %v", err)
+		}
+
+		if got := f2.Get("section1", "key1"); got != "value1" {
+			t.Errorf("section1.key1: got %q, want %q", got, "value1")
+		}
+		if got := f2.Get("section1", "key2"); got != "value2" {
+			t.Errorf("section1.key2: got %q, want %q", got, "value2")
+		}
+		if got := f2.Get("section2", "key3"); got != "value3" {
+			t.Errorf("section2.key3: got %q, want %q", got, "value3")
 		}
 	})
 }

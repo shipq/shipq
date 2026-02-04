@@ -2,6 +2,7 @@ package inifile
 
 import (
 	"bufio"
+	"fmt"
 	"io"
 	"os"
 	"strings"
@@ -148,4 +149,74 @@ func (s *Section) HasKey(key string) bool {
 		}
 	}
 	return false
+}
+
+// Set sets a key-value pair in the specified section.
+// If the section doesn't exist, it is created.
+// If the key already exists, its value is replaced (destructive overwrite).
+func (f *File) Set(section, key, value string) {
+	section = strings.ToLower(section)
+	key = strings.ToLower(key)
+
+	// Find or create the section
+	var s *Section
+	for i := range f.Sections {
+		if f.Sections[i].Name == section {
+			s = &f.Sections[i]
+			break
+		}
+	}
+	if s == nil {
+		f.Sections = append(f.Sections, Section{Name: section})
+		s = &f.Sections[len(f.Sections)-1]
+	}
+
+	// Find and update existing key, or append new one
+	for i := range s.Values {
+		if s.Values[i].Key == key {
+			s.Values[i].Value = value
+			return
+		}
+	}
+	s.Values = append(s.Values, KeyValue{Key: key, Value: value})
+}
+
+// Write serializes the INI file to the given writer.
+func (f *File) Write(w io.Writer) error {
+	for i, section := range f.Sections {
+		// Write section header
+		if _, err := fmt.Fprintf(w, "[%s]\n", section.Name); err != nil {
+			return err
+		}
+
+		// Write key-value pairs
+		for _, kv := range section.Values {
+			if _, err := fmt.Fprintf(w, "%s = %s\n", kv.Key, kv.Value); err != nil {
+				return err
+			}
+		}
+
+		// Add blank line between sections (but not after the last one)
+		if i < len(f.Sections)-1 {
+			if _, err := fmt.Fprintln(w); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+// WriteFile writes the INI file to the specified path.
+func (f *File) WriteFile(path string) error {
+	file, err := os.Create(path)
+	if err != nil {
+		return err
+	}
+	defer file.Close()
+
+	if err := f.Write(file); err != nil {
+		return err
+	}
+
+	return file.Sync()
 }
