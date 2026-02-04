@@ -11,7 +11,7 @@ import (
 	"testing"
 
 	"github.com/shipq/shipq/db/portsql/query"
-	"github.com/shipq/shipq/db/proptest"
+	"github.com/shipq/shipq/proptest"
 )
 
 // trialCounter ensures unique identifiers across all tests

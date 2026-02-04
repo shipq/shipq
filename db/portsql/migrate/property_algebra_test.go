@@ -8,7 +8,7 @@ import (
 	"testing"
 
 	"github.com/shipq/shipq/db/portsql/ddl"
-	"github.com/shipq/shipq/db/proptest"
+	"github.com/shipq/shipq/proptest"
 )
 
 // =============================================================================

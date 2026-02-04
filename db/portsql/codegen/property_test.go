@@ -10,7 +10,7 @@ import (
 
 	"github.com/shipq/shipq/db/portsql/ddl"
 	"github.com/shipq/shipq/db/portsql/migrate"
-	"github.com/shipq/shipq/db/proptest"
+	"github.com/shipq/shipq/proptest"
 )
 
 // =============================================================================
