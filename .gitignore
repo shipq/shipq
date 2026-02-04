@@ -2,4 +2,4 @@ db/databases/.mysql-data
 db/databases/.postgres-data
 db/databases/.sqlite-data
 test_results/*.log
-shipq
+cmd/shipq/shipq
