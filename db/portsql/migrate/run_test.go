@@ -3,6 +3,7 @@ package migrate
 import (
 	"context"
 	"database/sql"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -10,6 +11,244 @@ import (
 
 	"github.com/shipq/shipq/db/portsql/ddl"
 )
+
+// =============================================================================
+// splitSQLStatements Tests
+// =============================================================================
+
+func TestSplitSQLStatements(t *testing.T) {
+	tests := []struct {
+		name  string
+		input string
+		want  []string
+	}{
+		{
+			name:  "single statement without semicolon",
+			input: "CREATE TABLE users (id INT)",
+			want:  []string{"CREATE TABLE users (id INT)"},
+		},
+		{
+			name:  "single statement with semicolon",
+			input: "CREATE TABLE users (id INT);",
+			want:  []string{"CREATE TABLE users (id INT)"},
+		},
+		{
+			name:  "two statements",
+			input: "CREATE TABLE users (id INT); CREATE INDEX idx ON users (id)",
+			want:  []string{"CREATE TABLE users (id INT)", "CREATE INDEX idx ON users (id)"},
+		},
+		{
+			name:  "multiple statements with newlines",
+			input: "CREATE TABLE users (id INT);\nCREATE INDEX idx ON users (id);\nCREATE INDEX idx2 ON users (id)",
+			want:  []string{"CREATE TABLE users (id INT)", "CREATE INDEX idx ON users (id)", "CREATE INDEX idx2 ON users (id)"},
+		},
+		{
+			name:  "statements with extra whitespace",
+			input: "  CREATE TABLE users (id INT)  ;  CREATE INDEX idx ON users (id)  ;  ",
+			want:  []string{"CREATE TABLE users (id INT)", "CREATE INDEX idx ON users (id)"},
+		},
+		{
+			name:  "empty string",
+			input: "",
+			want:  nil,
+		},
+		{
+			name:  "only semicolons and whitespace",
+			input: "  ;  ;  ",
+			want:  nil,
+		},
+		{
+			name:  "MySQL style CREATE TABLE with indexes",
+			input: "CREATE TABLE `accounts` (`id` BIGINT NOT NULL AUTO_INCREMENT PRIMARY KEY) ENGINE=InnoDB;\nCREATE UNIQUE INDEX `idx_accounts_id` ON `accounts` (`id`);\nCREATE UNIQUE INDEX `idx_accounts_email` ON `accounts` (`email`)",
+			want: []string{
+				"CREATE TABLE `accounts` (`id` BIGINT NOT NULL AUTO_INCREMENT PRIMARY KEY) ENGINE=InnoDB",
+				"CREATE UNIQUE INDEX `idx_accounts_id` ON `accounts` (`id`)",
+				"CREATE UNIQUE INDEX `idx_accounts_email` ON `accounts` (`email`)",
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := splitSQLStatements(tt.input)
+			if !reflect.DeepEqual(got, tt.want) {
+				t.Errorf("splitSQLStatements() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+// =============================================================================
+// Multi-Statement Migration Tests (MySQL-style)
+// =============================================================================
+
+func TestRunMultiStatementMigration(t *testing.T) {
+	// This test verifies that migrations containing multiple SQL statements
+	// (like CREATE TABLE + CREATE INDEX) are executed correctly.
+	// This was a bug where MySQL would fail with syntax error because
+	// multiple statements were sent in a single Exec() call.
+
+	db, err := sql.Open("sqlite", ":memory:")
+	if err != nil {
+		t.Fatalf("failed to open sqlite: %v", err)
+	}
+	defer db.Close()
+
+	ctx := context.Background()
+
+	// Create a migration with multiple statements (like MySQL generates)
+	plan := &MigrationPlan{
+		Schema: Schema{Tables: make(map[string]ddl.Table)},
+		Migrations: []Migration{
+			{
+				Name: "20260204135551_create_accounts",
+				Instructions: MigrationInstructions{
+					// This mimics what generateMySQLCreateTable produces:
+					// CREATE TABLE followed by CREATE INDEX statements
+					Sqlite: `CREATE TABLE accounts (id INTEGER PRIMARY KEY, email TEXT NOT NULL);
+CREATE UNIQUE INDEX idx_accounts_email ON accounts (email)`,
+				},
+			},
+		},
+	}
+
+	err = Run(ctx, db, plan, Sqlite)
+	if err != nil {
+		t.Fatalf("Run() failed on multi-statement migration: %v", err)
+	}
+
+	// Verify table was created
+	tables, err := GetAllTables(ctx, db, Sqlite)
+	if err != nil {
+		t.Fatalf("GetAllTables failed: %v", err)
+	}
+
+	foundAccounts := false
+	for _, table := range tables {
+		if table == "accounts" {
+			foundAccounts = true
+		}
+	}
+	if !foundAccounts {
+		t.Error("accounts table should exist")
+	}
+
+	// Verify index was created by trying to insert duplicate emails
+	_, err = db.Exec("INSERT INTO accounts (email) VALUES ('test@example.com')")
+	if err != nil {
+		t.Fatalf("first insert failed: %v", err)
+	}
+
+	_, err = db.Exec("INSERT INTO accounts (email) VALUES ('test@example.com')")
+	if err == nil {
+		t.Error("second insert should fail due to unique index")
+	}
+
+	// Verify migration was recorded
+	applied, err := GetAppliedMigrations(ctx, db)
+	if err != nil {
+		t.Fatalf("GetAppliedMigrations failed: %v", err)
+	}
+
+	if len(applied) != 1 || applied[0] != "20260204135551_create_accounts" {
+		t.Errorf("expected migration to be recorded, got: %v", applied)
+	}
+}
+
+func TestRunMultiStatementMigrationWithThreeIndexes(t *testing.T) {
+	// Test with multiple indexes like the real accounts table might have
+
+	db, err := sql.Open("sqlite", ":memory:")
+	if err != nil {
+		t.Fatalf("failed to open sqlite: %v", err)
+	}
+	defer db.Close()
+
+	ctx := context.Background()
+
+	plan := &MigrationPlan{
+		Schema: Schema{Tables: make(map[string]ddl.Table)},
+		Migrations: []Migration{
+			{
+				Name: "20260204135551_create_accounts",
+				Instructions: MigrationInstructions{
+					Sqlite: `CREATE TABLE accounts (id INTEGER PRIMARY KEY, first_name TEXT, last_name TEXT, email TEXT NOT NULL);
+CREATE UNIQUE INDEX idx_accounts_id ON accounts (id);
+CREATE UNIQUE INDEX idx_accounts_email ON accounts (email)`,
+				},
+			},
+		},
+	}
+
+	err = Run(ctx, db, plan, Sqlite)
+	if err != nil {
+		t.Fatalf("Run() failed on multi-statement migration with 3 indexes: %v", err)
+	}
+
+	// Verify migration was recorded
+	applied, err := GetAppliedMigrations(ctx, db)
+	if err != nil {
+		t.Fatalf("GetAppliedMigrations failed: %v", err)
+	}
+
+	if len(applied) != 1 {
+		t.Errorf("expected 1 migration recorded, got %d", len(applied))
+	}
+}
+
+func TestRunMultiStatementMigrationRollsBackOnFailure(t *testing.T) {
+	// If any statement in a multi-statement migration fails,
+	// all statements should be rolled back
+
+	db, err := sql.Open("sqlite", ":memory:")
+	if err != nil {
+		t.Fatalf("failed to open sqlite: %v", err)
+	}
+	defer db.Close()
+
+	ctx := context.Background()
+
+	plan := &MigrationPlan{
+		Schema: Schema{Tables: make(map[string]ddl.Table)},
+		Migrations: []Migration{
+			{
+				Name: "20260204135551_create_accounts",
+				Instructions: MigrationInstructions{
+					// First statement succeeds, second fails (references non-existent column)
+					Sqlite: `CREATE TABLE accounts (id INTEGER PRIMARY KEY, email TEXT);
+CREATE UNIQUE INDEX idx_accounts_nonexistent ON accounts (nonexistent_column)`,
+				},
+			},
+		},
+	}
+
+	err = Run(ctx, db, plan, Sqlite)
+	if err == nil {
+		t.Fatal("Run() should fail when index references non-existent column")
+	}
+
+	// The table should NOT exist (rolled back)
+	tables, err := GetAllTables(ctx, db, Sqlite)
+	if err != nil {
+		t.Fatalf("GetAllTables failed: %v", err)
+	}
+
+	for _, table := range tables {
+		if table == "accounts" {
+			t.Error("accounts table should not exist after rollback")
+		}
+	}
+
+	// Migration should NOT be recorded
+	applied, err := GetAppliedMigrations(ctx, db)
+	if err != nil {
+		t.Fatalf("GetAppliedMigrations failed: %v", err)
+	}
+
+	if len(applied) != 0 {
+		t.Errorf("no migrations should be recorded after rollback, got: %v", applied)
+	}
+}
 
 // =============================================================================
 // Order Validation Tests (TDD - these should fail initially)

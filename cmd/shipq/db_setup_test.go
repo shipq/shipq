@@ -3,12 +3,232 @@ package main
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
+	"github.com/shipq/shipq/dburl"
 	"github.com/shipq/shipq/inifile"
 	"github.com/shipq/shipq/internal/dbops"
 	"github.com/shipq/shipq/project"
 )
+
+// mockCommandExists creates a mock for commandExists that returns true for specified commands.
+func mockCommandExists(available map[string]bool) func(string) bool {
+	return func(name string) bool {
+		return available[name]
+	}
+}
+
+func TestDetectDatabaseDialect(t *testing.T) {
+	// Save original and restore after test
+	originalCommandExists := commandExists
+	defer func() { commandExists = originalCommandExists }()
+
+	tests := []struct {
+		name      string
+		available map[string]bool
+		want      string
+	}{
+		{
+			name:      "mysql available - should pick MySQL first",
+			available: map[string]bool{"mysqld": true, "postgres": true},
+			want:      dburl.DialectMySQL,
+		},
+		{
+			name:      "only mysql available",
+			available: map[string]bool{"mysqld": true},
+			want:      dburl.DialectMySQL,
+		},
+		{
+			name:      "only postgres available",
+			available: map[string]bool{"postgres": true},
+			want:      dburl.DialectPostgres,
+		},
+		{
+			name:      "postgres available but not mysqld",
+			available: map[string]bool{"postgres": true, "mysqld": false},
+			want:      dburl.DialectPostgres,
+		},
+		{
+			name:      "nothing available - fallback to SQLite",
+			available: map[string]bool{},
+			want:      dburl.DialectSQLite,
+		},
+		{
+			name:      "neither mysqld nor postgres",
+			available: map[string]bool{"mysqld": false, "postgres": false},
+			want:      dburl.DialectSQLite,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			commandExists = mockCommandExists(tt.available)
+
+			got := detectDatabaseDialect()
+			if got != tt.want {
+				t.Errorf("detectDatabaseDialect() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestInferDatabaseURL(t *testing.T) {
+	// Save original and restore after test
+	originalCommandExists := commandExists
+	defer func() { commandExists = originalCommandExists }()
+
+	tests := []struct {
+		name        string
+		available   map[string]bool
+		projectName string
+		wantDialect string
+		wantURLHas  string // substring that should be in the URL
+	}{
+		{
+			name:        "mysql detected",
+			available:   map[string]bool{"mysqld": true},
+			projectName: "myapp",
+			wantDialect: dburl.DialectMySQL,
+			wantURLHas:  "mysql://",
+		},
+		{
+			name:        "postgres detected",
+			available:   map[string]bool{"postgres": true},
+			projectName: "myapp",
+			wantDialect: dburl.DialectPostgres,
+			wantURLHas:  "postgres://",
+		},
+		{
+			name:        "sqlite fallback",
+			available:   map[string]bool{},
+			projectName: "myapp",
+			wantDialect: dburl.DialectSQLite,
+			wantURLHas:  "sqlite:",
+		},
+		{
+			name:        "sqlite URL contains project name",
+			available:   map[string]bool{},
+			projectName: "testproject",
+			wantDialect: dburl.DialectSQLite,
+			wantURLHas:  "testproject.db",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			commandExists = mockCommandExists(tt.available)
+			tmpDir := t.TempDir()
+
+			gotURL, gotDialect := inferDatabaseURL(tmpDir, tt.projectName)
+
+			if gotDialect != tt.wantDialect {
+				t.Errorf("inferDatabaseURL() dialect = %q, want %q", gotDialect, tt.wantDialect)
+			}
+
+			if !strings.Contains(gotURL, tt.wantURLHas) {
+				t.Errorf("inferDatabaseURL() URL = %q, want it to contain %q", gotURL, tt.wantURLHas)
+			}
+		})
+	}
+}
+
+func TestInferDatabaseURL_SQLitePathStructure(t *testing.T) {
+	// Save original and restore after test
+	originalCommandExists := commandExists
+	defer func() { commandExists = originalCommandExists }()
+
+	// Force SQLite by making no other DB available
+	commandExists = mockCommandExists(map[string]bool{})
+
+	tmpDir := t.TempDir()
+	projectName := "myproject"
+
+	gotURL, gotDialect := inferDatabaseURL(tmpDir, projectName)
+
+	if gotDialect != dburl.DialectSQLite {
+		t.Fatalf("expected SQLite dialect, got %q", gotDialect)
+	}
+
+	// SQLite URL should point to .shipq/data/<project>.db
+	expectedPath := filepath.Join(tmpDir, ".shipq", "data", projectName+".db")
+	if !strings.Contains(gotURL, expectedPath) {
+		t.Errorf("SQLite URL = %q, expected to contain path %q", gotURL, expectedPath)
+	}
+}
+
+func TestDbSetupWithoutDATABASE_URL(t *testing.T) {
+	// This test verifies that db setup works without DATABASE_URL set
+	// by falling back to detection logic
+
+	// Save original and restore after test
+	originalCommandExists := commandExists
+	defer func() { commandExists = originalCommandExists }()
+
+	// Force SQLite (no external DB dependencies needed for test)
+	commandExists = mockCommandExists(map[string]bool{})
+
+	tmpDir := t.TempDir()
+	projectName := "testdbsetup"
+
+	// Ensure DATABASE_URL is not set for this specific test logic
+	// (The actual command would read from env, but we're testing inferDatabaseURL)
+	url, dialect := inferDatabaseURL(tmpDir, projectName)
+
+	if dialect != dburl.DialectSQLite {
+		t.Errorf("expected SQLite dialect when nothing available, got %q", dialect)
+	}
+
+	if url == "" {
+		t.Error("expected non-empty URL to be inferred")
+	}
+
+	if !strings.HasPrefix(url, "sqlite:") {
+		t.Errorf("expected SQLite URL, got %q", url)
+	}
+}
+
+func TestDbSetupDialectPriority(t *testing.T) {
+	// Verify the priority order: MySQL > Postgres > SQLite
+	originalCommandExists := commandExists
+	defer func() { commandExists = originalCommandExists }()
+
+	t.Run("MySQL takes priority over Postgres", func(t *testing.T) {
+		commandExists = mockCommandExists(map[string]bool{
+			"mysqld":   true,
+			"postgres": true,
+		})
+
+		dialect := detectDatabaseDialect()
+		if dialect != dburl.DialectMySQL {
+			t.Errorf("expected MySQL when both available, got %q", dialect)
+		}
+	})
+
+	t.Run("Postgres takes priority over SQLite", func(t *testing.T) {
+		commandExists = mockCommandExists(map[string]bool{
+			"mysqld":   false,
+			"postgres": true,
+		})
+
+		dialect := detectDatabaseDialect()
+		if dialect != dburl.DialectPostgres {
+			t.Errorf("expected Postgres when MySQL unavailable, got %q", dialect)
+		}
+	})
+
+	t.Run("SQLite is the fallback", func(t *testing.T) {
+		commandExists = mockCommandExists(map[string]bool{
+			"mysqld":   false,
+			"postgres": false,
+		})
+
+		dialect := detectDatabaseDialect()
+		if dialect != dburl.DialectSQLite {
+			t.Errorf("expected SQLite fallback, got %q", dialect)
+		}
+	})
+}
 
 func TestMysqlURLToDSN(t *testing.T) {
 	tests := []struct {
@@ -323,12 +543,25 @@ func TestDbSetupUpdatesIniFile(t *testing.T) {
 }
 
 func TestDbSetupValidation(t *testing.T) {
-	t.Run("requires DATABASE_URL environment variable", func(t *testing.T) {
-		// This tests the validation logic - DATABASE_URL must be set
-		databaseURL := os.Getenv("DATABASE_URL")
-		if databaseURL == "" {
-			// This is the expected state for most test runs
-			// The actual command would call cli.Fatal here
+	t.Run("DATABASE_URL is optional - falls back to detection", func(t *testing.T) {
+		// Save original and restore after test
+		originalCommandExists := commandExists
+		defer func() { commandExists = originalCommandExists }()
+
+		// When DATABASE_URL is not set, we should fall back to detection
+		commandExists = mockCommandExists(map[string]bool{})
+
+		tmpDir := t.TempDir()
+		projectName := "validationtest"
+
+		// This should work without DATABASE_URL by falling back to SQLite
+		url, dialect := inferDatabaseURL(tmpDir, projectName)
+
+		if dialect != dburl.DialectSQLite {
+			t.Errorf("expected SQLite fallback, got %q", dialect)
+		}
+		if url == "" {
+			t.Error("expected URL to be inferred even without DATABASE_URL")
 		}
 	})
 }

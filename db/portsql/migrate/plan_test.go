@@ -3,9 +3,175 @@ package migrate
 import (
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/shipq/shipq/db/portsql/ddl"
 )
+
+// =============================================================================
+// Migration Name Stability Tests
+// =============================================================================
+
+// TestMigrationNamesMustBeStableAcrossRebuilds verifies that rebuilding the
+// migration plan produces the same migration names. This is critical because:
+// 1. The tracking table records migration names after they run
+// 2. If we regenerate schema.json with different names, the tracking check fails
+// 3. This causes "table already exists" errors on subsequent runs
+//
+// This test reproduces the bug where AddTable generated a NEW timestamp each time
+// it was called, rather than using the migration file's timestamp.
+func TestMigrationNamesMustBeStableAcrossRebuilds(t *testing.T) {
+	// Simulate what happens when we build a migration plan twice
+	// (e.g., migrate reset followed by resource up)
+	//
+	// The runner must call SetCurrentMigration before each migration function,
+	// passing the name derived from the migration filename.
+
+	// This is the migration name derived from the file "20260204134211_accounts.go"
+	migrationName := "20260204134211_accounts"
+
+	buildPlan := func() *MigrationPlan {
+		plan := NewPlan()
+		// The runner sets the migration name before calling the migration function
+		plan.SetCurrentMigration(migrationName)
+		plan.AddTable("accounts", func(tb *ddl.TableBuilder) error {
+			tb.String("first_name")
+			tb.String("last_name")
+			tb.String("email").Unique()
+			return nil
+		})
+		return plan
+	}
+
+	// Build plan first time
+	plan1 := buildPlan()
+	if len(plan1.Migrations) != 1 {
+		t.Fatalf("expected 1 migration, got %d", len(plan1.Migrations))
+	}
+	name1 := plan1.Migrations[0].Name
+
+	// Wait a bit to ensure timestamp would change if using time.Now()
+	time.Sleep(10 * time.Millisecond)
+
+	// Build plan second time
+	plan2 := buildPlan()
+	if len(plan2.Migrations) != 1 {
+		t.Fatalf("expected 1 migration, got %d", len(plan2.Migrations))
+	}
+	name2 := plan2.Migrations[0].Name
+
+	// The migration names MUST be identical
+	// If they differ, the tracking table won't find the migration and will try to re-run it
+	if name1 != name2 {
+		t.Errorf("Migration names must be stable across rebuilds!\n"+
+			"  First build:  %s\n"+
+			"  Second build: %s\n"+
+			"This causes 'table already exists' errors because the tracking table\n"+
+			"records the first name, but the second build produces a different name.",
+			name1, name2)
+	}
+
+	// Also verify the name matches what we set
+	if name1 != migrationName {
+		t.Errorf("Migration name should match the filename-derived name\n"+
+			"  Expected: %s\n"+
+			"  Actual:   %s",
+			migrationName, name1)
+	}
+}
+
+// TestMigrationNamesMatchFileTimestamp verifies that when we set a migration context,
+// the generated migration uses that name instead of generating a new timestamp.
+func TestMigrationNamesMatchFileTimestamp(t *testing.T) {
+	plan := NewPlan()
+
+	// Set the migration context (this is what the runner should do)
+	expectedName := "20260204134211_create_accounts"
+	plan.SetCurrentMigration(expectedName)
+
+	plan.AddTable("accounts", func(tb *ddl.TableBuilder) error {
+		tb.String("email")
+		return nil
+	})
+
+	if len(plan.Migrations) != 1 {
+		t.Fatalf("expected 1 migration, got %d", len(plan.Migrations))
+	}
+
+	actualName := plan.Migrations[0].Name
+	if actualName != expectedName {
+		t.Errorf("Migration name should match the set context\n"+
+			"  Expected: %s\n"+
+			"  Actual:   %s",
+			expectedName, actualName)
+	}
+}
+
+// TestMultipleMigrationsUseTheirOwnNames verifies that each migration file
+// gets its own name from the context, not a shared or generated one.
+func TestMultipleMigrationsUseTheirOwnNames(t *testing.T) {
+	plan := NewPlan()
+
+	// First migration
+	plan.SetCurrentMigration("20260101120000_create_users")
+	plan.AddTable("users", func(tb *ddl.TableBuilder) error {
+		tb.String("name")
+		return nil
+	})
+
+	// Second migration
+	plan.SetCurrentMigration("20260102120000_create_posts")
+	plan.AddTable("posts", func(tb *ddl.TableBuilder) error {
+		tb.String("title")
+		return nil
+	})
+
+	if len(plan.Migrations) != 2 {
+		t.Fatalf("expected 2 migrations, got %d", len(plan.Migrations))
+	}
+
+	if plan.Migrations[0].Name != "20260101120000_create_users" {
+		t.Errorf("First migration name wrong: %s", plan.Migrations[0].Name)
+	}
+
+	if plan.Migrations[1].Name != "20260102120000_create_posts" {
+		t.Errorf("Second migration name wrong: %s", plan.Migrations[1].Name)
+	}
+}
+
+// TestMigrationNamesClearAfterUse verifies that the current migration name
+// is cleared after being used, so subsequent operations without SetCurrentMigration
+// will generate their own names (for UpdateTable, DropTable scenarios).
+func TestMigrationNamesClearAfterUse(t *testing.T) {
+	plan := NewPlan()
+
+	// Set migration context and create table
+	plan.SetCurrentMigration("20260101120000_create_users")
+	plan.AddTable("users", func(tb *ddl.TableBuilder) error {
+		tb.String("name")
+		return nil
+	})
+
+	// Now do an UpdateTable without setting migration - should generate a name
+	plan.UpdateTable("users", func(ab *ddl.AlterTableBuilder) error {
+		ab.String("email")
+		return nil
+	})
+
+	if len(plan.Migrations) != 2 {
+		t.Fatalf("expected 2 migrations, got %d", len(plan.Migrations))
+	}
+
+	// First should use the set name
+	if plan.Migrations[0].Name != "20260101120000_create_users" {
+		t.Errorf("First migration name wrong: %s", plan.Migrations[0].Name)
+	}
+
+	// Second should have generated a name (contains "alter" and "users")
+	if !strings.Contains(plan.Migrations[1].Name, "alter") || !strings.Contains(plan.Migrations[1].Name, "users") {
+		t.Errorf("Second migration should be auto-generated alter name, got: %s", plan.Migrations[1].Name)
+	}
+}
 
 // =============================================================================
 // Table() Method Tests - Get validated table reference

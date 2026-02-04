@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 
 	_ "github.com/go-sql-driver/mysql"
@@ -15,6 +16,51 @@ import (
 	"github.com/shipq/shipq/internal/dbops"
 	"github.com/shipq/shipq/project"
 )
+
+// Default connection URLs for local database servers
+const (
+	defaultMySQLURL    = "mysql://root@localhost:3306/"
+	defaultPostgresURL = "postgres://postgres@localhost:5432/postgres"
+)
+
+// commandExists checks if a command is available on the system PATH.
+// This is a variable so it can be overridden in tests.
+var commandExists = func(name string) bool {
+	_, err := exec.LookPath(name)
+	return err == nil
+}
+
+// detectDatabaseDialect determines which database to use based on what's available.
+// Priority order: MySQL -> Postgres -> SQLite
+func detectDatabaseDialect() string {
+	if commandExists("mysqld") {
+		return dburl.DialectMySQL
+	}
+	if commandExists("postgres") {
+		return dburl.DialectPostgres
+	}
+	return dburl.DialectSQLite
+}
+
+// inferDatabaseURL returns a default database URL based on detected dialect and project name.
+func inferDatabaseURL(projectRoot, projectName string) (string, string) {
+	dialect := detectDatabaseDialect()
+
+	switch dialect {
+	case dburl.DialectMySQL:
+		cli.Infof("Detected mysqld on PATH, using MySQL")
+		return defaultMySQLURL, dialect
+	case dburl.DialectPostgres:
+		cli.Infof("Detected postgres on PATH, using PostgreSQL")
+		return defaultPostgresURL, dialect
+	default:
+		cli.Infof("No MySQL or PostgreSQL found, using SQLite")
+		// For SQLite, we build the full path immediately
+		dataDir := filepath.Join(projectRoot, ".shipq", "data")
+		dbPath := filepath.Join(dataDir, projectName+".db")
+		return dburl.BuildSQLiteURL(dbPath), dburl.DialectSQLite
+	}
+}
 
 // dbSetupCmd implements the "shipq db setup" command.
 // It creates the database and configures shipq.ini.
@@ -29,25 +75,27 @@ func dbSetupCmd() {
 		cli.FatalErr("invalid project", err)
 	}
 
-	// Get DATABASE_URL from environment
-	databaseURL := os.Getenv("DATABASE_URL")
-	if databaseURL == "" {
-		cli.Fatal("DATABASE_URL environment variable is required")
-	}
-
-	// Infer dialect from URL
-	dialect, err := dburl.InferDialectFromDBUrl(databaseURL)
-	if err != nil {
-		cli.FatalErr("failed to determine database type", err)
-	}
-
-	// Validate localhost
-	if !dburl.IsLocalhost(databaseURL) {
-		cli.Fatal("DATABASE_URL must point to localhost for safety")
-	}
-
 	// Get project name for database names
 	projectName := project.GetProjectName(projectRoot)
+
+	// Get DATABASE_URL from environment, or infer a default
+	databaseURL := os.Getenv("DATABASE_URL")
+	var dialect string
+
+	if databaseURL == "" {
+		databaseURL, dialect = inferDatabaseURL(projectRoot, projectName)
+	} else {
+		// Infer dialect from provided URL
+		dialect, err = dburl.InferDialectFromDBUrl(databaseURL)
+		if err != nil {
+			cli.FatalErr("failed to determine database type", err)
+		}
+	}
+
+	// Validate localhost (skip for SQLite since it's always local)
+	if dialect != dburl.DialectSQLite && !dburl.IsLocalhost(databaseURL) {
+		cli.Fatal("DATABASE_URL must point to localhost for safety")
+	}
 
 	// Handle each dialect
 	var finalDatabaseURL string

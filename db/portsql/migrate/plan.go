@@ -87,6 +87,10 @@ type Schema struct {
 	Tables map[string]ddl.Table `json:"tables"`
 }
 
+// currentMigrationName holds the name set by SetCurrentMigration.
+// This is used to ensure migration names match the file timestamps.
+var currentMigrationName string
+
 const (
 	Sqlite   = "sqlite"
 	Postgres = "postgres"
@@ -107,6 +111,26 @@ type Migration struct {
 type MigrationPlan struct {
 	Schema     Schema      `json:"schema"`
 	Migrations []Migration `json:"migrations"`
+}
+
+// SetCurrentMigration sets the migration name to use for the next AddTable/AddEmptyTable call.
+// This should be called by the migration runner before executing each migration function,
+// passing the migration name derived from the filename (e.g., "20260204134211_create_accounts").
+// This ensures migration names are stable across rebuilds.
+func (m *MigrationPlan) SetCurrentMigration(name string) {
+	currentMigrationName = name
+}
+
+// consumeCurrentMigrationName returns the current migration name and clears it.
+// If no name was set, it generates one using the old behavior (for backwards compatibility).
+func consumeCurrentMigrationName(action, tableName string) string {
+	if currentMigrationName != "" {
+		name := currentMigrationName
+		currentMigrationName = "" // Clear after use
+		return name
+	}
+	// Fallback to generated name for backwards compatibility
+	return generateMigrationName(action, tableName)
 }
 
 // Table returns a validated reference to an existing table in the schema.
@@ -157,7 +181,7 @@ func (m *MigrationPlan) AddEmptyTable(name string, fn func(*ddl.TableBuilder) er
 
 	// Generate SQL for each database with properly timestamped migration name
 	m.Migrations = append(m.Migrations, Migration{
-		Name: generateMigrationName("create", name),
+		Name: consumeCurrentMigrationName("create", name),
 		Instructions: MigrationInstructions{
 			Postgres: generatePostgresCreateTable(table),
 			MySQL:    generateMySQLCreateTable(table),
@@ -193,7 +217,7 @@ func (m *MigrationPlan) AddTable(name string, fn func(*ddl.TableBuilder) error) 
 
 	// Generate SQL for each database with properly timestamped migration name
 	m.Migrations = append(m.Migrations, Migration{
-		Name: generateMigrationName("create", name),
+		Name: consumeCurrentMigrationName("create", name),
 		Instructions: MigrationInstructions{
 			Postgres: generatePostgresCreateTable(table),
 			MySQL:    generateMySQLCreateTable(table),

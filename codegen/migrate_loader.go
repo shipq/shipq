@@ -178,13 +178,18 @@ func main() {
 `)
 
 	for _, m := range migrations {
+		// Build the migration name from the file: TIMESTAMP_name
+		migrationName := m.Timestamp + "_" + m.Name
 		buf.WriteString(fmt.Sprintf(`
+	// Set the migration name before calling the migration function
+	// This ensures the migration name matches the filename and is stable across rebuilds
+	plan.SetCurrentMigration(%q)
 	err = migrations.%s(plan)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "migration %s failed: %%v\n", err)
 		os.Exit(1)
 	}
-`, m.FuncName, m.FuncName))
+`, migrationName, m.FuncName, m.FuncName))
 	}
 
 	buf.WriteString(`
@@ -200,6 +205,13 @@ func main() {
 `)
 
 	return buf.String()
+}
+
+// GenerateMigrationRunnerForTest is an exported version of generateMigrationRunner for testing.
+// It generates the Go code that executes migrations, allowing tests to verify the generated code
+// includes proper SetCurrentMigration calls.
+func GenerateMigrationRunnerForTest(migrations []MigrationFile) string {
+	return generateMigrationRunner("example.com/test/migrations", migrations)
 }
 
 // LoadMigrationPlan loads the migration plan from schema.json.

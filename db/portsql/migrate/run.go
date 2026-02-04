@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"strings"
 )
 
 // Run executes all pending migrations from the plan.
@@ -81,9 +82,14 @@ func runMigrationInTransaction(ctx context.Context, db *sql.DB, dialect, name, s
 	}
 	defer tx.Rollback() // no-op if committed
 
-	// Execute the migration SQL
-	if _, err := tx.ExecContext(ctx, sqlStmt); err != nil {
-		return fmt.Errorf("failed to execute migration %s: %w", name, err)
+	// Split and execute each SQL statement separately.
+	// This is necessary because some databases (like MySQL) don't support
+	// multiple statements in a single Exec() call by default.
+	statements := splitSQLStatements(sqlStmt)
+	for _, stmt := range statements {
+		if _, err := tx.ExecContext(ctx, stmt); err != nil {
+			return fmt.Errorf("failed to execute migration %s: %w", name, err)
+		}
 	}
 
 	// Extract version (timestamp) from the name for the version column
@@ -136,4 +142,22 @@ func DetectDialect(db *sql.DB) (string, error) {
 	}
 
 	return "", fmt.Errorf("could not detect database dialect")
+}
+
+// splitSQLStatements splits a SQL string containing multiple statements into individual statements.
+// It handles semicolons as statement separators and trims whitespace.
+// Empty statements are filtered out.
+func splitSQLStatements(sql string) []string {
+	// Split on semicolons
+	parts := strings.Split(sql, ";")
+
+	var statements []string
+	for _, part := range parts {
+		stmt := strings.TrimSpace(part)
+		if stmt != "" {
+			statements = append(statements, stmt)
+		}
+	}
+
+	return statements
 }

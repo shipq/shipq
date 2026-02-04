@@ -3,6 +3,7 @@ package codegen_test
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/shipq/shipq/codegen"
@@ -309,5 +310,70 @@ func TestMigrationFile_Fields(t *testing.T) {
 	// Verify FuncName
 	if m.FuncName != "Migrate_20260115120000_users" {
 		t.Errorf("FuncName = %q, want %q", m.FuncName, "Migrate_20260115120000_users")
+	}
+}
+
+// TestGeneratedRunnerCallsSetCurrentMigration verifies that the generated migration runner
+// calls SetCurrentMigration before each migration function. This is critical for ensuring
+// migration names are stable across rebuilds.
+func TestGeneratedRunnerCallsSetCurrentMigration(t *testing.T) {
+	migrations := []codegen.MigrationFile{
+		{
+			Path:      "/path/to/20260115120000_users.go",
+			Timestamp: "20260115120000",
+			Name:      "users",
+			FuncName:  "Migrate_20260115120000_users",
+		},
+		{
+			Path:      "/path/to/20260115130000_posts.go",
+			Timestamp: "20260115130000",
+			Name:      "posts",
+			FuncName:  "Migrate_20260115130000_posts",
+		},
+	}
+
+	code := codegen.GenerateMigrationRunnerForTest(migrations)
+
+	// Verify SetCurrentMigration is called before each migration
+	if !strings.Contains(code, `plan.SetCurrentMigration("20260115120000_users")`) {
+		t.Error("Generated runner should call SetCurrentMigration with first migration name")
+	}
+
+	if !strings.Contains(code, `plan.SetCurrentMigration("20260115130000_posts")`) {
+		t.Error("Generated runner should call SetCurrentMigration with second migration name")
+	}
+
+	// Verify the order: SetCurrentMigration should come before the migration function call
+	setIdx := strings.Index(code, `plan.SetCurrentMigration("20260115120000_users")`)
+	callIdx := strings.Index(code, `migrations.Migrate_20260115120000_users(plan)`)
+
+	if setIdx == -1 || callIdx == -1 {
+		t.Fatal("Could not find SetCurrentMigration or migration function call in generated code")
+	}
+
+	if setIdx > callIdx {
+		t.Error("SetCurrentMigration must be called BEFORE the migration function")
+	}
+}
+
+// TestGeneratedRunnerMigrationNamesMatchFilenames verifies that the migration names
+// passed to SetCurrentMigration match the expected format: TIMESTAMP_name
+func TestGeneratedRunnerMigrationNamesMatchFilenames(t *testing.T) {
+	migrations := []codegen.MigrationFile{
+		{
+			Path:      "/path/to/20260204134211_accounts.go",
+			Timestamp: "20260204134211",
+			Name:      "accounts",
+			FuncName:  "Migrate_20260204134211_accounts",
+		},
+	}
+
+	code := codegen.GenerateMigrationRunnerForTest(migrations)
+
+	// The migration name should be TIMESTAMP_name (from the filename)
+	expectedName := "20260204134211_accounts"
+	if !strings.Contains(code, `plan.SetCurrentMigration("`+expectedName+`")`) {
+		t.Errorf("Generated runner should use migration name %q derived from filename", expectedName)
+		t.Logf("Generated code:\n%s", code)
 	}
 }
