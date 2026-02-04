@@ -4,6 +4,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/shipq/shipq/db/portsql/ddl"
+	"github.com/shipq/shipq/db/portsql/migrate"
 	"github.com/shipq/shipq/db/portsql/query"
 )
 
@@ -1071,6 +1073,127 @@ func TestGenerateDialectRunner_WithTx(t *testing.T) {
 	// Check that WithTx method exists
 	if !strings.Contains(codeStr, "func (r *QueryRunner) WithTx(tx *sql.Tx) *QueryRunner") {
 		t.Error("missing WithTx method")
+	}
+}
+
+func TestGenerateSharedTypes_CursorEncodeDecode(t *testing.T) {
+	// Create a table with cursor support (has both created_at and public_id)
+	plan := &migrate.MigrationPlan{
+		Schema: migrate.Schema{
+			Name: "test",
+			Tables: map[string]ddl.Table{
+				"users": {
+					Name: "users",
+					Columns: []ddl.ColumnDefinition{
+						{Name: "id", Type: ddl.BigintType, PrimaryKey: true},
+						{Name: "public_id", Type: ddl.StringType},
+						{Name: "name", Type: ddl.StringType},
+						{Name: "created_at", Type: ddl.DatetimeType},
+						{Name: "updated_at", Type: ddl.DatetimeType},
+					},
+				},
+			},
+		},
+	}
+
+	code, err := GenerateSharedTypes(nil, plan, "queries", nil)
+	if err != nil {
+		t.Fatalf("GenerateSharedTypes failed: %v", err)
+	}
+
+	codeStr := string(code)
+
+	// Check that cursor struct is generated
+	if !strings.Contains(codeStr, "ListUsersCursor struct") {
+		t.Error("missing ListUsersCursor struct")
+	}
+
+	// Check that cursor data struct is generated (internal JSON structure)
+	if !strings.Contains(codeStr, "UsersCursorData struct") {
+		t.Error("missing UsersCursorData struct")
+	}
+
+	// Check JSON field tags for short names
+	if !strings.Contains(codeStr, "`json:\"c\"`") {
+		t.Error("missing JSON tag for created_at (c)")
+	}
+	if !strings.Contains(codeStr, "`json:\"i\"`") {
+		t.Error("missing JSON tag for public_id (i)")
+	}
+
+	// Check that encode function is generated
+	if !strings.Contains(codeStr, "func EncodeUsersCursor(c *ListUsersCursor) string") {
+		t.Error("missing EncodeUsersCursor function")
+	}
+
+	// Check that decode function is generated
+	if !strings.Contains(codeStr, "func DecodeUsersCursor(s string) *ListUsersCursor") {
+		t.Error("missing DecodeUsersCursor function")
+	}
+
+	// Check that base64 encoding is used
+	if !strings.Contains(codeStr, "base64.RawURLEncoding") {
+		t.Error("missing base64.RawURLEncoding usage")
+	}
+
+	// Check that json.Marshal is used
+	if !strings.Contains(codeStr, "json.Marshal") {
+		t.Error("missing json.Marshal usage")
+	}
+
+	// Check that json.Unmarshal is used
+	if !strings.Contains(codeStr, "json.Unmarshal") {
+		t.Error("missing json.Unmarshal usage")
+	}
+
+	// Check that required imports are present
+	if !strings.Contains(codeStr, `"encoding/base64"`) {
+		t.Error("missing encoding/base64 import")
+	}
+	if !strings.Contains(codeStr, `"encoding/json"`) {
+		t.Error("missing encoding/json import")
+	}
+}
+
+func TestGenerateSharedTypes_NoCursorForOffsetTables(t *testing.T) {
+	// Create a table without cursor support (missing public_id)
+	plan := &migrate.MigrationPlan{
+		Schema: migrate.Schema{
+			Name: "test",
+			Tables: map[string]ddl.Table{
+				"settings": {
+					Name: "settings",
+					Columns: []ddl.ColumnDefinition{
+						{Name: "id", Type: ddl.BigintType, PrimaryKey: true},
+						{Name: "key", Type: ddl.StringType},
+						{Name: "value", Type: ddl.TextType},
+					},
+				},
+			},
+		},
+	}
+
+	code, err := GenerateSharedTypes(nil, plan, "queries", nil)
+	if err != nil {
+		t.Fatalf("GenerateSharedTypes failed: %v", err)
+	}
+
+	codeStr := string(code)
+
+	// Should NOT have cursor utilities
+	if strings.Contains(codeStr, "SettingsCursorData") {
+		t.Error("should not have cursor data struct for offset-based table")
+	}
+	if strings.Contains(codeStr, "EncodeSettingsCursor") {
+		t.Error("should not have encode function for offset-based table")
+	}
+	if strings.Contains(codeStr, "DecodeSettingsCursor") {
+		t.Error("should not have decode function for offset-based table")
+	}
+
+	// Should have offset-based params
+	if !strings.Contains(codeStr, "Offset int") {
+		t.Error("offset-based table should have Offset field")
 	}
 }
 

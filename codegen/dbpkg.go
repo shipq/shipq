@@ -6,6 +6,7 @@ import (
 	"go/format"
 	"path/filepath"
 
+	"github.com/shipq/shipq/db/portsql/codegen"
 	"github.com/shipq/shipq/dburl"
 	"github.com/shipq/shipq/inifile"
 )
@@ -14,8 +15,17 @@ import (
 type DBPackageConfig struct {
 	ProjectRoot string
 	ModulePath  string
-	DatabaseURL string // From shipq.ini [db] database_url
-	Dialect     string // postgres, mysql, or sqlite
+	DatabaseURL string      // From shipq.ini [db] database_url
+	Dialect     string      // postgres, mysql, or sqlite
+	CRUDConfig  *CRUDConfig // Scope and order configuration for CRUD generation
+}
+
+// GetTableOpts returns the TableOpts map from CRUDConfig, or an empty map if not configured.
+func (c *DBPackageConfig) GetTableOpts() map[string]codegen.CRUDOptions {
+	if c.CRUDConfig != nil {
+		return c.CRUDConfig.TableOpts
+	}
+	return make(map[string]codegen.CRUDOptions)
 }
 
 // LoadDBPackageConfig reads shipq.ini and builds the config.
@@ -41,11 +51,16 @@ func LoadDBPackageConfig(projectRoot string) (*DBPackageConfig, error) {
 		return nil, fmt.Errorf("failed to determine dialect from database_url: %w", err)
 	}
 
+	// Load CRUD config (scope, order) - this doesn't require tables yet
+	// Tables will be loaded later and ApplyScopeFiltering will be called
+	crudCfg, _ := LoadCRUDConfig(ini, nil) // Pass nil tables for now
+
 	return &DBPackageConfig{
 		ProjectRoot: projectRoot,
 		ModulePath:  modulePath,
 		DatabaseURL: databaseURL,
 		Dialect:     dialect,
+		CRUDConfig:  crudCfg,
 	}, nil
 }
 

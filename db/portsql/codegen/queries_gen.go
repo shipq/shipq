@@ -68,6 +68,14 @@ func GenerateSharedTypes(queries []CompiledQuery, crudPlan *migrate.MigrationPla
 					imports[mapping.NeedsImport] = true
 				}
 			}
+
+			// Check if table supports cursor pagination (needs base64 and json imports)
+			analysis := AnalyzeTable(table)
+			if analysis.HasCreatedAt && analysis.HasPublicID {
+				imports["encoding/base64"] = true
+				imports["encoding/json"] = true
+				imports["time"] = true
+			}
 		}
 	}
 
@@ -235,6 +243,9 @@ func writeListTypes(buf *bytes.Buffer, table ddl.Table, analysis TableAnalysis, 
 		// Generate cursor struct for cursor-based pagination
 		writeListCursorStruct(buf, pluralPascal)
 
+		// Generate cursor encode/decode utilities
+		writeCursorEncodeDecode(buf, pluralPascal)
+
 		// Generate params with cursor fields
 		writeListParamsWithCursor(buf, table, analysis, pluralPascal, opts)
 
@@ -256,6 +267,49 @@ func writeListCursorStruct(buf *bytes.Buffer, pluralPascal string) {
 	buf.WriteString(fmt.Sprintf("type List%sCursor struct {\n", pluralPascal))
 	buf.WriteString("\tCreatedAt time.Time\n")
 	buf.WriteString("\tPublicID  string\n")
+	buf.WriteString("}\n\n")
+}
+
+// writeCursorEncodeDecode generates the cursor encode/decode utility functions
+func writeCursorEncodeDecode(buf *bytes.Buffer, pluralPascal string) {
+	// Internal cursor data struct for JSON serialization
+	buf.WriteString(fmt.Sprintf("// %sCursorData is the internal structure for cursor encoding.\n", pluralPascal))
+	buf.WriteString(fmt.Sprintf("type %sCursorData struct {\n", pluralPascal))
+	buf.WriteString("\tC time.Time `json:\"c\"` // created_at\n")
+	buf.WriteString("\tI string    `json:\"i\"` // public_id\n")
+	buf.WriteString("}\n\n")
+
+	// Encode function
+	buf.WriteString(fmt.Sprintf("// Encode%sCursor converts a cursor struct to a base64-encoded string.\n", pluralPascal))
+	buf.WriteString(fmt.Sprintf("func Encode%sCursor(c *List%sCursor) string {\n", pluralPascal, pluralPascal))
+	buf.WriteString("\tif c == nil {\n")
+	buf.WriteString("\t\treturn \"\"\n")
+	buf.WriteString("\t}\n")
+	buf.WriteString(fmt.Sprintf("\tdata, err := json.Marshal(%sCursorData{C: c.CreatedAt, I: c.PublicID})\n", pluralPascal))
+	buf.WriteString("\tif err != nil {\n")
+	buf.WriteString("\t\treturn \"\"\n")
+	buf.WriteString("\t}\n")
+	buf.WriteString("\treturn base64.RawURLEncoding.EncodeToString(data)\n")
+	buf.WriteString("}\n\n")
+
+	// Decode function
+	buf.WriteString(fmt.Sprintf("// Decode%sCursor parses a base64-encoded cursor string. Returns nil if invalid.\n", pluralPascal))
+	buf.WriteString(fmt.Sprintf("func Decode%sCursor(s string) *List%sCursor {\n", pluralPascal, pluralPascal))
+	buf.WriteString("\tif s == \"\" {\n")
+	buf.WriteString("\t\treturn nil\n")
+	buf.WriteString("\t}\n")
+	buf.WriteString("\tdata, err := base64.RawURLEncoding.DecodeString(s)\n")
+	buf.WriteString("\tif err != nil {\n")
+	buf.WriteString("\t\treturn nil\n")
+	buf.WriteString("\t}\n")
+	buf.WriteString(fmt.Sprintf("\tvar cd %sCursorData\n", pluralPascal))
+	buf.WriteString("\tif err := json.Unmarshal(data, &cd); err != nil {\n")
+	buf.WriteString("\t\treturn nil\n")
+	buf.WriteString("\t}\n")
+	buf.WriteString(fmt.Sprintf("\treturn &List%sCursor{\n", pluralPascal))
+	buf.WriteString("\t\tCreatedAt: cd.C,\n")
+	buf.WriteString("\t\tPublicID:  cd.I,\n")
+	buf.WriteString("\t}\n")
 	buf.WriteString("}\n\n")
 }
 

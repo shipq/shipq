@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"fmt"
 	"go/format"
+	"io"
 	"sort"
 	"strings"
 
@@ -71,6 +72,57 @@ func AnalyzeTable(table ddl.Table) TableAnalysis {
 	}
 
 	return analysis
+}
+
+// CursorSupportInfo contains information about a table's cursor pagination support.
+type CursorSupportInfo struct {
+	TableName      string
+	SupportsCursor bool
+	MissingColumns []string
+}
+
+// CheckCursorSupport analyzes a table and returns information about its cursor support.
+// A table supports cursor pagination if it has both created_at and public_id columns.
+func CheckCursorSupport(table ddl.Table) CursorSupportInfo {
+	analysis := AnalyzeTable(table)
+	info := CursorSupportInfo{
+		TableName:      table.Name,
+		SupportsCursor: analysis.HasCreatedAt && analysis.HasPublicID,
+	}
+
+	if !analysis.HasCreatedAt {
+		info.MissingColumns = append(info.MissingColumns, "created_at")
+	}
+	if !analysis.HasPublicID {
+		info.MissingColumns = append(info.MissingColumns, "public_id")
+	}
+
+	return info
+}
+
+// CheckAllTablesCursorSupport checks all tables in a migration plan for cursor support.
+// Returns a slice of CursorSupportInfo for tables that lack cursor support.
+func CheckAllTablesCursorSupport(plan *migrate.MigrationPlan) []CursorSupportInfo {
+	var warnings []CursorSupportInfo
+
+	for _, table := range plan.Schema.Tables {
+		info := CheckCursorSupport(table)
+		if !info.SupportsCursor {
+			warnings = append(warnings, info)
+		}
+	}
+
+	return warnings
+}
+
+// WriteCursorSupportWarnings writes warnings for tables that lack cursor pagination support.
+// Warnings are written to the provided writer (typically os.Stderr).
+func WriteCursorSupportWarnings(w io.Writer, warnings []CursorSupportInfo) {
+	for _, info := range warnings {
+		missing := strings.Join(info.MissingColumns, " and ")
+		fmt.Fprintf(w, "shipq: warning: table %q lacks %s - using offset pagination (cursor pagination requires both)\n",
+			info.TableName, missing)
+	}
 }
 
 // TypeMapping contains the mapping from DDL types to Go types and column types.

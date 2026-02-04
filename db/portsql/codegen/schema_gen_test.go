@@ -1,6 +1,7 @@
 package codegen
 
 import (
+	"bytes"
 	"go/parser"
 	"go/token"
 	"strings"
@@ -453,4 +454,185 @@ func contains(slice []string, s string) bool {
 		}
 	}
 	return false
+}
+
+func TestCheckCursorSupport_FullSupport(t *testing.T) {
+	table := ddl.Table{
+		Name: "users",
+		Columns: []ddl.ColumnDefinition{
+			{Name: "id", Type: ddl.BigintType, PrimaryKey: true},
+			{Name: "public_id", Type: ddl.StringType},
+			{Name: "name", Type: ddl.StringType},
+			{Name: "created_at", Type: ddl.DatetimeType},
+		},
+	}
+
+	info := CheckCursorSupport(table)
+
+	if !info.SupportsCursor {
+		t.Error("expected SupportsCursor = true for table with both created_at and public_id")
+	}
+	if len(info.MissingColumns) != 0 {
+		t.Errorf("expected no missing columns, got %v", info.MissingColumns)
+	}
+	if info.TableName != "users" {
+		t.Errorf("expected TableName = %q, got %q", "users", info.TableName)
+	}
+}
+
+func TestCheckCursorSupport_MissingCreatedAt(t *testing.T) {
+	table := ddl.Table{
+		Name: "settings",
+		Columns: []ddl.ColumnDefinition{
+			{Name: "id", Type: ddl.BigintType, PrimaryKey: true},
+			{Name: "public_id", Type: ddl.StringType},
+			{Name: "key", Type: ddl.StringType},
+		},
+	}
+
+	info := CheckCursorSupport(table)
+
+	if info.SupportsCursor {
+		t.Error("expected SupportsCursor = false for table missing created_at")
+	}
+	if len(info.MissingColumns) != 1 || info.MissingColumns[0] != "created_at" {
+		t.Errorf("expected missing columns = [created_at], got %v", info.MissingColumns)
+	}
+}
+
+func TestCheckCursorSupport_MissingPublicID(t *testing.T) {
+	table := ddl.Table{
+		Name: "logs",
+		Columns: []ddl.ColumnDefinition{
+			{Name: "id", Type: ddl.BigintType, PrimaryKey: true},
+			{Name: "message", Type: ddl.StringType},
+			{Name: "created_at", Type: ddl.DatetimeType},
+		},
+	}
+
+	info := CheckCursorSupport(table)
+
+	if info.SupportsCursor {
+		t.Error("expected SupportsCursor = false for table missing public_id")
+	}
+	if len(info.MissingColumns) != 1 || info.MissingColumns[0] != "public_id" {
+		t.Errorf("expected missing columns = [public_id], got %v", info.MissingColumns)
+	}
+}
+
+func TestCheckCursorSupport_MissingBoth(t *testing.T) {
+	table := ddl.Table{
+		Name: "configs",
+		Columns: []ddl.ColumnDefinition{
+			{Name: "id", Type: ddl.BigintType, PrimaryKey: true},
+			{Name: "key", Type: ddl.StringType},
+			{Name: "value", Type: ddl.TextType},
+		},
+	}
+
+	info := CheckCursorSupport(table)
+
+	if info.SupportsCursor {
+		t.Error("expected SupportsCursor = false for table missing both columns")
+	}
+	if len(info.MissingColumns) != 2 {
+		t.Errorf("expected 2 missing columns, got %v", info.MissingColumns)
+	}
+	if !contains(info.MissingColumns, "created_at") {
+		t.Error("expected missing columns to include created_at")
+	}
+	if !contains(info.MissingColumns, "public_id") {
+		t.Error("expected missing columns to include public_id")
+	}
+}
+
+func TestCheckAllTablesCursorSupport(t *testing.T) {
+	plan := &migrate.MigrationPlan{
+		Schema: migrate.Schema{
+			Name: "test",
+			Tables: map[string]ddl.Table{
+				"users": {
+					Name: "users",
+					Columns: []ddl.ColumnDefinition{
+						{Name: "id", Type: ddl.BigintType, PrimaryKey: true},
+						{Name: "public_id", Type: ddl.StringType},
+						{Name: "created_at", Type: ddl.DatetimeType},
+					},
+				},
+				"settings": {
+					Name: "settings",
+					Columns: []ddl.ColumnDefinition{
+						{Name: "id", Type: ddl.BigintType, PrimaryKey: true},
+						{Name: "key", Type: ddl.StringType},
+					},
+				},
+				"logs": {
+					Name: "logs",
+					Columns: []ddl.ColumnDefinition{
+						{Name: "id", Type: ddl.BigintType, PrimaryKey: true},
+						{Name: "created_at", Type: ddl.DatetimeType},
+					},
+				},
+			},
+		},
+	}
+
+	warnings := CheckAllTablesCursorSupport(plan)
+
+	// Should have 2 warnings (settings and logs lack cursor support)
+	if len(warnings) != 2 {
+		t.Errorf("expected 2 warnings, got %d", len(warnings))
+	}
+
+	// Verify both problematic tables are in warnings
+	foundSettings, foundLogs := false, false
+	for _, w := range warnings {
+		if w.TableName == "settings" {
+			foundSettings = true
+		}
+		if w.TableName == "logs" {
+			foundLogs = true
+		}
+	}
+	if !foundSettings {
+		t.Error("expected warning for settings table")
+	}
+	if !foundLogs {
+		t.Error("expected warning for logs table")
+	}
+}
+
+func TestWriteCursorSupportWarnings(t *testing.T) {
+	warnings := []CursorSupportInfo{
+		{TableName: "settings", SupportsCursor: false, MissingColumns: []string{"created_at", "public_id"}},
+		{TableName: "logs", SupportsCursor: false, MissingColumns: []string{"public_id"}},
+	}
+
+	var buf bytes.Buffer
+	WriteCursorSupportWarnings(&buf, warnings)
+
+	output := buf.String()
+
+	// Check that both warnings are written
+	if !strings.Contains(output, `table "settings"`) {
+		t.Error("expected warning output to contain settings table")
+	}
+	if !strings.Contains(output, `table "logs"`) {
+		t.Error("expected warning output to contain logs table")
+	}
+	if !strings.Contains(output, "created_at and public_id") {
+		t.Error("expected warning to mention both missing columns for settings")
+	}
+	if !strings.Contains(output, "offset pagination") {
+		t.Error("expected warning to mention offset pagination fallback")
+	}
+}
+
+func TestWriteCursorSupportWarnings_Empty(t *testing.T) {
+	var buf bytes.Buffer
+	WriteCursorSupportWarnings(&buf, nil)
+
+	if buf.Len() != 0 {
+		t.Errorf("expected no output for empty warnings, got %q", buf.String())
+	}
 }
