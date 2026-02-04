@@ -69,14 +69,23 @@ func TestProperty_Roundtrip_Postgres_CreateTable(t *testing.T) {
 		}
 
 		// Convert expected to normalized
+		// Check if this table has autoincrement-eligible PK
+		builtTable := plan.Schema.Tables[tableName]
+		_, hasAutoincrementPK := GetAutoincrementPK(&builtTable)
+
 		var normalizedExpected []NormalizedColumn
 		for _, col := range table.Columns {
+			// Determine if this column is the autoincrement PK
+			isAutoIncrementPK := hasAutoincrementPK && col.PrimaryKey &&
+				(col.Type == ddl.IntegerType || col.Type == ddl.BigintType)
+
 			normalizedExpected = append(normalizedExpected, NormalizedColumn{
-				Name:       col.Name,
-				BaseType:   NormalizeDDLType(col.Type),
-				Nullable:   col.Nullable,
-				IsPrimary:  col.PrimaryKey,
-				HasDefault: col.Default != nil,
+				Name:              col.Name,
+				BaseType:          NormalizeDDLType(col.Type),
+				Nullable:          col.Nullable,
+				IsPrimary:         col.PrimaryKey,
+				HasDefault:        col.Default != nil,
+				IsAutoIncrementPK: isAutoIncrementPK,
 			})
 		}
 
@@ -148,14 +157,23 @@ func TestProperty_Roundtrip_MySQL_CreateTable(t *testing.T) {
 			normalizedActual = append(normalizedActual, NormalizeMySQLColumn(col, isPrimary))
 		}
 
+		// Check if this table has autoincrement-eligible PK
+		builtTable := plan.Schema.Tables[tableName]
+		_, hasAutoincrementPK := GetAutoincrementPK(&builtTable)
+
 		var normalizedExpected []NormalizedColumn
 		for _, col := range table.Columns {
+			// Determine if this column is the autoincrement PK
+			isAutoIncrementPK := hasAutoincrementPK && col.PrimaryKey &&
+				(col.Type == ddl.IntegerType || col.Type == ddl.BigintType)
+
 			normalizedExpected = append(normalizedExpected, NormalizedColumn{
-				Name:       col.Name,
-				BaseType:   NormalizeDDLType(col.Type),
-				Nullable:   col.Nullable,
-				IsPrimary:  col.PrimaryKey,
-				HasDefault: col.Default != nil,
+				Name:              col.Name,
+				BaseType:          NormalizeDDLType(col.Type),
+				Nullable:          col.Nullable,
+				IsPrimary:         col.PrimaryKey,
+				HasDefault:        col.Default != nil,
+				IsAutoIncrementPK: isAutoIncrementPK,
 			})
 		}
 
