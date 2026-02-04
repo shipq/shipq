@@ -480,6 +480,12 @@ func (b *StringColumnBuilder) Col() ColumnRef {
 	return ColumnRef{name: b.col.Name}
 }
 
+// PrimaryKey marks the column as a primary key.
+func (b *StringColumnBuilder) PrimaryKey() *StringColumnBuilder {
+	b.col.PrimaryKey = true
+	return b
+}
+
 // Nullable marks the column as nullable.
 func (b *StringColumnBuilder) Nullable() *StringColumnBuilder {
 	b.col.Nullable = true

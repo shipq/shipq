@@ -277,9 +277,14 @@ func generateInsertSQL(table ddl.Table, analysis TableAnalysis, dialect SQLDiale
 	b.WriteString(")")
 
 	// RETURNING clause for Postgres and SQLite
-	if analysis.HasPublicID && (dialect == SQLDialectPostgres || dialect == SQLDialectSQLite) {
+	// Return id (for autoincrement PK) and public_id if available
+	if dialect == SQLDialectPostgres || dialect == SQLDialectSQLite {
 		b.WriteString(" RETURNING ")
-		b.WriteString(quoteIdentifier("public_id", dialect))
+		b.WriteString(quoteIdentifier("id", dialect))
+		if analysis.HasPublicID {
+			b.WriteString(", ")
+			b.WriteString(quoteIdentifier("public_id", dialect))
+		}
 	}
 
 	return b.String()

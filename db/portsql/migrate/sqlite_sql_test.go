@@ -8,6 +8,107 @@ import (
 )
 
 // =============================================================================
+// Autoincrement Primary Key Tests
+// =============================================================================
+
+func TestSQLite_CreateTable_AutoincrementPK_Bigint(t *testing.T) {
+	tb := ddl.MakeEmptyTable("users")
+	tb.Bigint("id").PrimaryKey()
+	tb.String("name")
+	table := tb.Build()
+
+	sql := generateSQLiteCreateTable(table)
+
+	// Should emit INTEGER PRIMARY KEY for single bigint PK (SQLite requires INTEGER for rowid alias)
+	if !strings.Contains(sql, `"id" INTEGER PRIMARY KEY`) {
+		t.Errorf("expected INTEGER PRIMARY KEY, got:\n%s", sql)
+	}
+}
+
+func TestSQLite_CreateTable_AutoincrementPK_Integer(t *testing.T) {
+	tb := ddl.MakeEmptyTable("users")
+	tb.Integer("id").PrimaryKey()
+	tb.String("name")
+	table := tb.Build()
+
+	sql := generateSQLiteCreateTable(table)
+
+	// Should emit INTEGER PRIMARY KEY for single integer PK
+	if !strings.Contains(sql, `"id" INTEGER PRIMARY KEY`) {
+		t.Errorf("expected INTEGER PRIMARY KEY, got:\n%s", sql)
+	}
+}
+
+func TestSQLite_CreateTable_CompositePK_NoAutoincrement(t *testing.T) {
+	tb := ddl.MakeEmptyTable("user_roles")
+	tb.Bigint("user_id").PrimaryKey()
+	tb.Bigint("role_id").PrimaryKey()
+	table := tb.Build()
+
+	sql := generateSQLiteCreateTable(table)
+
+	// Composite PK should NOT get special INTEGER treatment
+	// Both columns should just be INTEGER PRIMARY KEY without special rowid handling
+	if strings.Contains(sql, "AUTOINCREMENT") {
+		t.Errorf("composite PK should not have AUTOINCREMENT, got:\n%s", sql)
+	}
+}
+
+func TestSQLite_CreateTable_StringPK_NoAutoincrement(t *testing.T) {
+	tb := ddl.MakeEmptyTable("settings")
+	tb.String("key").PrimaryKey()
+	tb.String("value")
+	table := tb.Build()
+
+	sql := generateSQLiteCreateTable(table)
+
+	// String PK should NOT get INTEGER treatment
+	if strings.Contains(sql, "AUTOINCREMENT") {
+		t.Errorf("string PK should not have AUTOINCREMENT, got:\n%s", sql)
+	}
+	// Should use TEXT for string PK
+	if !strings.Contains(sql, `"key" TEXT PRIMARY KEY`) {
+		t.Errorf("expected TEXT PRIMARY KEY for string PK, got:\n%s", sql)
+	}
+}
+
+func TestSQLite_CreateTable_JunctionTable_NoAutoincrement(t *testing.T) {
+	tb := ddl.MakeEmptyTable("user_groups")
+	tb.Bigint("id").PrimaryKey()
+	tb.Bigint("user_id")
+	tb.Bigint("group_id")
+	table := tb.Build()
+	table.IsJunctionTable = true
+
+	sql := generateSQLiteCreateTable(table)
+
+	// Junction table should NOT get special rowid treatment
+	// It should just have a regular INTEGER PRIMARY KEY without autoincrement semantics
+	if strings.Contains(sql, "AUTOINCREMENT") {
+		t.Errorf("junction table should not have AUTOINCREMENT, got:\n%s", sql)
+	}
+}
+
+func TestSQLite_CreateTable_AutoincrementPK_NoDefault(t *testing.T) {
+	// Even if a default is specified on the PK column, it should be ignored
+	// for autoincrement-eligible PKs
+	tb := ddl.MakeEmptyTable("users")
+	tb.Bigint("id").PrimaryKey().Default(1)
+	tb.String("name")
+	table := tb.Build()
+
+	sql := generateSQLiteCreateTable(table)
+
+	// Should have INTEGER PRIMARY KEY but NO DEFAULT clause
+	if !strings.Contains(sql, `"id" INTEGER PRIMARY KEY`) {
+		t.Errorf("expected INTEGER PRIMARY KEY, got:\n%s", sql)
+	}
+	if strings.Contains(sql, "DEFAULT 1") {
+		t.Errorf("autoincrement PK should not have DEFAULT clause, got:\n%s", sql)
+	}
+}
+
+// =============================================================================
 // CREATE TABLE Tests
 // =============================================================================
 

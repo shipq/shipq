@@ -436,9 +436,13 @@ func TestAddTable_MigrationName(t *testing.T) {
 		t.Fatal("expected at least 1 migration")
 	}
 
-	expectedName := "create_users_table"
-	if plan.Migrations[0].Name != expectedName {
-		t.Errorf("expected migration name %q, got %q", expectedName, plan.Migrations[0].Name)
+	// Migration name should be timestamped: YYYYMMDDHHMMSS_create_users
+	migrationName := plan.Migrations[0].Name
+	if !strings.Contains(migrationName, "_create_users") {
+		t.Errorf("expected migration name to contain '_create_users', got %q", migrationName)
+	}
+	if len(migrationName) < 16 {
+		t.Errorf("expected migration name to have timestamp prefix, got %q", migrationName)
 	}
 }
 
@@ -678,9 +682,13 @@ func TestAddTableWithDefaults_AppendsMigration(t *testing.T) {
 		t.Errorf("expected 1 migration, got %d", len(plan.Migrations))
 	}
 
-	expectedName := "create_users_table"
-	if plan.Migrations[0].Name != expectedName {
-		t.Errorf("expected migration name %q, got %q", expectedName, plan.Migrations[0].Name)
+	// Migration name should be timestamped: YYYYMMDDHHMMSS_create_users
+	migrationName := plan.Migrations[0].Name
+	if !strings.Contains(migrationName, "_create_users") {
+		t.Errorf("expected migration name to contain '_create_users', got %q", migrationName)
+	}
+	if len(migrationName) < 16 {
+		t.Errorf("expected migration name to have timestamp prefix, got %q", migrationName)
 	}
 }
 
@@ -1183,8 +1191,9 @@ func TestMigrationPlan_MultipleMigrations(t *testing.T) {
 		t.Errorf("expected 3 migrations, got %d", len(plan.Migrations))
 	}
 
-	if plan.Migrations[0].Name != "create_users_table" {
-		t.Errorf("expected first migration to be 'create_users_table', got %q", plan.Migrations[0].Name)
+	// Migration name should be timestamped: YYYYMMDDHHMMSS_create_users
+	if !strings.Contains(plan.Migrations[0].Name, "_create_users") {
+		t.Errorf("expected first migration to contain '_create_users', got %q", plan.Migrations[0].Name)
 	}
 	if plan.Migrations[1].Name != "alter_users_table" {
 		t.Errorf("expected second migration to be 'alter_users_table', got %q", plan.Migrations[1].Name)
@@ -1239,10 +1248,23 @@ func TestMigrationPlan_Idempotent(t *testing.T) {
 		t.Errorf("expected same number of migrations, got %d vs %d", len(plan1.Migrations), len(plan2.Migrations))
 	}
 
-	// Verify same migration names
+	// Verify migration names have the same suffix pattern (timestamps will differ)
+	// Migration names are now timestamped: YYYYMMDDHHMMSS_action_tablename
 	for i := range plan1.Migrations {
-		if plan1.Migrations[i].Name != plan2.Migrations[i].Name {
-			t.Errorf("migration %d names differ: %q vs %q", i, plan1.Migrations[i].Name, plan2.Migrations[i].Name)
+		// Extract the suffix after the timestamp (position 15 onwards: after YYYYMMDDHHMMSS_)
+		name1 := plan1.Migrations[i].Name
+		name2 := plan2.Migrations[i].Name
+
+		if len(name1) < 15 || len(name2) < 15 {
+			t.Errorf("migration %d names too short: %q vs %q", i, name1, name2)
+			continue
+		}
+
+		suffix1 := name1[15:] // After timestamp and underscore
+		suffix2 := name2[15:]
+
+		if suffix1 != suffix2 {
+			t.Errorf("migration %d name suffixes differ: %q vs %q", i, suffix1, suffix2)
 		}
 	}
 

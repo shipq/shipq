@@ -6,6 +6,202 @@ import (
 	"github.com/shipq/shipq/db/portsql/ddl"
 )
 
+// =============================================================================
+// Autoincrement Eligibility Tests
+// =============================================================================
+
+func TestGetAutoincrementPK_SingleIntegerPK(t *testing.T) {
+	table := &ddl.Table{
+		Name: "users",
+		Columns: []ddl.ColumnDefinition{
+			{Name: "id", Type: ddl.IntegerType, PrimaryKey: true},
+			{Name: "name", Type: ddl.StringType},
+		},
+	}
+
+	info, ok := GetAutoincrementPK(table)
+
+	if !ok {
+		t.Error("GetAutoincrementPK() should return true for single integer PK")
+	}
+	if info.ColumnName != "id" {
+		t.Errorf("ColumnName = %q, want %q", info.ColumnName, "id")
+	}
+	if info.ColumnType != ddl.IntegerType {
+		t.Errorf("ColumnType = %q, want %q", info.ColumnType, ddl.IntegerType)
+	}
+}
+
+func TestGetAutoincrementPK_SingleBigintPK(t *testing.T) {
+	table := &ddl.Table{
+		Name: "users",
+		Columns: []ddl.ColumnDefinition{
+			{Name: "id", Type: ddl.BigintType, PrimaryKey: true},
+			{Name: "name", Type: ddl.StringType},
+		},
+	}
+
+	info, ok := GetAutoincrementPK(table)
+
+	if !ok {
+		t.Error("GetAutoincrementPK() should return true for single bigint PK")
+	}
+	if info.ColumnName != "id" {
+		t.Errorf("ColumnName = %q, want %q", info.ColumnName, "id")
+	}
+	if info.ColumnType != ddl.BigintType {
+		t.Errorf("ColumnType = %q, want %q", info.ColumnType, ddl.BigintType)
+	}
+}
+
+func TestGetAutoincrementPK_CompositePK(t *testing.T) {
+	table := &ddl.Table{
+		Name: "user_roles",
+		Columns: []ddl.ColumnDefinition{
+			{Name: "user_id", Type: ddl.BigintType, PrimaryKey: true},
+			{Name: "role_id", Type: ddl.BigintType, PrimaryKey: true},
+		},
+	}
+
+	_, ok := GetAutoincrementPK(table)
+
+	if ok {
+		t.Error("GetAutoincrementPK() should return false for composite PK")
+	}
+}
+
+func TestGetAutoincrementPK_StringPK(t *testing.T) {
+	table := &ddl.Table{
+		Name: "settings",
+		Columns: []ddl.ColumnDefinition{
+			{Name: "key", Type: ddl.StringType, PrimaryKey: true},
+			{Name: "value", Type: ddl.StringType},
+		},
+	}
+
+	_, ok := GetAutoincrementPK(table)
+
+	if ok {
+		t.Error("GetAutoincrementPK() should return false for non-integer PK")
+	}
+}
+
+func TestGetAutoincrementPK_NoPK(t *testing.T) {
+	table := &ddl.Table{
+		Name: "logs",
+		Columns: []ddl.ColumnDefinition{
+			{Name: "message", Type: ddl.StringType},
+			{Name: "timestamp", Type: ddl.TimestampType},
+		},
+	}
+
+	_, ok := GetAutoincrementPK(table)
+
+	if ok {
+		t.Error("GetAutoincrementPK() should return false for table without PK")
+	}
+}
+
+func TestGetAutoincrementPK_JunctionTable(t *testing.T) {
+	table := &ddl.Table{
+		Name:            "user_groups",
+		IsJunctionTable: true,
+		Columns: []ddl.ColumnDefinition{
+			{Name: "id", Type: ddl.BigintType, PrimaryKey: true},
+			{Name: "user_id", Type: ddl.BigintType},
+			{Name: "group_id", Type: ddl.BigintType},
+		},
+	}
+
+	_, ok := GetAutoincrementPK(table)
+
+	if ok {
+		t.Error("GetAutoincrementPK() should return false for junction tables")
+	}
+}
+
+func TestIsAutoincrementEligible(t *testing.T) {
+	tests := []struct {
+		name     string
+		table    *ddl.Table
+		expected bool
+	}{
+		{
+			name: "eligible - single integer PK",
+			table: &ddl.Table{
+				Name: "users",
+				Columns: []ddl.ColumnDefinition{
+					{Name: "id", Type: ddl.IntegerType, PrimaryKey: true},
+				},
+			},
+			expected: true,
+		},
+		{
+			name: "eligible - single bigint PK",
+			table: &ddl.Table{
+				Name: "posts",
+				Columns: []ddl.ColumnDefinition{
+					{Name: "id", Type: ddl.BigintType, PrimaryKey: true},
+				},
+			},
+			expected: true,
+		},
+		{
+			name: "not eligible - composite PK",
+			table: &ddl.Table{
+				Name: "user_roles",
+				Columns: []ddl.ColumnDefinition{
+					{Name: "user_id", Type: ddl.BigintType, PrimaryKey: true},
+					{Name: "role_id", Type: ddl.BigintType, PrimaryKey: true},
+				},
+			},
+			expected: false,
+		},
+		{
+			name: "not eligible - string PK",
+			table: &ddl.Table{
+				Name: "settings",
+				Columns: []ddl.ColumnDefinition{
+					{Name: "key", Type: ddl.StringType, PrimaryKey: true},
+				},
+			},
+			expected: false,
+		},
+		{
+			name: "not eligible - no PK",
+			table: &ddl.Table{
+				Name:    "logs",
+				Columns: []ddl.ColumnDefinition{},
+			},
+			expected: false,
+		},
+		{
+			name: "not eligible - junction table",
+			table: &ddl.Table{
+				Name:            "user_groups",
+				IsJunctionTable: true,
+				Columns: []ddl.ColumnDefinition{
+					{Name: "id", Type: ddl.BigintType, PrimaryKey: true},
+				},
+			},
+			expected: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := IsAutoincrementEligible(tt.table)
+			if result != tt.expected {
+				t.Errorf("IsAutoincrementEligible() = %v, want %v", result, tt.expected)
+			}
+		})
+	}
+}
+
+// =============================================================================
+// AddTable Eligibility Tests
+// =============================================================================
+
 func TestIsAddTableTable(t *testing.T) {
 	tests := []struct {
 		name     string

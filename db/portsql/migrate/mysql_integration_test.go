@@ -80,6 +80,7 @@ type MySQLColumnInfo struct {
 	DataType   string
 	IsNullable bool
 	Default    *string
+	Extra      *string // Contains "auto_increment" for autoincrement columns
 }
 
 // introspectMySQLColumns queries information_schema.columns for column metadata
@@ -87,7 +88,7 @@ func introspectMySQLColumns(t *testing.T, db *sql.DB, tableName string) []MySQLC
 	t.Helper()
 
 	query := `
-		SELECT COLUMN_NAME, DATA_TYPE, IS_NULLABLE, COLUMN_DEFAULT
+		SELECT COLUMN_NAME, DATA_TYPE, IS_NULLABLE, COLUMN_DEFAULT, EXTRA
 		FROM information_schema.COLUMNS
 		WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = ?
 		ORDER BY ORDINAL_POSITION
@@ -104,14 +105,16 @@ func introspectMySQLColumns(t *testing.T, db *sql.DB, tableName string) []MySQLC
 		var col MySQLColumnInfo
 		var isNullable string
 		var defaultVal *string
+		var extra *string
 
-		err := rows.Scan(&col.Name, &col.DataType, &isNullable, &defaultVal)
+		err := rows.Scan(&col.Name, &col.DataType, &isNullable, &defaultVal, &extra)
 		if err != nil {
 			t.Fatalf("failed to scan column: %v", err)
 		}
 
 		col.IsNullable = isNullable == "YES"
 		col.Default = defaultVal
+		col.Extra = extra
 		columns = append(columns, col)
 	}
 
@@ -124,7 +127,7 @@ func mysqlTableExists(t *testing.T, db *sql.DB, tableName string) bool {
 
 	var exists int
 	query := `
-		SELECT COUNT(*) FROM information_schema.TABLES 
+		SELECT COUNT(*) FROM information_schema.TABLES
 		WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = ?
 	`
 	err := db.QueryRow(query, tableName).Scan(&exists)

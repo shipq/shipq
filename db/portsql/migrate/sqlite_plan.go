@@ -72,18 +72,25 @@ func formatSQLiteDefault(col *ddl.ColumnDefinition) string {
 	}
 }
 
-// generateSQLiteColumnDef generates a column definition for CREATE TABLE
-func generateSQLiteColumnDef(col *ddl.ColumnDefinition) string {
+// generateSQLiteColumnDef generates a column definition for CREATE TABLE.
+// isAutoincrementPK should be true if this column is the autoincrement-eligible primary key.
+func generateSQLiteColumnDef(col *ddl.ColumnDefinition, isAutoincrementPK bool) string {
 	var parts []string
 
 	// Column name (double-quoted like PostgreSQL)
 	parts = append(parts, fmt.Sprintf(`"%s"`, col.Name))
 
 	// Type
-	parts = append(parts, sqliteType(col))
+	// For autoincrement PK, SQLite requires exactly "INTEGER" (not BIGINT) for rowid aliasing
+	if isAutoincrementPK {
+		parts = append(parts, "INTEGER")
+	} else {
+		parts = append(parts, sqliteType(col))
+	}
 
 	// NOT NULL (only if not nullable and not primary key - PK implies NOT NULL)
-	if !col.Nullable && !col.PrimaryKey {
+	// For autoincrement PK, skip NOT NULL as it's implied and can interfere with rowid semantics
+	if !isAutoincrementPK && !col.Nullable && !col.PrimaryKey {
 		parts = append(parts, "NOT NULL")
 	}
 
@@ -92,8 +99,8 @@ func generateSQLiteColumnDef(col *ddl.ColumnDefinition) string {
 		parts = append(parts, "PRIMARY KEY")
 	}
 
-	// DEFAULT
-	if col.Default != nil {
+	// DEFAULT (skip for autoincrement PK - rowid is the source of truth)
+	if col.Default != nil && !isAutoincrementPK {
 		parts = append(parts, "DEFAULT", formatSQLiteDefault(col))
 	}
 
@@ -104,6 +111,9 @@ func generateSQLiteColumnDef(col *ddl.ColumnDefinition) string {
 func generateSQLiteCreateTable(table *ddl.Table) string {
 	var sb strings.Builder
 
+	// Check for autoincrement-eligible PK
+	pkInfo, hasAutoincrementPK := GetAutoincrementPK(table)
+
 	// CREATE TABLE statement
 	sb.WriteString(fmt.Sprintf(`CREATE TABLE "%s" (`, table.Name))
 
@@ -112,7 +122,9 @@ func generateSQLiteCreateTable(table *ddl.Table) string {
 		if i > 0 {
 			sb.WriteString(", ")
 		}
-		sb.WriteString(generateSQLiteColumnDef(&col))
+		// Determine if this column is the autoincrement PK
+		isAutoincrementPK := hasAutoincrementPK && col.Name == pkInfo.ColumnName
+		sb.WriteString(generateSQLiteColumnDef(&col, isAutoincrementPK))
 	}
 
 	sb.WriteString(")")
@@ -181,8 +193,10 @@ func generateSQLiteOperation(tableName string, op *ddl.TableOperation) string {
 		if op.ColumnDef == nil {
 			return ""
 		}
+		// ALTER TABLE ADD COLUMN does not support autoincrement
+		// (that would require table rebuild)
 		return fmt.Sprintf(`ALTER TABLE "%s" ADD COLUMN %s`,
-			tableName, generateSQLiteColumnDef(op.ColumnDef))
+			tableName, generateSQLiteColumnDef(op.ColumnDef, false))
 
 	case ddl.OpDropColumn:
 		// SQLite 3.35.0+ supports DROP COLUMN
@@ -292,13 +306,18 @@ func generateSQLiteTableRebuild(tableName string, currentTable *ddl.Table, ops [
 	sb.WriteString("PRAGMA foreign_keys=OFF;\n")
 	sb.WriteString("BEGIN TRANSACTION;\n")
 
+	// Check for autoincrement-eligible PK in the new table
+	pkInfo, hasAutoincrementPK := GetAutoincrementPK(newTable)
+
 	// 1. Create new table with desired schema
 	sb.WriteString(fmt.Sprintf(`CREATE TABLE "%s" (`, newTableName))
 	for i, col := range newTable.Columns {
 		if i > 0 {
 			sb.WriteString(", ")
 		}
-		sb.WriteString(generateSQLiteColumnDef(&col))
+		// Determine if this column is the autoincrement PK
+		isAutoincrementPK := hasAutoincrementPK && col.Name == pkInfo.ColumnName
+		sb.WriteString(generateSQLiteColumnDef(&col, isAutoincrementPK))
 	}
 	sb.WriteString(");\n")
 

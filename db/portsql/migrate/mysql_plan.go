@@ -83,8 +83,9 @@ func formatMySQLDefault(col *ddl.ColumnDefinition) string {
 	}
 }
 
-// generateMySQLColumnDef generates a column definition for CREATE TABLE
-func generateMySQLColumnDef(col *ddl.ColumnDefinition) string {
+// generateMySQLColumnDef generates a column definition for CREATE TABLE.
+// isAutoincrementPK should be true if this column is the autoincrement-eligible primary key.
+func generateMySQLColumnDef(col *ddl.ColumnDefinition, isAutoincrementPK bool) string {
 	var parts []string
 
 	// Column name (backtick-quoted)
@@ -93,9 +94,17 @@ func generateMySQLColumnDef(col *ddl.ColumnDefinition) string {
 	// Type
 	parts = append(parts, mysqlType(col))
 
-	// NOT NULL (only if not nullable and not primary key - PK implies NOT NULL)
-	if !col.Nullable && !col.PrimaryKey {
+	// NOT NULL - MySQL requires NOT NULL before AUTO_INCREMENT
+	// For autoincrement PK, we always add NOT NULL
+	if isAutoincrementPK {
 		parts = append(parts, "NOT NULL")
+	} else if !col.Nullable && !col.PrimaryKey {
+		parts = append(parts, "NOT NULL")
+	}
+
+	// AUTO_INCREMENT for autoincrement-eligible PK
+	if isAutoincrementPK {
+		parts = append(parts, "AUTO_INCREMENT")
 	}
 
 	// PRIMARY KEY
@@ -103,8 +112,8 @@ func generateMySQLColumnDef(col *ddl.ColumnDefinition) string {
 		parts = append(parts, "PRIMARY KEY")
 	}
 
-	// DEFAULT
-	if col.Default != nil {
+	// DEFAULT (skip for autoincrement PK - AUTO_INCREMENT is the source of truth)
+	if col.Default != nil && !isAutoincrementPK {
 		parts = append(parts, "DEFAULT", formatMySQLDefault(col))
 	}
 
@@ -115,6 +124,9 @@ func generateMySQLColumnDef(col *ddl.ColumnDefinition) string {
 func generateMySQLCreateTable(table *ddl.Table) string {
 	var sb strings.Builder
 
+	// Check for autoincrement-eligible PK
+	pkInfo, hasAutoincrementPK := GetAutoincrementPK(table)
+
 	// CREATE TABLE statement
 	sb.WriteString(fmt.Sprintf("CREATE TABLE `%s` (", table.Name))
 
@@ -123,7 +135,9 @@ func generateMySQLCreateTable(table *ddl.Table) string {
 		if i > 0 {
 			sb.WriteString(", ")
 		}
-		sb.WriteString(generateMySQLColumnDef(&col))
+		// Determine if this column is the autoincrement PK
+		isAutoincrementPK := hasAutoincrementPK && col.Name == pkInfo.ColumnName
+		sb.WriteString(generateMySQLColumnDef(&col, isAutoincrementPK))
 	}
 
 	sb.WriteString(") ENGINE=InnoDB DEFAULT CHARSET=utf8mb4")
@@ -190,8 +204,10 @@ func generateMySQLOperation(tableName string, op *ddl.TableOperation) string {
 		if op.ColumnDef == nil {
 			return ""
 		}
+		// ALTER TABLE ADD COLUMN does not support autoincrement
+		// (that would require altering to AUTO_INCREMENT column separately)
 		return fmt.Sprintf("ALTER TABLE `%s` ADD COLUMN %s",
-			tableName, generateMySQLColumnDef(op.ColumnDef))
+			tableName, generateMySQLColumnDef(op.ColumnDef, false))
 
 	case ddl.OpDropColumn:
 		return fmt.Sprintf("ALTER TABLE `%s` DROP COLUMN `%s`",

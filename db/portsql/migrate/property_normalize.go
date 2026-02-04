@@ -11,11 +11,12 @@ import (
 
 // NormalizedColumn represents a database-agnostic column for comparison.
 type NormalizedColumn struct {
-	Name       string
-	BaseType   string // "integer", "bigint", "string", "text", "boolean", "float", "decimal", "datetime", "binary", "json"
-	Nullable   bool
-	IsPrimary  bool
-	HasDefault bool
+	Name              string
+	BaseType          string // "integer", "bigint", "string", "text", "boolean", "float", "decimal", "datetime", "binary", "json"
+	Nullable          bool
+	IsPrimary         bool
+	HasDefault        bool
+	IsAutoIncrementPK bool // True if this is an autoincrement-eligible primary key column
 }
 
 // NormalizedIndex represents a database-agnostic index for comparison.
@@ -195,6 +196,12 @@ func CompareNormalizedColumns(expected, actual NormalizedColumn) []string {
 		diffs = append(diffs, "primary key mismatch for "+expected.Name+": expected "+boolStr(expected.IsPrimary)+", got "+boolStr(actual.IsPrimary))
 	}
 
+	// Compare autoincrement status - treat Postgres identity, MySQL AUTO_INCREMENT,
+	// and SQLite INTEGER PRIMARY KEY as equivalent autoincrement mechanisms
+	if expected.IsAutoIncrementPK != actual.IsAutoIncrementPK {
+		diffs = append(diffs, "autoincrement mismatch for "+expected.Name+": expected "+boolStr(expected.IsAutoIncrementPK)+", got "+boolStr(actual.IsAutoIncrementPK))
+	}
+
 	return diffs
 }
 
@@ -369,11 +376,17 @@ func NormalizeDDLColumn(col interface {
 	IsPrimaryKey() bool
 	GetDefault() string
 }) NormalizedColumn {
+	colType := col.GetType()
+	isPrimary := col.IsPrimaryKey()
+	// Autoincrement eligibility: single integer/bigint PK (we check single PK at table level)
+	isAutoIncrementEligible := isPrimary && (colType == "integer" || colType == "bigint")
+
 	return NormalizedColumn{
-		Name:       col.GetName(),
-		BaseType:   NormalizeDDLType(col.GetType()),
-		Nullable:   col.IsNullable(),
-		IsPrimary:  col.IsPrimaryKey(),
-		HasDefault: col.GetDefault() != "",
+		Name:              col.GetName(),
+		BaseType:          NormalizeDDLType(colType),
+		Nullable:          col.IsNullable(),
+		IsPrimary:         isPrimary,
+		HasDefault:        col.GetDefault() != "",
+		IsAutoIncrementPK: isAutoIncrementEligible,
 	}
 }

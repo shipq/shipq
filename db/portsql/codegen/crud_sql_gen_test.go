@@ -39,7 +39,7 @@ func TestGenerateCRUDSQL_Insert_WithAutoFilledColumns(t *testing.T) {
 			name:    "Postgres",
 			dialect: SQLDialectPostgres,
 			wantNow: "NOW()",
-			wantSQL: `INSERT INTO "authors" ("public_id", "name", "email", "created_at", "updated_at") VALUES ($1, $2, $3, NOW(), NOW()) RETURNING "public_id"`,
+			wantSQL: `INSERT INTO "authors" ("public_id", "name", "email", "created_at", "updated_at") VALUES ($1, $2, $3, NOW(), NOW()) RETURNING "id", "public_id"`,
 		},
 		{
 			name:    "MySQL",
@@ -51,7 +51,7 @@ func TestGenerateCRUDSQL_Insert_WithAutoFilledColumns(t *testing.T) {
 			name:    "SQLite",
 			dialect: SQLDialectSQLite,
 			wantNow: "datetime('now')",
-			wantSQL: `INSERT INTO "authors" ("public_id", "name", "email", "created_at", "updated_at") VALUES (?, ?, ?, datetime('now'), datetime('now')) RETURNING "public_id"`,
+			wantSQL: `INSERT INTO "authors" ("public_id", "name", "email", "created_at", "updated_at") VALUES (?, ?, ?, datetime('now'), datetime('now')) RETURNING "id", "public_id"`,
 		},
 	}
 
@@ -598,6 +598,93 @@ func TestGenerateDialectRunner_CRUD_DialectSpecificSQL(t *testing.T) {
 // Edge Cases
 // =============================================================================
 
+// =============================================================================
+// Autoincrement PK Tests
+// =============================================================================
+
+func TestGenerateCRUDSQL_AutoincrementPK_InsertOmitsID(t *testing.T) {
+	// Tables with autoincrement-eligible PK should NOT include id in INSERT column list
+	table := ddl.Table{
+		Name: "users",
+		Columns: []ddl.ColumnDefinition{
+			{Name: "id", Type: ddl.BigintType, PrimaryKey: true},
+			{Name: "public_id", Type: ddl.StringType},
+			{Name: "name", Type: ddl.StringType},
+			{Name: "created_at", Type: ddl.DatetimeType},
+			{Name: "updated_at", Type: ddl.DatetimeType},
+			{Name: "deleted_at", Type: ddl.DatetimeType, Nullable: true},
+		},
+	}
+
+	for _, dialect := range []SQLDialect{SQLDialectPostgres, SQLDialectMySQL, SQLDialectSQLite} {
+		t.Run(string(dialect), func(t *testing.T) {
+			sqlSet := GenerateCRUDSQL(table, dialect, CRUDOptions{})
+
+			// INSERT should NOT include "id" in column list
+			idQuoted := quoteIdentifier("id", dialect)
+			insertColPart := strings.Split(sqlSet.InsertSQL, "VALUES")[0]
+			if strings.Contains(insertColPart, idQuoted+",") || strings.Contains(insertColPart, ", "+idQuoted) {
+				t.Errorf("InsertSQL should not include id column for autoincrement PK.\nGot: %s", sqlSet.InsertSQL)
+			}
+		})
+	}
+}
+
+func TestGenerateCRUDSQL_AutoincrementPK_ReturnsID(t *testing.T) {
+	// Postgres and SQLite should use RETURNING to get the autoincrement id
+	table := ddl.Table{
+		Name: "items",
+		Columns: []ddl.ColumnDefinition{
+			{Name: "id", Type: ddl.BigintType, PrimaryKey: true},
+			{Name: "name", Type: ddl.StringType},
+		},
+	}
+
+	tests := []struct {
+		dialect     SQLDialect
+		wantReturn  bool
+		wantPattern string
+	}{
+		{SQLDialectPostgres, true, `RETURNING "id"`},
+		{SQLDialectSQLite, true, `RETURNING "id"`},
+		{SQLDialectMySQL, false, ""},
+	}
+
+	for _, tt := range tests {
+		t.Run(string(tt.dialect), func(t *testing.T) {
+			sqlSet := GenerateCRUDSQL(table, tt.dialect, CRUDOptions{})
+
+			hasReturning := strings.Contains(sqlSet.InsertSQL, "RETURNING")
+			if hasReturning != tt.wantReturn {
+				t.Errorf("InsertSQL RETURNING mismatch for %s: want %v, got %v.\nSQL: %s",
+					tt.dialect, tt.wantReturn, hasReturning, sqlSet.InsertSQL)
+			}
+
+			if tt.wantReturn && !strings.Contains(sqlSet.InsertSQL, tt.wantPattern) {
+				t.Errorf("InsertSQL should contain %q.\nGot: %s", tt.wantPattern, sqlSet.InsertSQL)
+			}
+		})
+	}
+}
+
+func TestGenerateCRUDSQL_CompositePK_NoAutoincrementBehavior(t *testing.T) {
+	// Composite PK tables should not have autoincrement behavior
+	// (though they're unusual for CRUD tables)
+	table := ddl.Table{
+		Name: "user_roles",
+		Columns: []ddl.ColumnDefinition{
+			{Name: "user_id", Type: ddl.BigintType, PrimaryKey: true},
+			{Name: "role_id", Type: ddl.BigintType, PrimaryKey: true},
+			{Name: "granted_at", Type: ddl.DatetimeType},
+		},
+	}
+
+	analysis := AnalyzeTable(table)
+	if analysis.HasAutoincrementPK {
+		t.Error("Composite PK table should not have HasAutoincrementPK=true")
+	}
+}
+
 func TestGenerateCRUDSQL_TableWithoutPublicID(t *testing.T) {
 	table := ddl.Table{
 		Name: "settings",
@@ -625,10 +712,13 @@ func TestGenerateCRUDSQL_TableWithoutPublicID(t *testing.T) {
 				t.Error("InsertSQL should not have public_id when column doesn't exist")
 			}
 
-			// No RETURNING clause for Postgres/SQLite (no public_id to return)
+			// RETURNING clause for Postgres/SQLite should return id (for autoincrement)
 			if dialect == SQLDialectPostgres || dialect == SQLDialectSQLite {
-				if strings.Contains(sqlSet.InsertSQL, "RETURNING") {
-					t.Error("InsertSQL should not have RETURNING when no public_id")
+				if !strings.Contains(sqlSet.InsertSQL, "RETURNING") {
+					t.Error("InsertSQL should have RETURNING for autoincrement id")
+				}
+				if !strings.Contains(sqlSet.InsertSQL, quoteIdentifier("id", dialect)) {
+					t.Errorf("InsertSQL RETURNING should include id.\nGot: %s", sqlSet.InsertSQL)
 				}
 			}
 		})

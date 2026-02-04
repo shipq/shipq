@@ -8,6 +8,101 @@ import (
 )
 
 // =============================================================================
+// Autoincrement Primary Key Tests
+// =============================================================================
+
+func TestMySQL_CreateTable_AutoincrementPK_Bigint(t *testing.T) {
+	tb := ddl.MakeEmptyTable("users")
+	tb.Bigint("id").PrimaryKey()
+	tb.String("name")
+	table := tb.Build()
+
+	sql := generateMySQLCreateTable(table)
+
+	// Should emit NOT NULL AUTO_INCREMENT for single bigint PK
+	if !strings.Contains(sql, "`id` BIGINT NOT NULL AUTO_INCREMENT PRIMARY KEY") {
+		t.Errorf("expected BIGINT NOT NULL AUTO_INCREMENT PRIMARY KEY, got:\n%s", sql)
+	}
+}
+
+func TestMySQL_CreateTable_AutoincrementPK_Integer(t *testing.T) {
+	tb := ddl.MakeEmptyTable("users")
+	tb.Integer("id").PrimaryKey()
+	tb.String("name")
+	table := tb.Build()
+
+	sql := generateMySQLCreateTable(table)
+
+	// Should emit NOT NULL AUTO_INCREMENT for single integer PK
+	if !strings.Contains(sql, "`id` INT NOT NULL AUTO_INCREMENT PRIMARY KEY") {
+		t.Errorf("expected INT NOT NULL AUTO_INCREMENT PRIMARY KEY, got:\n%s", sql)
+	}
+}
+
+func TestMySQL_CreateTable_CompositePK_NoAutoincrement(t *testing.T) {
+	tb := ddl.MakeEmptyTable("user_roles")
+	tb.Bigint("user_id").PrimaryKey()
+	tb.Bigint("role_id").PrimaryKey()
+	table := tb.Build()
+
+	sql := generateMySQLCreateTable(table)
+
+	// Composite PK should NOT get AUTO_INCREMENT
+	if strings.Contains(sql, "AUTO_INCREMENT") {
+		t.Errorf("composite PK should not have AUTO_INCREMENT, got:\n%s", sql)
+	}
+}
+
+func TestMySQL_CreateTable_StringPK_NoAutoincrement(t *testing.T) {
+	tb := ddl.MakeEmptyTable("settings")
+	tb.String("key").PrimaryKey()
+	tb.String("value")
+	table := tb.Build()
+
+	sql := generateMySQLCreateTable(table)
+
+	// String PK should NOT get AUTO_INCREMENT
+	if strings.Contains(sql, "AUTO_INCREMENT") {
+		t.Errorf("string PK should not have AUTO_INCREMENT, got:\n%s", sql)
+	}
+}
+
+func TestMySQL_CreateTable_JunctionTable_NoAutoincrement(t *testing.T) {
+	tb := ddl.MakeEmptyTable("user_groups")
+	tb.Bigint("id").PrimaryKey()
+	tb.Bigint("user_id")
+	tb.Bigint("group_id")
+	table := tb.Build()
+	table.IsJunctionTable = true
+
+	sql := generateMySQLCreateTable(table)
+
+	// Junction table should NOT get AUTO_INCREMENT even with single integer PK
+	if strings.Contains(sql, "AUTO_INCREMENT") {
+		t.Errorf("junction table should not have AUTO_INCREMENT, got:\n%s", sql)
+	}
+}
+
+func TestMySQL_CreateTable_AutoincrementPK_NoDefault(t *testing.T) {
+	// Even if a default is specified on the PK column, it should be ignored
+	// for autoincrement-eligible PKs
+	tb := ddl.MakeEmptyTable("users")
+	tb.Bigint("id").PrimaryKey().Default(1)
+	tb.String("name")
+	table := tb.Build()
+
+	sql := generateMySQLCreateTable(table)
+
+	// Should have AUTO_INCREMENT but NO DEFAULT clause
+	if !strings.Contains(sql, "AUTO_INCREMENT") {
+		t.Errorf("expected AUTO_INCREMENT, got:\n%s", sql)
+	}
+	if strings.Contains(sql, "DEFAULT 1") {
+		t.Errorf("autoincrement PK should not have DEFAULT clause, got:\n%s", sql)
+	}
+}
+
+// =============================================================================
 // CREATE TABLE Tests
 // =============================================================================
 

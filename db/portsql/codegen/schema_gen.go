@@ -14,19 +14,23 @@ import (
 // TableAnalysis contains the analyzed structure of a table,
 // detecting standard columns and classifying columns for CRUD generation.
 type TableAnalysis struct {
-	Table         ddl.Table
-	HasPublicID   bool
-	HasCreatedAt  bool
-	HasUpdatedAt  bool
-	HasDeletedAt  bool
-	PrimaryKey    *ddl.ColumnDefinition
-	UserColumns   []ddl.ColumnDefinition // Columns for params (not auto-filled)
-	ResultColumns []ddl.ColumnDefinition // Columns for results (not internal id, deleted_at)
+	Table              ddl.Table
+	HasPublicID        bool
+	HasCreatedAt       bool
+	HasUpdatedAt       bool
+	HasDeletedAt       bool
+	HasAutoincrementPK bool // True if table has autoincrement-eligible PK
+	PrimaryKey         *ddl.ColumnDefinition
+	UserColumns        []ddl.ColumnDefinition // Columns for params (not auto-filled)
+	ResultColumns      []ddl.ColumnDefinition // Columns for results (not internal id, deleted_at)
 }
 
 // AnalyzeTable inspects a table and classifies its columns.
 func AnalyzeTable(table ddl.Table) TableAnalysis {
 	analysis := TableAnalysis{Table: table}
+
+	// Check for autoincrement-eligible PK
+	analysis.HasAutoincrementPK = migrate.IsAutoincrementEligible(&table)
 
 	for _, col := range table.Columns {
 		switch col.Name {

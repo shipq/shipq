@@ -2,10 +2,52 @@ package migrate
 
 import (
 	"fmt"
+	"sync"
+	"time"
 
 	"github.com/shipq/shipq/db/portsql/ddl"
 	"github.com/shipq/shipq/db/portsql/ref"
 )
+
+// migrationTimestamp manages unique timestamp generation for migrations.
+// It ensures that each migration gets a unique timestamp even when multiple
+// migrations are created in rapid succession.
+var (
+	lastTimestamp   string
+	timestampMu     sync.Mutex
+	timestampOffset int
+)
+
+// generateMigrationTimestamp generates a unique 14-digit timestamp for a migration.
+// If multiple migrations are created within the same second, it increments the
+// timestamp to ensure uniqueness and proper ordering.
+func generateMigrationTimestamp() string {
+	timestampMu.Lock()
+	defer timestampMu.Unlock()
+
+	now := time.Now().UTC()
+	currentTS := now.Format("20060102150405")
+
+	if currentTS == lastTimestamp {
+		// Same second, increment offset
+		timestampOffset++
+		// Add offset seconds to get unique timestamp
+		adjusted := now.Add(time.Duration(timestampOffset) * time.Second)
+		currentTS = adjusted.Format("20060102150405")
+	} else {
+		// New second, reset offset
+		lastTimestamp = currentTS
+		timestampOffset = 0
+	}
+
+	return currentTS
+}
+
+// generateMigrationName creates a properly formatted migration name with timestamp.
+func generateMigrationName(action, tableName string) string {
+	timestamp := generateMigrationTimestamp()
+	return fmt.Sprintf("%s_%s_%s", timestamp, action, tableName)
+}
 
 // ValidateMigrationName validates that a migration name follows the TIMESTAMP_name format.
 // The name must be at least 16 characters: 14 digit timestamp + underscore + at least 1 char.
@@ -113,9 +155,9 @@ func (m *MigrationPlan) AddEmptyTable(name string, fn func(*ddl.TableBuilder) er
 
 	m.Schema.Tables[name] = *table
 
-	// Generate SQL for each database
+	// Generate SQL for each database with properly timestamped migration name
 	m.Migrations = append(m.Migrations, Migration{
-		Name: fmt.Sprintf("create_%s_table", name),
+		Name: generateMigrationName("create", name),
 		Instructions: MigrationInstructions{
 			Postgres: generatePostgresCreateTable(table),
 			MySQL:    generateMySQLCreateTable(table),
@@ -149,9 +191,9 @@ func (m *MigrationPlan) AddTable(name string, fn func(*ddl.TableBuilder) error) 
 	table := tb.Build()
 	m.Schema.Tables[name] = *table
 
-	// Generate SQL for each database
+	// Generate SQL for each database with properly timestamped migration name
 	m.Migrations = append(m.Migrations, Migration{
-		Name: fmt.Sprintf("create_%s_table", name),
+		Name: generateMigrationName("create", name),
 		Instructions: MigrationInstructions{
 			Postgres: generatePostgresCreateTable(table),
 			MySQL:    generateMySQLCreateTable(table),
