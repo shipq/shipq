@@ -19,6 +19,9 @@ Commands:
   migrate new <name>  Create a new migration
   migrate up        Run all pending migrations
   migrate reset     Drop and recreate dev/test databases, re-run migrations
+  resource up       Run migrations and regenerate all handlers
+  handler generate <table>  Generate CRUD handlers for a table
+  handler compile           Compile handler registry and run codegen
 
 Options:
   -h, --help    Show this help message
@@ -135,6 +138,84 @@ func main() {
 		default:
 			fmt.Fprintf(os.Stderr, "error: unknown migrate subcommand: %s\n", subCmd)
 			fmt.Fprintln(os.Stderr, "Run 'shipq migrate --help' for usage.")
+			os.Exit(1)
+		}
+
+	case "handler":
+		if len(os.Args) < 3 {
+			fmt.Fprintln(os.Stderr, "error: 'shipq handler' requires a subcommand")
+			fmt.Fprintln(os.Stderr, "")
+			fmt.Fprintln(os.Stderr, "Available subcommands:")
+			fmt.Fprintln(os.Stderr, "  generate <table>  Generate CRUD handlers for a table")
+			fmt.Fprintln(os.Stderr, "  compile           Compile handler registry and run codegen")
+			os.Exit(1)
+		}
+
+		subCmd := os.Args[2]
+		switch subCmd {
+		case "generate":
+			handlerGenerateCmd(os.Args[3:])
+
+		case "compile":
+			handlerCompileCmd()
+
+		case "-h", "--help", "help":
+			fmt.Println("shipq handler - Handler generation commands")
+			fmt.Println("")
+			fmt.Println("Subcommands:")
+			fmt.Println("  generate <table>  Generate CRUD handlers for a table")
+			fmt.Println("  compile           Compile handler registry and run codegen")
+			fmt.Println("")
+			fmt.Println("Examples:")
+			fmt.Println("  shipq handler generate posts")
+			fmt.Println("  shipq handler generate users")
+			fmt.Println("")
+			fmt.Println("This generates handler files in api/<table>/ including:")
+			fmt.Println("  - create.go      POST /<table>")
+			fmt.Println("  - get_one.go     GET /<table>/:id")
+			fmt.Println("  - list.go        GET /<table>")
+			fmt.Println("  - update.go      PATCH /<table>/:id")
+			fmt.Println("  - soft_delete.go DELETE /<table>/:id")
+			fmt.Println("  - register.go    Handler registration function")
+			os.Exit(0)
+
+		default:
+			fmt.Fprintf(os.Stderr, "error: unknown handler subcommand: %s\n", subCmd)
+			fmt.Fprintln(os.Stderr, "Run 'shipq handler --help' for usage.")
+			os.Exit(1)
+		}
+
+	case "resource":
+		if len(os.Args) < 3 {
+			fmt.Fprintln(os.Stderr, "error: 'shipq resource' requires a subcommand")
+			fmt.Fprintln(os.Stderr, "")
+			fmt.Fprintln(os.Stderr, "Available subcommands:")
+			fmt.Fprintln(os.Stderr, "  up  Run migrations and regenerate all handlers")
+			os.Exit(1)
+		}
+
+		subCmd := os.Args[2]
+		switch subCmd {
+		case "up":
+			resourceUpCmd()
+
+		case "-h", "--help", "help":
+			fmt.Println("shipq resource - Resource management commands")
+			fmt.Println("")
+			fmt.Println("Subcommands:")
+			fmt.Println("  up  Run migrations and regenerate all handlers")
+			fmt.Println("")
+			fmt.Println("The 'resource up' command:")
+			fmt.Println("  1. Runs all pending migrations (same as 'shipq migrate up')")
+			fmt.Println("  2. Regenerates CRUD handlers for all tables in the schema")
+			fmt.Println("")
+			fmt.Println("To opt out of handler regeneration for a specific table,")
+			fmt.Println("create a file: api/<table>/.shipq-no-regen")
+			os.Exit(0)
+
+		default:
+			fmt.Fprintf(os.Stderr, "error: unknown resource subcommand: %s\n", subCmd)
+			fmt.Fprintln(os.Stderr, "Run 'shipq resource --help' for usage.")
 			os.Exit(1)
 		}
 

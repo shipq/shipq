@@ -1,0 +1,882 @@
+package codegen
+
+import (
+	"bytes"
+	"fmt"
+	"go/format"
+	"sort"
+	"strings"
+
+	"github.com/shipq/shipq/db/portsql/ddl"
+)
+
+// HandlerGenConfig holds configuration for generating handlers for a table.
+type HandlerGenConfig struct {
+	ModulePath  string               // e.g., "myapp"
+	TableName   string               // e.g., "posts"
+	Table       ddl.Table            // The table definition
+	Schema      map[string]ddl.Table // Full schema for relationship detection
+	ScopeColumn string               // e.g., "organization_id" (empty if unscoped)
+}
+
+// RelationshipInfo describes a relationship to embed in GET responses.
+type RelationshipInfo struct {
+	FieldName    string   // JSON field name (e.g., "author", "tags")
+	TargetTable  string   // Referenced table (e.g., "users", "tags")
+	IsMany       bool     // true for many-to-many (junction), false for direct FK
+	IsNullable   bool     // true if the FK column is nullable
+	FKColumn     string   // The foreign key column name (e.g., "author_id")
+	EmbedColumns []string // Columns to include (all except id, deleted_at)
+}
+
+// AnalyzeRelationships examines a table and returns embeddable relationships.
+func AnalyzeRelationships(table ddl.Table, schema map[string]ddl.Table) []RelationshipInfo {
+	var relations []RelationshipInfo
+
+	// 1. Find direct FK references
+	for _, col := range table.Columns {
+		if col.References != "" {
+			targetTable, exists := schema[col.References]
+			if !exists {
+				continue
+			}
+			relations = append(relations, RelationshipInfo{
+				FieldName:    toEmbedFieldName(col.Name),
+				TargetTable:  col.References,
+				IsMany:       false,
+				IsNullable:   col.Nullable,
+				FKColumn:     col.Name,
+				EmbedColumns: getEmbeddableColumns(targetTable),
+			})
+		}
+	}
+
+	// 2. Find many-to-many via junction tables
+	for _, jt := range schema {
+		if !jt.IsJunctionTable {
+			continue
+		}
+		// Check if this junction table references our table
+		if refs := getJunctionReferences(jt, table.Name, schema); refs != nil {
+			relations = append(relations, *refs)
+		}
+	}
+
+	return relations
+}
+
+// getEmbeddableColumns returns all columns except id and deleted_at.
+func getEmbeddableColumns(table ddl.Table) []string {
+	var cols []string
+	for _, col := range table.Columns {
+		if col.Name == "id" || col.Name == "deleted_at" {
+			continue
+		}
+		cols = append(cols, col.Name)
+	}
+	return cols
+}
+
+// toEmbedFieldName converts FK column name to embed field name.
+// author_id -> author, category_id -> category
+func toEmbedFieldName(fkColumn string) string {
+	return strings.TrimSuffix(fkColumn, "_id")
+}
+
+// getJunctionReferences checks if a junction table creates a many-to-many
+// relationship with the given table and returns the relationship info.
+func getJunctionReferences(junction ddl.Table, tableName string, schema map[string]ddl.Table) *RelationshipInfo {
+	var thisRef, otherRef string
+	var otherTable ddl.Table
+	var found bool
+
+	for _, col := range junction.Columns {
+		if col.References == tableName {
+			thisRef = col.Name
+		} else if col.References != "" {
+			otherRef = col.Name
+			otherTable, found = schema[col.References]
+		}
+	}
+
+	// Must have references to both our table and another table
+	if thisRef == "" || otherRef == "" || !found {
+		return nil
+	}
+
+	return &RelationshipInfo{
+		FieldName:    toPlural(toEmbedFieldName(otherRef)),
+		TargetTable:  otherTable.Name,
+		IsMany:       true,
+		IsNullable:   false, // Many-to-many is always an array
+		FKColumn:     otherRef,
+		EmbedColumns: getEmbeddableColumns(otherTable),
+	}
+}
+
+// toSingular converts a plural noun to singular (simple version).
+func toSingular(plural string) string {
+	if strings.HasSuffix(plural, "ies") {
+		return plural[:len(plural)-3] + "y"
+	}
+	if strings.HasSuffix(plural, "es") {
+		base := plural[:len(plural)-2]
+		if strings.HasSuffix(base, "s") ||
+			strings.HasSuffix(base, "x") ||
+			strings.HasSuffix(base, "z") ||
+			strings.HasSuffix(base, "ch") ||
+			strings.HasSuffix(base, "sh") {
+			return base
+		}
+	}
+	if strings.HasSuffix(plural, "s") {
+		return plural[:len(plural)-1]
+	}
+	return plural
+}
+
+// toPascalCase converts snake_case to PascalCase.
+func toPascalCase(s string) string {
+	parts := strings.Split(s, "_")
+	for i, part := range parts {
+		if len(part) > 0 {
+			parts[i] = strings.ToUpper(part[:1]) + part[1:]
+		}
+	}
+	return strings.Join(parts, "")
+}
+
+// toCamelCase converts snake_case to camelCase.
+func toCamelCase(s string) string {
+	pascal := toPascalCase(s)
+	if len(pascal) == 0 {
+		return ""
+	}
+	return strings.ToLower(pascal[:1]) + pascal[1:]
+}
+
+// goTypeForColumn returns the Go type for a column.
+func goTypeForColumn(col ddl.ColumnDefinition) string {
+	baseType := goBaseType(col.Type)
+	if col.Nullable {
+		return "*" + baseType
+	}
+	return baseType
+}
+
+// goBaseType returns the base Go type for a DDL type.
+func goBaseType(colType string) string {
+	switch colType {
+	case ddl.IntegerType:
+		return "int"
+	case ddl.BigintType:
+		return "int64"
+	case ddl.DecimalType, ddl.FloatType:
+		return "float64"
+	case ddl.BooleanType:
+		return "bool"
+	case ddl.StringType, ddl.TextType:
+		return "string"
+	case ddl.DatetimeType, ddl.TimestampType:
+		return "time.Time"
+	case ddl.BinaryType:
+		return "[]byte"
+	case ddl.JSONType:
+		return "json.RawMessage"
+	default:
+		return "string"
+	}
+}
+
+// resourceName returns the singular PascalCase name for a table.
+func resourceName(tableName string) string {
+	return toPascalCase(toSingular(tableName))
+}
+
+// GenerateHandlerFiles generates all handler files for a table.
+func GenerateHandlerFiles(cfg HandlerGenConfig) (map[string][]byte, error) {
+	files := make(map[string][]byte)
+
+	relations := AnalyzeRelationships(cfg.Table, cfg.Schema)
+
+	// Generate each handler file
+	generators := map[string]func(HandlerGenConfig, []RelationshipInfo) ([]byte, error){
+		"create.go":      GenerateCreateHandler,
+		"get_one.go":     GenerateGetOneHandler,
+		"list.go":        GenerateListHandler,
+		"update.go":      GenerateUpdateHandler,
+		"soft_delete.go": GenerateSoftDeleteHandler,
+		"register.go":    GenerateRegister,
+	}
+
+	for filename, generator := range generators {
+		content, err := generator(cfg, relations)
+		if err != nil {
+			return nil, fmt.Errorf("failed to generate %s: %w", filename, err)
+		}
+		files[filename] = content
+	}
+
+	return files, nil
+}
+
+// GenerateCreateHandler generates api/<table>/create.go
+func GenerateCreateHandler(cfg HandlerGenConfig, _ []RelationshipInfo) ([]byte, error) {
+	var buf bytes.Buffer
+	res := resourceName(cfg.TableName)
+	pkgName := cfg.TableName
+
+	buf.WriteString("// Code generated by shipq. DO NOT EDIT.\n")
+	buf.WriteString("package " + pkgName + "\n\n")
+
+	// Imports
+	buf.WriteString("import (\n")
+	buf.WriteString("\t\"context\"\n")
+	buf.WriteString("\t\"time\"\n\n")
+	buf.WriteString("\t\"" + cfg.ModulePath + "/httperror\"\n")
+	buf.WriteString("\t\"" + cfg.ModulePath + "/shipq/queries\"\n")
+	buf.WriteString(")\n\n")
+
+	// Request struct
+	buf.WriteString("// Create" + res + "Request is the request body for creating a " + toSingular(cfg.TableName) + ".\n")
+	buf.WriteString("type Create" + res + "Request struct {\n")
+	for _, col := range cfg.Table.Columns {
+		if isAutoColumn(col.Name) {
+			continue
+		}
+		fieldName := toPascalCase(col.Name)
+		fieldType := goTypeForColumn(col)
+		jsonTag := col.Name
+		if col.Nullable {
+			jsonTag += ",omitempty"
+		}
+		buf.WriteString(fmt.Sprintf("\t%s %s `json:\"%s\"`\n", fieldName, fieldType, jsonTag))
+	}
+	buf.WriteString("}\n\n")
+
+	// Response struct
+	buf.WriteString("// Create" + res + "Response is the response body after creating a " + toSingular(cfg.TableName) + ".\n")
+	buf.WriteString("// NOTE: Internal `id` is NEVER exposed. PublicID maps to JSON \"id\".\n")
+	buf.WriteString("type Create" + res + "Response struct {\n")
+	for _, col := range cfg.Table.Columns {
+		if col.Name == "id" || col.Name == "deleted_at" {
+			continue
+		}
+		fieldName := toPascalCase(col.Name)
+		jsonName := col.Name
+		if col.Name == "public_id" {
+			jsonName = "id"
+		}
+		fieldType := responseFieldType(col)
+		buf.WriteString(fmt.Sprintf("\t%s %s `json:\"%s\"`\n", fieldName, fieldType, jsonName))
+	}
+	buf.WriteString("}\n\n")
+
+	// Handler function
+	buf.WriteString("// Create" + res + " handles POST /" + cfg.TableName + "\n")
+	buf.WriteString("func Create" + res + "(ctx context.Context, req *Create" + res + "Request) (*Create" + res + "Response, error) {\n")
+	buf.WriteString("\trunner := queries.RunnerFromContext(ctx)\n\n")
+
+	// Build params
+	buf.WriteString("\tresult, err := runner.Create" + res + "(ctx, queries.Create" + res + "Params{\n")
+	for _, col := range cfg.Table.Columns {
+		if isAutoColumn(col.Name) {
+			continue
+		}
+		fieldName := toPascalCase(col.Name)
+		buf.WriteString(fmt.Sprintf("\t\t%s: req.%s,\n", fieldName, fieldName))
+	}
+	buf.WriteString("\t})\n")
+	buf.WriteString("\tif err != nil {\n")
+	buf.WriteString("\t\treturn nil, httperror.Wrap(500, \"failed to create " + toSingular(cfg.TableName) + "\", err)\n")
+	buf.WriteString("\t}\n\n")
+
+	// Build response
+	buf.WriteString("\treturn &Create" + res + "Response{\n")
+	for _, col := range cfg.Table.Columns {
+		if col.Name == "id" || col.Name == "deleted_at" {
+			continue
+		}
+		fieldName := toPascalCase(col.Name)
+		resultField := "result." + fieldName
+		if col.Type == ddl.DatetimeType || col.Type == ddl.TimestampType {
+			if col.Nullable {
+				resultField = "formatTimePtr(" + resultField + ")"
+			} else {
+				resultField = resultField + ".Format(time.RFC3339)"
+			}
+		}
+		buf.WriteString(fmt.Sprintf("\t\t%s: %s,\n", fieldName, resultField))
+	}
+	buf.WriteString("\t}, nil\n")
+	buf.WriteString("}\n")
+
+	// Add helper if needed
+	if hasNullableTime(cfg.Table) {
+		buf.WriteString("\n// formatTimePtr formats a nullable time pointer.\n")
+		buf.WriteString("func formatTimePtr(t *time.Time) string {\n")
+		buf.WriteString("\tif t == nil {\n")
+		buf.WriteString("\t\treturn \"\"\n")
+		buf.WriteString("\t}\n")
+		buf.WriteString("\treturn t.Format(time.RFC3339)\n")
+		buf.WriteString("}\n")
+	}
+
+	return formatSource(buf.Bytes())
+}
+
+// GenerateGetOneHandler generates api/<table>/get_one.go
+func GenerateGetOneHandler(cfg HandlerGenConfig, relations []RelationshipInfo) ([]byte, error) {
+	var buf bytes.Buffer
+	res := resourceName(cfg.TableName)
+	pkgName := cfg.TableName
+
+	buf.WriteString("// Code generated by shipq. DO NOT EDIT.\n")
+	buf.WriteString("package " + pkgName + "\n\n")
+
+	// Imports
+	buf.WriteString("import (\n")
+	buf.WriteString("\t\"context\"\n")
+	buf.WriteString("\t\"time\"\n\n")
+	buf.WriteString("\t\"" + cfg.ModulePath + "/httperror\"\n")
+	buf.WriteString("\t\"" + cfg.ModulePath + "/shipq/queries\"\n")
+	buf.WriteString(")\n\n")
+
+	// Request struct
+	buf.WriteString("// Get" + res + "Request is the request for getting a single " + toSingular(cfg.TableName) + ".\n")
+	buf.WriteString("type Get" + res + "Request struct {\n")
+	buf.WriteString("\tID string `path:\"id\"` // This is the PUBLIC ID\n")
+	buf.WriteString("}\n\n")
+
+	// Embed structs for relations
+	for _, rel := range relations {
+		embedName := toPascalCase(rel.FieldName) + "Embed"
+		buf.WriteString("// " + embedName + " contains embedded " + rel.FieldName + " data.\n")
+		buf.WriteString("type " + embedName + " struct {\n")
+		targetTable := cfg.Schema[rel.TargetTable]
+		for _, col := range targetTable.Columns {
+			if col.Name == "id" || col.Name == "deleted_at" {
+				continue
+			}
+			fieldName := toPascalCase(col.Name)
+			jsonName := col.Name
+			if col.Name == "public_id" {
+				jsonName = "id"
+			}
+			fieldType := responseFieldType(col)
+			buf.WriteString(fmt.Sprintf("\t%s %s `json:\"%s\"`\n", fieldName, fieldType, jsonName))
+		}
+		buf.WriteString("}\n\n")
+	}
+
+	// Response struct
+	buf.WriteString("// Get" + res + "Response is the response with embedded relations.\n")
+	buf.WriteString("// NOTE: Internal `id` is NEVER exposed. Relations are embedded one level deep.\n")
+	buf.WriteString("type Get" + res + "Response struct {\n")
+	for _, col := range cfg.Table.Columns {
+		if col.Name == "id" || col.Name == "deleted_at" {
+			continue
+		}
+		fieldName := toPascalCase(col.Name)
+		jsonName := col.Name
+		if col.Name == "public_id" {
+			jsonName = "id"
+		}
+		// Skip FK columns that will be embedded
+		skipForEmbed := false
+		for _, rel := range relations {
+			if col.Name == rel.FKColumn {
+				skipForEmbed = true
+				break
+			}
+		}
+		if skipForEmbed {
+			continue
+		}
+		fieldType := responseFieldType(col)
+		buf.WriteString(fmt.Sprintf("\t%s %s `json:\"%s\"`\n", fieldName, fieldType, jsonName))
+	}
+	// Add embedded relations
+	for _, rel := range relations {
+		embedName := toPascalCase(rel.FieldName) + "Embed"
+		jsonName := rel.FieldName
+		if rel.IsMany {
+			buf.WriteString(fmt.Sprintf("\t%s []%s `json:\"%s\"`\n", toPascalCase(rel.FieldName), embedName, jsonName))
+		} else if rel.IsNullable {
+			buf.WriteString(fmt.Sprintf("\t%s *%s `json:\"%s,omitempty\"`\n", toPascalCase(rel.FieldName), embedName, jsonName))
+		} else {
+			buf.WriteString(fmt.Sprintf("\t%s *%s `json:\"%s\"`\n", toPascalCase(rel.FieldName), embedName, jsonName))
+		}
+	}
+	buf.WriteString("}\n\n")
+
+	// Handler function
+	buf.WriteString("// Get" + res + " handles GET /" + cfg.TableName + "/:id\n")
+	buf.WriteString("func Get" + res + "(ctx context.Context, req *Get" + res + "Request) (*Get" + res + "Response, error) {\n")
+	buf.WriteString("\trunner := queries.RunnerFromContext(ctx)\n\n")
+
+	if len(relations) > 0 {
+		buf.WriteString("\tresult, err := runner.Get" + res + "ByPublicIDWithRelations(ctx, req.ID)\n")
+	} else {
+		buf.WriteString("\tresult, err := runner.Get" + res + "ByPublicID(ctx, req.ID)\n")
+	}
+	buf.WriteString("\tif err != nil {\n")
+	buf.WriteString("\t\treturn nil, httperror.Wrap(500, \"failed to fetch " + toSingular(cfg.TableName) + "\", err)\n")
+	buf.WriteString("\t}\n")
+	buf.WriteString("\tif result == nil {\n")
+	buf.WriteString("\t\treturn nil, httperror.NotFoundf(\"" + toSingular(cfg.TableName) + " %q not found\", req.ID)\n")
+	buf.WriteString("\t}\n\n")
+
+	// Build response
+	buf.WriteString("\tresp := &Get" + res + "Response{\n")
+	for _, col := range cfg.Table.Columns {
+		if col.Name == "id" || col.Name == "deleted_at" {
+			continue
+		}
+		// Skip FK columns that will be embedded
+		skipForEmbed := false
+		for _, rel := range relations {
+			if col.Name == rel.FKColumn {
+				skipForEmbed = true
+				break
+			}
+		}
+		if skipForEmbed {
+			continue
+		}
+		fieldName := toPascalCase(col.Name)
+		resultField := "result." + fieldName
+		if col.Type == ddl.DatetimeType || col.Type == ddl.TimestampType {
+			if col.Nullable {
+				resultField = "formatTimePtr(" + resultField + ")"
+			} else {
+				resultField = resultField + ".Format(time.RFC3339)"
+			}
+		}
+		buf.WriteString(fmt.Sprintf("\t\t%s: %s,\n", fieldName, resultField))
+	}
+	buf.WriteString("\t}\n")
+
+	// Handle embedded relations
+	for _, rel := range relations {
+		embedName := toPascalCase(rel.FieldName) + "Embed"
+		fieldName := toPascalCase(rel.FieldName)
+		if rel.IsMany {
+			buf.WriteString("\n\tresp." + fieldName + " = make([]" + embedName + ", len(result." + fieldName + "))\n")
+			buf.WriteString("\tfor i, item := range result." + fieldName + " {\n")
+			buf.WriteString("\t\tresp." + fieldName + "[i] = " + embedName + "{\n")
+			targetTable := cfg.Schema[rel.TargetTable]
+			for _, col := range targetTable.Columns {
+				if col.Name == "id" || col.Name == "deleted_at" {
+					continue
+				}
+				colFieldName := toPascalCase(col.Name)
+				itemField := "item." + colFieldName
+				if col.Type == ddl.DatetimeType || col.Type == ddl.TimestampType {
+					if col.Nullable {
+						itemField = "formatTimePtr(" + itemField + ")"
+					} else {
+						itemField = itemField + ".Format(time.RFC3339)"
+					}
+				}
+				buf.WriteString(fmt.Sprintf("\t\t\t%s: %s,\n", colFieldName, itemField))
+			}
+			buf.WriteString("\t\t}\n")
+			buf.WriteString("\t}\n")
+		} else {
+			buf.WriteString("\n\tif result." + fieldName + " != nil {\n")
+			buf.WriteString("\t\tresp." + fieldName + " = &" + embedName + "{\n")
+			targetTable := cfg.Schema[rel.TargetTable]
+			for _, col := range targetTable.Columns {
+				if col.Name == "id" || col.Name == "deleted_at" {
+					continue
+				}
+				colFieldName := toPascalCase(col.Name)
+				itemField := "result." + fieldName + "." + colFieldName
+				if col.Type == ddl.DatetimeType || col.Type == ddl.TimestampType {
+					if col.Nullable {
+						itemField = "formatTimePtr(" + itemField + ")"
+					} else {
+						itemField = itemField + ".Format(time.RFC3339)"
+					}
+				}
+				buf.WriteString(fmt.Sprintf("\t\t\t%s: %s,\n", colFieldName, itemField))
+			}
+			buf.WriteString("\t\t}\n")
+			buf.WriteString("\t}\n")
+		}
+	}
+
+	buf.WriteString("\n\treturn resp, nil\n")
+	buf.WriteString("}\n")
+
+	return formatSource(buf.Bytes())
+}
+
+// GenerateListHandler generates api/<table>/list.go
+func GenerateListHandler(cfg HandlerGenConfig, _ []RelationshipInfo) ([]byte, error) {
+	var buf bytes.Buffer
+	res := resourceName(cfg.TableName)
+	pkgName := cfg.TableName
+
+	buf.WriteString("// Code generated by shipq. DO NOT EDIT.\n")
+	buf.WriteString("package " + pkgName + "\n\n")
+
+	// Imports
+	buf.WriteString("import (\n")
+	buf.WriteString("\t\"context\"\n")
+	buf.WriteString("\t\"time\"\n\n")
+	buf.WriteString("\t\"" + cfg.ModulePath + "/httperror\"\n")
+	buf.WriteString("\t\"" + cfg.ModulePath + "/shipq/queries\"\n")
+	buf.WriteString(")\n\n")
+
+	// Request struct
+	buf.WriteString("// List" + res + "sRequest is the request for listing " + cfg.TableName + ".\n")
+	buf.WriteString("type List" + res + "sRequest struct {\n")
+	buf.WriteString("\tLimit  int     `query:\"limit\"`  // Max items per page (default 20, max 100)\n")
+	buf.WriteString("\tCursor *string `query:\"cursor\"` // Base64-encoded pagination cursor\n")
+	if cfg.ScopeColumn != "" {
+		buf.WriteString("\t" + toPascalCase(cfg.ScopeColumn) + " string `query:\"" + cfg.ScopeColumn + "\"` // Scope filter\n")
+	}
+	buf.WriteString("}\n\n")
+
+	// Item struct (flat, no embedding)
+	buf.WriteString("// " + res + "Item represents a single " + toSingular(cfg.TableName) + " in the list.\n")
+	buf.WriteString("// NOTE: Flat response - no embedded objects, just IDs for references.\n")
+	buf.WriteString("type " + res + "Item struct {\n")
+	for _, col := range cfg.Table.Columns {
+		if col.Name == "id" || col.Name == "deleted_at" {
+			continue
+		}
+		fieldName := toPascalCase(col.Name)
+		jsonName := col.Name
+		if col.Name == "public_id" {
+			jsonName = "id"
+		}
+		// For FK columns, just show the public ID reference
+		fieldType := responseFieldType(col)
+		if strings.HasSuffix(col.Name, "_id") && col.Name != "public_id" {
+			// FK reference - keep as string (public ID)
+			fieldType = "string"
+			if col.Nullable {
+				fieldType = "*string"
+			}
+		}
+		buf.WriteString(fmt.Sprintf("\t%s %s `json:\"%s\"`\n", fieldName, fieldType, jsonName))
+	}
+	buf.WriteString("}\n\n")
+
+	// Response struct
+	buf.WriteString("// List" + res + "sResponse is the response for listing " + cfg.TableName + ".\n")
+	buf.WriteString("type List" + res + "sResponse struct {\n")
+	buf.WriteString("\tItems      []" + res + "Item `json:\"items\"`\n")
+	buf.WriteString("\tNextCursor *string        `json:\"next_cursor,omitempty\"`\n")
+	buf.WriteString("}\n\n")
+
+	// Handler function
+	buf.WriteString("// List" + res + "s handles GET /" + cfg.TableName + "\n")
+	buf.WriteString("func List" + res + "s(ctx context.Context, req *List" + res + "sRequest) (*List" + res + "sResponse, error) {\n")
+	buf.WriteString("\trunner := queries.RunnerFromContext(ctx)\n\n")
+
+	// Validate and set defaults
+	buf.WriteString("\t// Validate and set defaults\n")
+	buf.WriteString("\tlimit := req.Limit\n")
+	buf.WriteString("\tif limit <= 0 || limit > 100 {\n")
+	buf.WriteString("\t\tlimit = 20\n")
+	buf.WriteString("\t}\n\n")
+
+	// Decode cursor
+	buf.WriteString("\t// Decode cursor\n")
+	buf.WriteString("\tvar cursor *queries.List" + res + "sCursor\n")
+	buf.WriteString("\tif req.Cursor != nil {\n")
+	buf.WriteString("\t\tcursor = queries.Decode" + res + "sCursor(*req.Cursor)\n")
+	buf.WriteString("\t}\n\n")
+
+	// Call query
+	buf.WriteString("\t// Query database\n")
+	buf.WriteString("\tresult, err := runner.List" + res + "s(ctx, queries.List" + res + "sParams{\n")
+	buf.WriteString("\t\tLimit:  limit,\n")
+	buf.WriteString("\t\tCursor: cursor,\n")
+	if cfg.ScopeColumn != "" {
+		buf.WriteString("\t\t" + toPascalCase(cfg.ScopeColumn) + ": req." + toPascalCase(cfg.ScopeColumn) + ",\n")
+	}
+	buf.WriteString("\t})\n")
+	buf.WriteString("\tif err != nil {\n")
+	buf.WriteString("\t\treturn nil, httperror.Wrap(500, \"failed to list " + cfg.TableName + "\", err)\n")
+	buf.WriteString("\t}\n\n")
+
+	// Map items
+	buf.WriteString("\t// Map items to response\n")
+	buf.WriteString("\titems := make([]" + res + "Item, len(result.Items))\n")
+	buf.WriteString("\tfor i, item := range result.Items {\n")
+	buf.WriteString("\t\titems[i] = " + res + "Item{\n")
+	for _, col := range cfg.Table.Columns {
+		if col.Name == "id" || col.Name == "deleted_at" {
+			continue
+		}
+		fieldName := toPascalCase(col.Name)
+		itemField := "item." + fieldName
+		if col.Type == ddl.DatetimeType || col.Type == ddl.TimestampType {
+			if col.Nullable {
+				itemField = "formatTimePtr(" + itemField + ")"
+			} else {
+				itemField = itemField + ".Format(time.RFC3339)"
+			}
+		}
+		buf.WriteString(fmt.Sprintf("\t\t\t%s: %s,\n", fieldName, itemField))
+	}
+	buf.WriteString("\t\t}\n")
+	buf.WriteString("\t}\n\n")
+
+	// Encode next cursor
+	buf.WriteString("\t// Encode next cursor\n")
+	buf.WriteString("\tvar nextCursor *string\n")
+	buf.WriteString("\tif result.NextCursor != nil {\n")
+	buf.WriteString("\t\tencoded := queries.Encode" + res + "sCursor(result.NextCursor)\n")
+	buf.WriteString("\t\tnextCursor = &encoded\n")
+	buf.WriteString("\t}\n\n")
+
+	buf.WriteString("\treturn &List" + res + "sResponse{\n")
+	buf.WriteString("\t\tItems:      items,\n")
+	buf.WriteString("\t\tNextCursor: nextCursor,\n")
+	buf.WriteString("\t}, nil\n")
+	buf.WriteString("}\n")
+
+	return formatSource(buf.Bytes())
+}
+
+// GenerateUpdateHandler generates api/<table>/update.go
+func GenerateUpdateHandler(cfg HandlerGenConfig, _ []RelationshipInfo) ([]byte, error) {
+	var buf bytes.Buffer
+	res := resourceName(cfg.TableName)
+	pkgName := cfg.TableName
+
+	buf.WriteString("// Code generated by shipq. DO NOT EDIT.\n")
+	buf.WriteString("package " + pkgName + "\n\n")
+
+	// Imports
+	buf.WriteString("import (\n")
+	buf.WriteString("\t\"context\"\n")
+	buf.WriteString("\t\"time\"\n\n")
+	buf.WriteString("\t\"" + cfg.ModulePath + "/httperror\"\n")
+	buf.WriteString("\t\"" + cfg.ModulePath + "/shipq/queries\"\n")
+	buf.WriteString(")\n\n")
+
+	// Request struct - all fields optional for PATCH
+	buf.WriteString("// Update" + res + "Request is the request body for updating a " + toSingular(cfg.TableName) + ".\n")
+	buf.WriteString("type Update" + res + "Request struct {\n")
+	buf.WriteString("\tID string `path:\"id\"` // This is the PUBLIC ID\n")
+	for _, col := range cfg.Table.Columns {
+		if isAutoColumn(col.Name) || col.Name == "public_id" {
+			continue
+		}
+		fieldName := toPascalCase(col.Name)
+		// Make all fields pointers for optional updates
+		fieldType := "*" + goBaseType(col.Type)
+		jsonTag := col.Name + ",omitempty"
+		buf.WriteString(fmt.Sprintf("\t%s %s `json:\"%s\"`\n", fieldName, fieldType, jsonTag))
+	}
+	buf.WriteString("}\n\n")
+
+	// Response struct
+	buf.WriteString("// Update" + res + "Response is the response body after updating a " + toSingular(cfg.TableName) + ".\n")
+	buf.WriteString("type Update" + res + "Response struct {\n")
+	for _, col := range cfg.Table.Columns {
+		if col.Name == "id" || col.Name == "deleted_at" {
+			continue
+		}
+		fieldName := toPascalCase(col.Name)
+		jsonName := col.Name
+		if col.Name == "public_id" {
+			jsonName = "id"
+		}
+		fieldType := responseFieldType(col)
+		buf.WriteString(fmt.Sprintf("\t%s %s `json:\"%s\"`\n", fieldName, fieldType, jsonName))
+	}
+	buf.WriteString("}\n\n")
+
+	// Handler function
+	buf.WriteString("// Update" + res + " handles PATCH /" + cfg.TableName + "/:id\n")
+	buf.WriteString("func Update" + res + "(ctx context.Context, req *Update" + res + "Request) (*Update" + res + "Response, error) {\n")
+	buf.WriteString("\trunner := queries.RunnerFromContext(ctx)\n\n")
+
+	// Build params
+	buf.WriteString("\tresult, err := runner.Update" + res + "ByPublicID(ctx, req.ID, queries.Update" + res + "Params{\n")
+	for _, col := range cfg.Table.Columns {
+		if isAutoColumn(col.Name) || col.Name == "public_id" {
+			continue
+		}
+		fieldName := toPascalCase(col.Name)
+		buf.WriteString(fmt.Sprintf("\t\t%s: req.%s,\n", fieldName, fieldName))
+	}
+	buf.WriteString("\t})\n")
+	buf.WriteString("\tif err != nil {\n")
+	buf.WriteString("\t\treturn nil, httperror.Wrap(500, \"failed to update " + toSingular(cfg.TableName) + "\", err)\n")
+	buf.WriteString("\t}\n")
+	buf.WriteString("\tif result == nil {\n")
+	buf.WriteString("\t\treturn nil, httperror.NotFoundf(\"" + toSingular(cfg.TableName) + " %q not found\", req.ID)\n")
+	buf.WriteString("\t}\n\n")
+
+	// Build response
+	buf.WriteString("\treturn &Update" + res + "Response{\n")
+	for _, col := range cfg.Table.Columns {
+		if col.Name == "id" || col.Name == "deleted_at" {
+			continue
+		}
+		fieldName := toPascalCase(col.Name)
+		resultField := "result." + fieldName
+		if col.Type == ddl.DatetimeType || col.Type == ddl.TimestampType {
+			if col.Nullable {
+				resultField = "formatTimePtr(" + resultField + ")"
+			} else {
+				resultField = resultField + ".Format(time.RFC3339)"
+			}
+		}
+		buf.WriteString(fmt.Sprintf("\t\t%s: %s,\n", fieldName, resultField))
+	}
+	buf.WriteString("\t}, nil\n")
+	buf.WriteString("}\n")
+
+	return formatSource(buf.Bytes())
+}
+
+// GenerateSoftDeleteHandler generates api/<table>/soft_delete.go
+func GenerateSoftDeleteHandler(cfg HandlerGenConfig, _ []RelationshipInfo) ([]byte, error) {
+	var buf bytes.Buffer
+	res := resourceName(cfg.TableName)
+	pkgName := cfg.TableName
+
+	buf.WriteString("// Code generated by shipq. DO NOT EDIT.\n")
+	buf.WriteString("package " + pkgName + "\n\n")
+
+	// Imports
+	buf.WriteString("import (\n")
+	buf.WriteString("\t\"context\"\n\n")
+	buf.WriteString("\t\"" + cfg.ModulePath + "/httperror\"\n")
+	buf.WriteString("\t\"" + cfg.ModulePath + "/shipq/queries\"\n")
+	buf.WriteString(")\n\n")
+
+	// Request struct
+	buf.WriteString("// SoftDelete" + res + "Request is the request for soft-deleting a " + toSingular(cfg.TableName) + ".\n")
+	buf.WriteString("type SoftDelete" + res + "Request struct {\n")
+	buf.WriteString("\tID string `path:\"id\"` // This is the PUBLIC ID\n")
+	buf.WriteString("}\n\n")
+
+	// Response struct
+	buf.WriteString("// SoftDelete" + res + "Response is the response after soft-deleting a " + toSingular(cfg.TableName) + ".\n")
+	buf.WriteString("type SoftDelete" + res + "Response struct {\n")
+	buf.WriteString("\tSuccess bool `json:\"success\"`\n")
+	buf.WriteString("}\n\n")
+
+	// Handler function
+	buf.WriteString("// SoftDelete" + res + " handles DELETE /" + cfg.TableName + "/:id\n")
+	buf.WriteString("func SoftDelete" + res + "(ctx context.Context, req *SoftDelete" + res + "Request) (*SoftDelete" + res + "Response, error) {\n")
+	buf.WriteString("\trunner := queries.RunnerFromContext(ctx)\n\n")
+
+	buf.WriteString("\terr := runner.SoftDelete" + res + "ByPublicID(ctx, req.ID)\n")
+	buf.WriteString("\tif err != nil {\n")
+	buf.WriteString("\t\treturn nil, httperror.Wrap(500, \"failed to delete " + toSingular(cfg.TableName) + "\", err)\n")
+	buf.WriteString("\t}\n\n")
+
+	buf.WriteString("\treturn &SoftDelete" + res + "Response{\n")
+	buf.WriteString("\t\tSuccess: true,\n")
+	buf.WriteString("\t}, nil\n")
+	buf.WriteString("}\n")
+
+	return formatSource(buf.Bytes())
+}
+
+// GenerateRegister generates api/<table>/register.go
+func GenerateRegister(cfg HandlerGenConfig, _ []RelationshipInfo) ([]byte, error) {
+	var buf bytes.Buffer
+	res := resourceName(cfg.TableName)
+	pkgName := cfg.TableName
+
+	buf.WriteString("// Code generated by shipq. DO NOT EDIT.\n")
+	buf.WriteString("package " + pkgName + "\n\n")
+
+	// Import
+	buf.WriteString("import \"github.com/shipq/shipq/handler\"\n\n")
+
+	// Register function
+	buf.WriteString("// Register registers all " + toSingular(cfg.TableName) + " handlers with the app.\n")
+	buf.WriteString("func Register(app *handler.App) {\n")
+	buf.WriteString("\tapp.Post(\"/" + cfg.TableName + "\", Create" + res + ")\n")
+	buf.WriteString("\tapp.Get(\"/" + cfg.TableName + "\", List" + res + "s)\n")
+	buf.WriteString("\tapp.Get(\"/" + cfg.TableName + "/:id\", Get" + res + ")\n")
+	buf.WriteString("\tapp.Patch(\"/" + cfg.TableName + "/:id\", Update" + res + ")\n")
+	buf.WriteString("\tapp.Delete(\"/" + cfg.TableName + "/:id\", SoftDelete" + res + ")\n")
+	buf.WriteString("}\n")
+
+	return formatSource(buf.Bytes())
+}
+
+// isAutoColumn returns true for columns that are auto-generated.
+func isAutoColumn(name string) bool {
+	switch name {
+	case "id", "public_id", "created_at", "updated_at", "deleted_at":
+		return true
+	default:
+		return false
+	}
+}
+
+// responseFieldType returns the type for a response field.
+// Timestamps become strings (RFC3339 formatted).
+func responseFieldType(col ddl.ColumnDefinition) string {
+	if col.Type == ddl.DatetimeType || col.Type == ddl.TimestampType {
+		return "string"
+	}
+	return goTypeForColumn(col)
+}
+
+// hasNullableTime checks if a table has nullable time columns.
+func hasNullableTime(table ddl.Table) bool {
+	for _, col := range table.Columns {
+		if (col.Type == ddl.DatetimeType || col.Type == ddl.TimestampType) && col.Nullable {
+			return true
+		}
+	}
+	return false
+}
+
+// formatSource formats Go source code, returning the original if formatting fails.
+func formatSource(src []byte) ([]byte, error) {
+	formatted, err := format.Source(src)
+	if err != nil {
+		return src, fmt.Errorf("failed to format source: %w\n%s", err, src)
+	}
+	return formatted, nil
+}
+
+// GetUpdatableColumns returns columns that can be updated (excludes auto columns).
+func GetUpdatableColumns(table ddl.Table) []ddl.ColumnDefinition {
+	var cols []ddl.ColumnDefinition
+	for _, col := range table.Columns {
+		if !isAutoColumn(col.Name) {
+			cols = append(cols, col)
+		}
+	}
+	return cols
+}
+
+// GetResponseColumns returns columns to include in responses (excludes id and deleted_at).
+func GetResponseColumns(table ddl.Table) []ddl.ColumnDefinition {
+	var cols []ddl.ColumnDefinition
+	for _, col := range table.Columns {
+		if col.Name != "id" && col.Name != "deleted_at" {
+			cols = append(cols, col)
+		}
+	}
+	return cols
+}
+
+// SortedTableNames returns table names sorted alphabetically.
+func SortedTableNames(schema map[string]ddl.Table) []string {
+	names := make([]string, 0, len(schema))
+	for name := range schema {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	return names
+}
