@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 
+	authcmd "github.com/shipq/shipq/internal/commands/auth"
 	dbcmd "github.com/shipq/shipq/internal/commands/db"
 	handlercmd "github.com/shipq/shipq/internal/commands/handler"
 	initcmd "github.com/shipq/shipq/internal/commands/init"
@@ -19,6 +20,7 @@ Usage:
 
 Commands:
   init              Initialize a new shipq project (creates go.mod and shipq.ini)
+  auth              Generate authentication system (tables, handlers, tests)
   db start <type>   Start a local database server (postgres|mysql|sqlite)
   db setup          Set up the database (create database and configure shipq.ini)
   db compile        Generate type-safe query runner code from user-defined queries
@@ -51,6 +53,9 @@ func main() {
 
 	case "init":
 		initcmd.InitCmd()
+
+	case "auth":
+		authcmd.AuthCmd()
 
 	case "db":
 		if len(os.Args) < 3 {
