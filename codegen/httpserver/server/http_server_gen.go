@@ -78,6 +78,7 @@ func generateImports(buf *bytes.Buffer, handlerPkgs map[string]codegen.PackageAl
 	buf.WriteString("import (\n")
 	buf.WriteString("\t\"encoding/json\"\n")
 	buf.WriteString("\t\"errors\"\n")
+	buf.WriteString("\t\"log/slog\"\n")
 	buf.WriteString("\t\"net/http\"\n")
 
 	if needsStrconv(handlers) {
@@ -87,6 +88,7 @@ func generateImports(buf *bytes.Buffer, handlerPkgs map[string]codegen.PackageAl
 	buf.WriteString("\n")
 	buf.WriteString("\t\"github.com/shipq/shipq/httperror\"\n")
 	buf.WriteString("\t\"github.com/shipq/shipq/httpserver\"\n")
+	buf.WriteString("\t\"github.com/shipq/shipq/logging\"\n")
 
 	// Handler packages
 	if len(handlerPkgs) > 0 {
@@ -150,9 +152,21 @@ func wrapHandler(q httpserver.Querier, h http.HandlerFunc) http.Handler {
 // generateNewMux writes the NewMux function.
 func generateNewMux(buf *bytes.Buffer, handlers []codegen.SerializedHandlerInfo, handlerPkgs map[string]codegen.PackageAlias) {
 	buf.WriteString(`// NewMux creates an http.ServeMux with all registered handlers.
-// The provided Querier will be injected into each request's context.
-func NewMux(q httpserver.Querier) *http.ServeMux {
+// The provided PingableQuerier will be injected into each request's context
+// and used for health checks.
+// The provided logger will be used for request logging.
+// Returns the mux wrapped with logging middleware (excluding /health).
+func NewMux(q httpserver.PingableQuerier, logger *slog.Logger) http.Handler {
 	mux := http.NewServeMux()
+
+	// Health check endpoint - excluded from logging
+	mux.HandleFunc("GET /health", func(w http.ResponseWriter, r *http.Request) {
+		if err := q.Ping(); err != nil {
+			writeJSON(w, http.StatusOK, map[string]bool{"healthy": false})
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]bool{"healthy": true})
+	})
 
 `)
 
@@ -163,7 +177,8 @@ func NewMux(q httpserver.Querier) *http.ServeMux {
 	}
 
 	buf.WriteString(`
-	return mux
+	// Wrap with logging middleware, excluding /health
+	return logging.Decorate([]string{"/health"}, logger, mux)
 }
 
 `)

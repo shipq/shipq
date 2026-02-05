@@ -19,8 +19,6 @@ type CompileConfig struct {
 	// DBDialect is the database dialect for main.go generation ("mysql", "postgres", "sqlite").
 	// Defaults to "mysql" if empty.
 	DBDialect string
-	// Port is the server port for main.go. Defaults to "8080" if empty.
-	Port string
 	// GenerateResourceTests enables generation of CRUD tests for full resources.
 	// A "full resource" is a package that implements all 5 CRUD operations.
 	GenerateResourceTests bool
@@ -31,6 +29,7 @@ type CompileConfig struct {
 // CompileRegistry is the central hook for all codegen that depends on the
 // handler registry. This function will grow to include:
 //
+//   - generateConfig() ✓
 //   - generateHTTPServer() ✓
 //   - generateHTTPMain() ✓
 //   - generateHTTPTestClient() ✓
@@ -45,6 +44,11 @@ func CompileRegistry(cfg CompileConfig) error {
 		if err := printDebugRegistry(cfg.Handlers); err != nil {
 			return err
 		}
+	}
+
+	// Generate config package first (other generated code depends on it)
+	if err := generateConfig(cfg); err != nil {
+		return err
 	}
 
 	if err := generateHTTPServer(cfg); err != nil {

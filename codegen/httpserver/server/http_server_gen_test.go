@@ -532,6 +532,101 @@ func TestGenerateHTTPServer_HelperFunctions(t *testing.T) {
 	}
 }
 
+func TestGenerateHTTPServer_NewMuxSignature(t *testing.T) {
+	cfg := HTTPServerGenConfig{
+		ModulePath: "example.com/app",
+		Handlers:   []codegen.SerializedHandlerInfo{},
+		OutputPkg:  "api",
+	}
+
+	code, err := GenerateHTTPServer(cfg)
+	if err != nil {
+		t.Fatalf("GenerateHTTPServer() error = %v", err)
+	}
+
+	codeStr := string(code)
+
+	// Should accept PingableQuerier
+	if !strings.Contains(codeStr, "httpserver.PingableQuerier") {
+		t.Error("missing httpserver.PingableQuerier parameter")
+	}
+
+	// Should accept *slog.Logger
+	if !strings.Contains(codeStr, "*slog.Logger") {
+		t.Error("missing *slog.Logger parameter")
+	}
+
+	// Should return http.Handler (not *http.ServeMux)
+	if !strings.Contains(codeStr, "func NewMux(q httpserver.PingableQuerier, logger *slog.Logger) http.Handler") {
+		t.Error("NewMux should return http.Handler")
+	}
+
+	// Should import log/slog
+	if !strings.Contains(codeStr, `"log/slog"`) {
+		t.Error("missing log/slog import")
+	}
+}
+
+func TestGenerateHTTPServer_HealthEndpoint(t *testing.T) {
+	cfg := HTTPServerGenConfig{
+		ModulePath: "example.com/app",
+		Handlers:   []codegen.SerializedHandlerInfo{},
+		OutputPkg:  "api",
+	}
+
+	code, err := GenerateHTTPServer(cfg)
+	if err != nil {
+		t.Fatalf("GenerateHTTPServer() error = %v", err)
+	}
+
+	codeStr := string(code)
+
+	// Should have health check endpoint
+	if !strings.Contains(codeStr, `"GET /health"`) {
+		t.Error("missing health check endpoint")
+	}
+
+	// Should call q.Ping() for health check
+	if !strings.Contains(codeStr, "q.Ping()") {
+		t.Error("missing q.Ping() call in health check")
+	}
+
+	// Should return healthy: true/false
+	if !strings.Contains(codeStr, `"healthy"`) {
+		t.Error("missing healthy key in health response")
+	}
+}
+
+func TestGenerateHTTPServer_LoggingMiddleware(t *testing.T) {
+	cfg := HTTPServerGenConfig{
+		ModulePath: "example.com/app",
+		Handlers:   []codegen.SerializedHandlerInfo{},
+		OutputPkg:  "api",
+	}
+
+	code, err := GenerateHTTPServer(cfg)
+	if err != nil {
+		t.Fatalf("GenerateHTTPServer() error = %v", err)
+	}
+
+	codeStr := string(code)
+
+	// Should import logging package
+	if !strings.Contains(codeStr, `"github.com/shipq/shipq/logging"`) {
+		t.Error("missing logging package import")
+	}
+
+	// Should wrap with logging.Decorate
+	if !strings.Contains(codeStr, "logging.Decorate") {
+		t.Error("missing logging.Decorate middleware")
+	}
+
+	// Should exclude /health from logging
+	if !strings.Contains(codeStr, `"/health"`) {
+		t.Error("missing /health in logging exclusion list")
+	}
+}
+
 func TestCollectHandlerPackages_Deduplication(t *testing.T) {
 	handlers := []codegen.SerializedHandlerInfo{
 		{PackagePath: "example.com/app/users"},

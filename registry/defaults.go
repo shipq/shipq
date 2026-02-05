@@ -12,7 +12,4 @@ func setDefaults(cfg *CompileConfig) {
 	if cfg.DBDialect == "" {
 		cfg.DBDialect = "mysql"
 	}
-	if cfg.Port == "" {
-		cfg.Port = "8080"
-	}
 }

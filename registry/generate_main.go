@@ -14,7 +14,6 @@ func generateHTTPMain(cfg CompileConfig) error {
 		ModulePath: cfg.ModulePath,
 		OutputPkg:  cfg.OutputPkg,
 		DBDialect:  cfg.DBDialect,
-		Port:       cfg.Port,
 	}
 
 	mainCode, err := server.GenerateHTTPMain(mainCfg)

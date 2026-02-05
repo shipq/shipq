@@ -16,7 +16,6 @@ func TestGenerateHTTPMain_ValidGo(t *testing.T) {
 				ModulePath: "example.com/myapp",
 				OutputPkg:  "api",
 				DBDialect:  dialect,
-				Port:       "8080",
 			}
 
 			code, err := GenerateHTTPMain(cfg)
@@ -38,7 +37,6 @@ func TestGenerateHTTPMain_ContainsExpectedElements(t *testing.T) {
 		ModulePath: "example.com/myapp",
 		OutputPkg:  "api",
 		DBDialect:  "mysql",
-		Port:       "8080",
 	}
 
 	code, err := GenerateHTTPMain(cfg)
@@ -73,6 +71,11 @@ func TestGenerateHTTPMain_ContainsExpectedElements(t *testing.T) {
 		t.Error("missing api package import")
 	}
 
+	// Should import the config package
+	if !strings.Contains(codeStr, `"example.com/myapp/config"`) {
+		t.Error("missing config package import")
+	}
+
 	// Should have sql.Open call
 	if !strings.Contains(codeStr, "sql.Open") {
 		t.Error("missing sql.Open call")
@@ -87,11 +90,6 @@ func TestGenerateHTTPMain_ContainsExpectedElements(t *testing.T) {
 	if !strings.Contains(codeStr, "http.ListenAndServe") {
 		t.Error("missing http.ListenAndServe call")
 	}
-
-	// Should have correct port
-	if !strings.Contains(codeStr, ":8080") {
-		t.Error("missing port 8080")
-	}
 }
 
 func TestGenerateHTTPMain_MySQLDriver(t *testing.T) {
@@ -99,7 +97,6 @@ func TestGenerateHTTPMain_MySQLDriver(t *testing.T) {
 		ModulePath: "example.com/myapp",
 		OutputPkg:  "api",
 		DBDialect:  "mysql",
-		Port:       "8080",
 	}
 
 	code, err := GenerateHTTPMain(cfg)
@@ -125,7 +122,6 @@ func TestGenerateHTTPMain_PostgresDriver(t *testing.T) {
 		ModulePath: "example.com/myapp",
 		OutputPkg:  "api",
 		DBDialect:  "postgres",
-		Port:       "8080",
 	}
 
 	code, err := GenerateHTTPMain(cfg)
@@ -151,7 +147,6 @@ func TestGenerateHTTPMain_SQLiteDriver(t *testing.T) {
 		ModulePath: "example.com/myapp",
 		OutputPkg:  "api",
 		DBDialect:  "sqlite",
-		Port:       "8080",
 	}
 
 	code, err := GenerateHTTPMain(cfg)
@@ -172,12 +167,11 @@ func TestGenerateHTTPMain_SQLiteDriver(t *testing.T) {
 	}
 }
 
-func TestGenerateHTTPMain_CustomPort(t *testing.T) {
+func TestGenerateHTTPMain_UsesConfigSettings(t *testing.T) {
 	cfg := HTTPMainGenConfig{
 		ModulePath: "example.com/myapp",
 		OutputPkg:  "api",
 		DBDialect:  "mysql",
-		Port:       "3000",
 	}
 
 	code, err := GenerateHTTPMain(cfg)
@@ -187,18 +181,27 @@ func TestGenerateHTTPMain_CustomPort(t *testing.T) {
 
 	codeStr := string(code)
 
-	// Should have custom port
-	if !strings.Contains(codeStr, ":3000") {
-		t.Error("missing custom port 3000")
+	// Should use config.Settings.DATABASE_URL
+	if !strings.Contains(codeStr, "config.Settings.DATABASE_URL") {
+		t.Error("missing config.Settings.DATABASE_URL")
+	}
+
+	// Should use config.Settings.PORT
+	if !strings.Contains(codeStr, "config.Settings.PORT") {
+		t.Error("missing config.Settings.PORT")
+	}
+
+	// Should use config.Logger
+	if !strings.Contains(codeStr, "config.Logger") {
+		t.Error("missing config.Logger")
 	}
 }
 
-func TestGenerateHTTPMain_DefaultPort(t *testing.T) {
+func TestGenerateHTTPMain_PortWithColon(t *testing.T) {
 	cfg := HTTPMainGenConfig{
 		ModulePath: "example.com/myapp",
 		OutputPkg:  "api",
 		DBDialect:  "mysql",
-		Port:       "", // Empty port should default to 8080
 	}
 
 	code, err := GenerateHTTPMain(cfg)
@@ -208,30 +211,9 @@ func TestGenerateHTTPMain_DefaultPort(t *testing.T) {
 
 	codeStr := string(code)
 
-	// Should have default port 8080
-	if !strings.Contains(codeStr, ":8080") {
-		t.Error("missing default port 8080")
-	}
-}
-
-func TestGenerateHTTPMain_DatabaseEnvVar(t *testing.T) {
-	cfg := HTTPMainGenConfig{
-		ModulePath: "example.com/myapp",
-		OutputPkg:  "api",
-		DBDialect:  "mysql",
-		Port:       "8080",
-	}
-
-	code, err := GenerateHTTPMain(cfg)
-	if err != nil {
-		t.Fatalf("GenerateHTTPMain() error = %v", err)
-	}
-
-	codeStr := string(code)
-
-	// Should use DATABASE_URL env var
-	if !strings.Contains(codeStr, `os.Getenv("DATABASE_URL")`) {
-		t.Error("missing DATABASE_URL environment variable")
+	// Should prepend ":" to port
+	if !strings.Contains(codeStr, `":"+config.Settings.PORT`) && !strings.Contains(codeStr, `":" + config.Settings.PORT`) {
+		t.Error("missing port with colon prefix")
 	}
 }
 
@@ -240,7 +222,6 @@ func TestGenerateHTTPMain_DatabasePing(t *testing.T) {
 		ModulePath: "example.com/myapp",
 		OutputPkg:  "api",
 		DBDialect:  "mysql",
-		Port:       "8080",
 	}
 
 	code, err := GenerateHTTPMain(cfg)
@@ -261,7 +242,6 @@ func TestGenerateHTTPMain_DeferClose(t *testing.T) {
 		ModulePath: "example.com/myapp",
 		OutputPkg:  "api",
 		DBDialect:  "mysql",
-		Port:       "8080",
 	}
 
 	code, err := GenerateHTTPMain(cfg)
@@ -282,7 +262,6 @@ func TestGenerateHTTPMain_GeneratedComment(t *testing.T) {
 		ModulePath: "example.com/myapp",
 		OutputPkg:  "api",
 		DBDialect:  "mysql",
-		Port:       "8080",
 	}
 
 	code, err := GenerateHTTPMain(cfg)
@@ -337,20 +316,6 @@ func TestGetDriverName(t *testing.T) {
 			got := getDriverName(tt.dialect)
 			if got != tt.want {
 				t.Errorf("getDriverName(%q) = %q; want %q", tt.dialect, got, tt.want)
-			}
-		})
-	}
-}
-
-func TestGetDatabaseEnvVar(t *testing.T) {
-	// Currently always returns DATABASE_URL
-	dialects := []string{"mysql", "postgres", "sqlite", ""}
-
-	for _, dialect := range dialects {
-		t.Run(dialect, func(t *testing.T) {
-			got := getDatabaseEnvVar(dialect)
-			if got != "DATABASE_URL" {
-				t.Errorf("getDatabaseEnvVar(%q) = %q; want %q", dialect, got, "DATABASE_URL")
 			}
 		})
 	}

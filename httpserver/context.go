@@ -14,6 +14,20 @@ type Querier interface {
 	QueryRowContext(ctx context.Context, query string, args ...any) *sql.Row
 }
 
+// Pinger is an interface for checking database connectivity.
+// *sql.DB implements this interface.
+type Pinger interface {
+	Ping() error
+}
+
+// PingableQuerier combines Querier with Pinger for database connections
+// that support both query operations and health checks.
+// *sql.DB implements this interface.
+type PingableQuerier interface {
+	Querier
+	Pinger
+}
+
 type querierKey struct{}
 
 // WithQuerier returns a new context with the Querier attached.

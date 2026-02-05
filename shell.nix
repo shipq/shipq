@@ -25,6 +25,10 @@ pkgs.mkShell {
   shellHook = ''
     # Root of the project
     export PROJECT_ROOT="$PWD"
+    # Default environment variables
+    PORT=8080
+    GO_ENV=development
+    DATABASE_URL=mysql://root@localhost:3306/shipq
     # Fix bizzare problems with the nix deps fighting with the system ones.
     unset DEVELOPER_DIR
   '';
