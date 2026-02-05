@@ -1,4 +1,4 @@
-package main
+package handler
 
 import (
 	"fmt"
@@ -8,7 +8,7 @@ import (
 	"github.com/shipq/shipq/registry"
 )
 
-func handlerCompileCmd() {
+func HandlerCompileCmd() {
 	// Find project roots (supports monorepo setup)
 	roots, err := project.FindProjectRoots()
 	if err != nil {

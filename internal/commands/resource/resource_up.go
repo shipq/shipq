@@ -1,4 +1,4 @@
-package main
+package resource
 
 import (
 	"fmt"
@@ -10,6 +10,7 @@ import (
 	"github.com/shipq/shipq/codegen/handlergen"
 	dbcodegen "github.com/shipq/shipq/db/portsql/codegen"
 	"github.com/shipq/shipq/db/portsql/migrate"
+	"github.com/shipq/shipq/internal/commands/migrate/up"
 	"github.com/shipq/shipq/project"
 	"github.com/shipq/shipq/registry"
 )
@@ -23,7 +24,7 @@ func createBaseHandlers() error {
 
 	// Step 1: Run migrations
 	fmt.Println("Running migrations...")
-	migrateUpCmd()
+	up.MigrateUpCmd()
 
 	// Step 2: Regenerate handlers for all tables
 	fmt.Println("")
@@ -153,7 +154,7 @@ func createBaseHandlers() error {
 	return nil
 }
 
-func resourceUpCmd() {
+func ResourceUpCmd() {
 	if err := createBaseHandlers(); err != nil {
 		fmt.Fprintf(os.Stderr, "error: %v\n", err)
 		os.Exit(1)

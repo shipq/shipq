@@ -3,6 +3,13 @@ package main
 import (
 	"fmt"
 	"os"
+
+	dbcmd "github.com/shipq/shipq/internal/commands/db"
+	handlercmd "github.com/shipq/shipq/internal/commands/handler"
+	initcmd "github.com/shipq/shipq/internal/commands/init"
+	"github.com/shipq/shipq/internal/commands/migrate/new"
+	"github.com/shipq/shipq/internal/commands/migrate/up"
+	resourcecmd "github.com/shipq/shipq/internal/commands/resource"
 )
 
 const usage = `shipq - A database migration and code generation tool
@@ -43,7 +50,7 @@ func main() {
 		os.Exit(0)
 
 	case "init":
-		initCmd()
+		initcmd.InitCmd()
 
 	case "db":
 		if len(os.Args) < 3 {
@@ -70,16 +77,16 @@ func main() {
 				os.Exit(1)
 			}
 			dbType := os.Args[3]
-			dbStartCmd(dbType)
+			dbcmd.DBStartCmd(dbType)
 
 		case "setup":
-			dbSetupCmd()
+			dbcmd.DBSetupCmd()
 
 		case "compile":
-			dbCompileCmd()
+			dbcmd.DBCompileCmd()
 
 		case "reset":
-			migrateResetCmd() // Alias for user convenience
+			up.MigrateResetCmd() // Alias for user convenience
 
 		case "-h", "--help", "help":
 			fmt.Println("shipq db - Database management commands")
@@ -110,13 +117,13 @@ func main() {
 		subCmd := os.Args[2]
 		switch subCmd {
 		case "new":
-			migrateNewCmd(os.Args[3:])
+			new.MigrateNewCmd(os.Args[3:])
 
 		case "up":
-			migrateUpCmd()
+			up.MigrateUpCmd()
 
 		case "reset":
-			migrateResetCmd()
+			up.MigrateResetCmd()
 
 		case "-h", "--help", "help":
 			fmt.Println("shipq migrate - Migration management commands")
@@ -154,10 +161,10 @@ func main() {
 		subCmd := os.Args[2]
 		switch subCmd {
 		case "generate":
-			handlerGenerateCmd(os.Args[3:])
+			handlercmd.HandlerGenerateCmd(os.Args[3:])
 
 		case "compile":
-			handlerCompileCmd()
+			handlercmd.HandlerCompileCmd()
 
 		case "-h", "--help", "help":
 			fmt.Println("shipq handler - Handler generation commands")
@@ -197,7 +204,7 @@ func main() {
 		subCmd := os.Args[2]
 		switch subCmd {
 		case "up":
-			resourceUpCmd()
+			resourcecmd.ResourceUpCmd()
 
 		case "-h", "--help", "help":
 			fmt.Println("shipq resource - Resource management commands")

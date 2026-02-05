@@ -1,4 +1,4 @@
-package main
+package new
 
 import (
 	"os"
@@ -52,7 +52,7 @@ func TestLoadProjectConfig(t *testing.T) {
 	tmpDir, cleanup := setupTestProject(t)
 	defer cleanup()
 
-	cfg, err := LoadProjectConfig()
+	cfg, err := loadProjectConfig()
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -77,7 +77,7 @@ func TestLoadProjectConfig_CustomMigrationsPath(t *testing.T) {
 		t.Fatalf("failed to update shipq.ini: %v", err)
 	}
 
-	cfg, err := LoadProjectConfig()
+	cfg, err := loadProjectConfig()
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -99,7 +99,7 @@ func TestLoadProjectConfig_NotInProject(t *testing.T) {
 		t.Fatalf("failed to change to temp directory: %v", err)
 	}
 
-	_, err := LoadProjectConfig()
+	_, err := loadProjectConfig()
 	if err == nil {
 		t.Fatal("expected error when not in a project")
 	}
@@ -121,7 +121,7 @@ func TestLoadProjectConfig_MissingShipqIni(t *testing.T) {
 		t.Fatalf("failed to change to temp directory: %v", err)
 	}
 
-	_, err := LoadProjectConfig()
+	_, err := loadProjectConfig()
 	if err == nil {
 		t.Fatal("expected error when shipq.ini is missing")
 	}

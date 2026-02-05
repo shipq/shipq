@@ -1,4 +1,4 @@
-package main
+package handler
 
 import (
 	"fmt"
@@ -14,7 +14,7 @@ import (
 	"github.com/shipq/shipq/registry"
 )
 
-func handlerGenerateCmd(args []string) {
+func HandlerGenerateCmd(args []string) {
 	if len(args) == 0 {
 		fmt.Fprintln(os.Stderr, "error: 'shipq handler generate' requires a table name")
 		fmt.Fprintln(os.Stderr, "")

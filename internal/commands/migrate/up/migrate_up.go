@@ -1,4 +1,4 @@
-package main
+package up
 
 import (
 	"context"
@@ -23,8 +23,8 @@ import (
 	"github.com/shipq/shipq/project"
 )
 
-// migrateUpCmd implements the "shipq migrate up" command.
-func migrateUpCmd() {
+// MigrateUpCmd implements the "shipq migrate up" command.
+func MigrateUpCmd() {
 	// Step 1: Find and validate project roots (supports monorepo setup)
 	roots, err := project.FindProjectRoots()
 	if err != nil {

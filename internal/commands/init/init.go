@@ -1,4 +1,4 @@
-package main
+package init
 
 import (
 	"fmt"
@@ -12,11 +12,11 @@ import (
 	"github.com/shipq/shipq/project"
 )
 
-// initCmd implements the "shipq init" command.
+// InitCmd implements the "shipq init" command.
 // It initializes a new shipq project by creating go.mod (if needed) and shipq.ini.
 // In a monorepo setup, if a go.mod exists in a parent directory, it will be used
 // instead of creating a new one.
-func initCmd() {
+func InitCmd() {
 	cwd, err := os.Getwd()
 	if err != nil {
 		cli.FatalErr("failed to get current directory", err)

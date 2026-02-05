@@ -1,4 +1,4 @@
-package main
+package up
 
 import (
 	"context"
@@ -22,9 +22,9 @@ import (
 	"github.com/shipq/shipq/project"
 )
 
-// migrateResetCmd implements the "shipq migrate reset" command.
+// MigrateResetCmd implements the "shipq migrate reset" command.
 // It drops and recreates dev/test databases, then re-runs all migrations.
-func migrateResetCmd() {
+func MigrateResetCmd() {
 	// Step 1: Find and validate project roots (supports monorepo setup)
 	roots, err := project.FindProjectRoots()
 	if err != nil {

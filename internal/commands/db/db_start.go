@@ -1,4 +1,4 @@
-package main
+package db
 
 import (
 	"fmt"
@@ -18,9 +18,9 @@ const (
 	dbTypeSQLite   = "sqlite"
 )
 
-// dbStartCmd implements the "shipq db start <type>" command.
+// DBStartCmd implements the "shipq db start <type>" command.
 // It starts a local database server for development.
-func dbStartCmd(dbType string) {
+func DBStartCmd(dbType string) {
 	// Validate database type
 	switch dbType {
 	case dbTypePostgres, dbTypeMySQL, dbTypeSQLite:

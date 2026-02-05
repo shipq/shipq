@@ -1,4 +1,4 @@
-package main
+package db
 
 import (
 	"context"
@@ -62,9 +62,9 @@ func inferDatabaseURL(projectRoot, projectName string) (string, string) {
 	}
 }
 
-// dbSetupCmd implements the "shipq db setup" command.
+// DBSetupCmd implements the "shipq db setup" command.
 // It creates the database and configures shipq.ini.
-func dbSetupCmd() {
+func DBSetupCmd() {
 	// Find and validate project root
 	projectRoot, err := project.FindProjectRoot()
 	if err != nil {

@@ -1,4 +1,4 @@
-package main
+package db
 
 import (
 	"path/filepath"
@@ -17,9 +17,9 @@ import (
 	"github.com/shipq/shipq/project"
 )
 
-// dbCompileCmd implements the "shipq db compile" command.
+// DBCompileCmd implements the "shipq db compile" command.
 // It generates type-safe query runner code from user-defined queries.
-func dbCompileCmd() {
+func DBCompileCmd() {
 	// Find project roots (supports monorepo setup)
 	roots, err := project.FindProjectRoots()
 	if err != nil {
