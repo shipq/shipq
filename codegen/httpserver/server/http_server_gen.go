@@ -137,12 +137,20 @@ func writeError(w http.ResponseWriter, err error) {
 `)
 
 	// wrapHandler helper
-	buf.WriteString(`// wrapHandler injects the Querier into context.
+	buf.WriteString(`// wrapHandler injects the Querier and cookie helpers into context.
 func wrapHandler(q httpserver.Querier, h http.HandlerFunc) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		ctx := httpserver.WithQuerier(r.Context(), q)
+		ctx = httpserver.WithRequestCookies(ctx, r.Cookies())
+		ctx, cookieOps := httpserver.WithCookieOps(ctx)
 		r = r.WithContext(ctx)
+
 		h(w, r)
+
+		// Apply any cookies set by handler
+		for _, op := range *cookieOps {
+			http.SetCookie(w, op.Cookie)
+		}
 	})
 }
 

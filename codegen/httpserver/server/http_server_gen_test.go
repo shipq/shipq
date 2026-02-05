@@ -530,6 +530,21 @@ func TestGenerateHTTPServer_HelperFunctions(t *testing.T) {
 	if !strings.Contains(codeStr, `"github.com/shipq/shipq/httpserver"`) {
 		t.Error("missing httpserver import")
 	}
+
+	// wrapHandler should inject request cookies
+	if !strings.Contains(codeStr, "httpserver.WithRequestCookies") {
+		t.Error("wrapHandler should inject request cookies via WithRequestCookies")
+	}
+
+	// wrapHandler should set up cookie ops
+	if !strings.Contains(codeStr, "httpserver.WithCookieOps") {
+		t.Error("wrapHandler should set up cookie ops via WithCookieOps")
+	}
+
+	// wrapHandler should apply cookies after handler
+	if !strings.Contains(codeStr, "http.SetCookie") {
+		t.Error("wrapHandler should apply cookies via http.SetCookie")
+	}
 }
 
 func TestGenerateHTTPServer_NewMuxSignature(t *testing.T) {

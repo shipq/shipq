@@ -47,7 +47,7 @@ func TestGenerateConfig_ContainsExpectedElements(t *testing.T) {
 	}
 
 	// Should have DATABASE_URL field
-	if !strings.Contains(codeStr, "DATABASE_URL string") {
+	if !strings.Contains(codeStr, "DATABASE_URL") {
 		t.Error("missing DATABASE_URL field")
 	}
 
@@ -59,6 +59,11 @@ func TestGenerateConfig_ContainsExpectedElements(t *testing.T) {
 	// Should have GO_ENV field
 	if !strings.Contains(codeStr, "GO_ENV") {
 		t.Error("missing GO_ENV field")
+	}
+
+	// Should have COOKIE_SECRET field
+	if !strings.Contains(codeStr, "COOKIE_SECRET") {
+		t.Error("missing COOKIE_SECRET field")
 	}
 
 	// Should have Settings global var

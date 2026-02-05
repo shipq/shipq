@@ -75,9 +75,10 @@ func generateSettingsConfig(buf *bytes.Buffer) {
 	buf.WriteString(`// SettingsConfig contains a set of environment variables used to configure the
 // API.
 type SettingsConfig struct {
-	DATABASE_URL string
-	PORT         string
-	GO_ENV       string
+	DATABASE_URL  string
+	PORT          string
+	GO_ENV        string
+	COOKIE_SECRET string
 }
 
 // Make populates the SettingsConfig struct with the values from the environment.

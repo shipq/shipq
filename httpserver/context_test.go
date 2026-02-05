@@ -3,6 +3,7 @@ package httpserver
 import (
 	"context"
 	"database/sql"
+	"net/http"
 	"testing"
 )
 
@@ -76,5 +77,114 @@ func TestWithQuerier_PreservesOtherContextValues(t *testing.T) {
 	// Verify other value is still accessible
 	if v := ctx.Value(otherKey{}); v != "other value" {
 		t.Errorf("other context value lost; got %v, want %q", v, "other value")
+	}
+}
+
+// Cookie tests
+
+func TestWithCookieOps_SetCookie_RoundTrip(t *testing.T) {
+	ctx := context.Background()
+	ctx, ops := WithCookieOps(ctx)
+
+	cookie := &http.Cookie{Name: "session", Value: "abc123"}
+	SetCookie(ctx, cookie)
+
+	if len(*ops) != 1 {
+		t.Fatalf("expected 1 cookie op, got %d", len(*ops))
+	}
+	if (*ops)[0].Cookie != cookie {
+		t.Errorf("cookie op does not contain expected cookie")
+	}
+}
+
+func TestSetCookie_MultipleCookies(t *testing.T) {
+	ctx := context.Background()
+	ctx, ops := WithCookieOps(ctx)
+
+	cookie1 := &http.Cookie{Name: "session", Value: "abc"}
+	cookie2 := &http.Cookie{Name: "preferences", Value: "xyz"}
+
+	SetCookie(ctx, cookie1)
+	SetCookie(ctx, cookie2)
+
+	if len(*ops) != 2 {
+		t.Fatalf("expected 2 cookie ops, got %d", len(*ops))
+	}
+	if (*ops)[0].Cookie != cookie1 {
+		t.Errorf("first cookie op does not contain expected cookie")
+	}
+	if (*ops)[1].Cookie != cookie2 {
+		t.Errorf("second cookie op does not contain expected cookie")
+	}
+}
+
+func TestSetCookie_PanicsWithoutCookieOps(t *testing.T) {
+	ctx := context.Background()
+
+	defer func() {
+		if r := recover(); r == nil {
+			t.Errorf("SetCookie() did not panic when no cookie ops in context")
+		}
+	}()
+
+	SetCookie(ctx, &http.Cookie{Name: "test", Value: "value"})
+}
+
+func TestWithRequestCookies_GetCookie_RoundTrip(t *testing.T) {
+	ctx := context.Background()
+	cookies := []*http.Cookie{
+		{Name: "session", Value: "abc123"},
+		{Name: "preferences", Value: "dark-mode"},
+	}
+	ctx = WithRequestCookies(ctx, cookies)
+
+	// Get existing cookie
+	got, err := GetCookie(ctx, "session")
+	if err != nil {
+		t.Fatalf("GetCookie() error = %v", err)
+	}
+	if got.Value != "abc123" {
+		t.Errorf("GetCookie() value = %q, want %q", got.Value, "abc123")
+	}
+
+	// Get another existing cookie
+	got, err = GetCookie(ctx, "preferences")
+	if err != nil {
+		t.Fatalf("GetCookie() error = %v", err)
+	}
+	if got.Value != "dark-mode" {
+		t.Errorf("GetCookie() value = %q, want %q", got.Value, "dark-mode")
+	}
+}
+
+func TestGetCookie_NotFound(t *testing.T) {
+	ctx := context.Background()
+	cookies := []*http.Cookie{
+		{Name: "session", Value: "abc123"},
+	}
+	ctx = WithRequestCookies(ctx, cookies)
+
+	_, err := GetCookie(ctx, "nonexistent")
+	if err != http.ErrNoCookie {
+		t.Errorf("GetCookie() error = %v, want http.ErrNoCookie", err)
+	}
+}
+
+func TestGetCookie_NoCookiesInContext(t *testing.T) {
+	ctx := context.Background()
+
+	_, err := GetCookie(ctx, "session")
+	if err != http.ErrNoCookie {
+		t.Errorf("GetCookie() error = %v, want http.ErrNoCookie", err)
+	}
+}
+
+func TestGetCookie_EmptyCookies(t *testing.T) {
+	ctx := context.Background()
+	ctx = WithRequestCookies(ctx, []*http.Cookie{})
+
+	_, err := GetCookie(ctx, "session")
+	if err != http.ErrNoCookie {
+		t.Errorf("GetCookie() error = %v, want http.ErrNoCookie", err)
 	}
 }

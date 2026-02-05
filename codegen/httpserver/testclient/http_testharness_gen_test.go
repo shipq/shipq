@@ -102,9 +102,9 @@ func TestGenerateHTTPTestHarness_MuxCreation(t *testing.T) {
 
 	codeStr := string(code)
 
-	// Should create mux with transaction
-	if !strings.Contains(codeStr, "NewMux(tx)") {
-		t.Error("missing NewMux call with transaction")
+	// Should create mux with transaction and logger
+	if !strings.Contains(codeStr, "NewMux(tx, testLogger())") {
+		t.Error("missing NewMux call with transaction and logger")
 	}
 
 	// Should create httptest.Server with mux
@@ -176,6 +176,8 @@ func TestGenerateHTTPTestHarness_Imports(t *testing.T) {
 	requiredImports := []string{
 		`"context"`,
 		`"database/sql"`,
+		`"io"`,
+		`"log/slog"`,
 		`"net/http/httptest"`,
 		`"testing"`,
 	}

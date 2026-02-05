@@ -7,9 +7,11 @@ import (
 	"time"
 
 	"github.com/shipq/shipq/codegen"
+	"github.com/shipq/shipq/codegen/authgen"
 	"github.com/shipq/shipq/inifile"
 	"github.com/shipq/shipq/internal/commands/migrate/up"
 	"github.com/shipq/shipq/project"
+	"github.com/shipq/shipq/registry"
 )
 
 const (
@@ -114,13 +116,90 @@ func AuthCmd() {
 	up.MigrateUpCmd()
 
 	fmt.Println("")
-	fmt.Println("Auth tables created successfully!")
+	fmt.Println("Generating auth handlers...")
 	fmt.Println("")
-	fmt.Println("Next steps:")
-	fmt.Println("  1. Use crypto.HashPassword() to hash passwords before storing")
-	fmt.Println("  2. Use crypto.VerifyPassword() to verify passwords on login")
-	fmt.Println("  3. Use crypto.SignCookie() to sign session cookies")
-	fmt.Println("  4. Use crypto.VerifyCookie() to verify session cookies")
+
+	// Generate auth handlers
+	authCfg := authgen.AuthGenConfig{
+		ModulePath: cfg.ModulePath,
+	}
+
+	handlerFiles, err := authgen.GenerateAuthHandlerFiles(authCfg)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "error: failed to generate auth handlers: %v\n", err)
+		os.Exit(1)
+	}
+
+	// Create api/auth directory
+	authDir := filepath.Join(cfg.ShipqRoot, "api", "auth")
+	if err := os.MkdirAll(authDir, 0755); err != nil {
+		fmt.Fprintf(os.Stderr, "error: failed to create api/auth directory: %v\n", err)
+		os.Exit(1)
+	}
+
+	// Write handler files
+	for filename, content := range handlerFiles {
+		filePath := filepath.Join(authDir, filename)
+		changed, err := codegen.WriteFileIfChanged(filePath, content)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "error: failed to write %s: %v\n", filePath, err)
+			os.Exit(1)
+		}
+		if changed {
+			relPath, _ := filepath.Rel(cfg.ShipqRoot, filePath)
+			fmt.Printf("  Created: %s\n", relPath)
+		}
+	}
+
+	// Generate auth tests
+	testFiles, err := authgen.GenerateAuthTestFiles(authCfg)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "error: failed to generate auth tests: %v\n", err)
+		os.Exit(1)
+	}
+
+	// Create api/auth_test directory
+	authTestDir := filepath.Join(cfg.ShipqRoot, "api", "auth_test")
+	if err := os.MkdirAll(authTestDir, 0755); err != nil {
+		fmt.Fprintf(os.Stderr, "error: failed to create api/auth_test directory: %v\n", err)
+		os.Exit(1)
+	}
+
+	// Write test files
+	for filename, content := range testFiles {
+		filePath := filepath.Join(authTestDir, filename)
+		changed, err := codegen.WriteFileIfChanged(filePath, content)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "error: failed to write %s: %v\n", filePath, err)
+			os.Exit(1)
+		}
+		if changed {
+			relPath, _ := filepath.Rel(cfg.ShipqRoot, filePath)
+			fmt.Printf("  Created: %s\n", relPath)
+		}
+	}
+
+	fmt.Println("")
+	fmt.Println("Compiling handler registry...")
+	if err := registry.Run(cfg.ShipqRoot, cfg.GoModRoot); err != nil {
+		fmt.Fprintf(os.Stderr, "warning: failed to compile registry: %v\n", err)
+		// Don't exit - handler generation succeeded
+	}
+
+	fmt.Println("")
+	fmt.Println("Auth system created successfully!")
+	fmt.Println("")
+	fmt.Println("Generated routes:")
+	fmt.Println("  POST   /login   - Log in with email/password")
+	fmt.Println("  POST   /signup  - Create a new account")
+	fmt.Println("  GET    /me      - Get current user info")
+	fmt.Println("  DELETE /logout  - Log out and clear session")
+	fmt.Println("")
+	fmt.Println("Environment variable required:")
+	fmt.Println("  COOKIE_SECRET - Secret key for signing session cookies")
+	fmt.Println("")
+	fmt.Println("To run tests:")
+	fmt.Println("  go test ./api/auth_test/...")
 }
 
 func generateOrganizationsMigration(timestamp string) []byte {

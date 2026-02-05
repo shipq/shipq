@@ -89,8 +89,9 @@ func generateTestClientImports(buf *bytes.Buffer, handlerPkgs map[string]codegen
 func generateTestClientStruct(buf *bytes.Buffer) {
 	buf.WriteString(`// Client is a type-safe HTTP client for testing.
 type Client struct {
-	server *httptest.Server
-	http   *http.Client
+	server        *httptest.Server
+	http          *http.Client
+	sessionCookie string
 }
 
 `)
@@ -103,6 +104,25 @@ func NewUnauthenticatedTestClient(ts *httptest.Server) *Client {
 	return &Client{
 		server: ts,
 		http:   ts.Client(),
+	}
+}
+
+// NewAuthenticatedTestClient creates a test client with a session cookie.
+func NewAuthenticatedTestClient(ts *httptest.Server, sessionCookie string) *Client {
+	return &Client{
+		server:        ts,
+		http:          ts.Client(),
+		sessionCookie: sessionCookie,
+	}
+}
+
+// addAuth adds the session cookie to the request if present.
+func (c *Client) addAuth(req *http.Request) {
+	if c.sessionCookie != "" {
+		req.AddCookie(&http.Cookie{
+			Name:  "session",
+			Value: c.sessionCookie,
+		})
 	}
 }
 
@@ -158,6 +178,9 @@ func generateTestClientMethod(buf *bytes.Buffer, h codegen.SerializedHandlerInfo
 	// Create request with optional body
 	generateRequestCreation(buf, h)
 
+	// Add auth cookie if present
+	buf.WriteString("\tc.addAuth(httpReq)\n\n")
+
 	// Execute request
 	buf.WriteString("\thttpResp, err := c.http.Do(httpReq)\n")
 	buf.WriteString("\tif err != nil {\n")
@@ -190,6 +213,110 @@ func generateTestClientMethod(buf *bytes.Buffer, h codegen.SerializedHandlerInfo
 	}
 
 	buf.WriteString("}\n\n")
+
+	// Generate WithCookies variant for POST/DELETE methods
+	if h.Method == "POST" || h.Method == "DELETE" {
+		generateTestClientMethodWithCookies(buf, h, handlerPkgs, reqType, respType, isDeleteNoBody, convertedPath)
+	}
+}
+
+// generateTestClientMethodWithCookies generates a variant that also returns cookies.
+func generateTestClientMethodWithCookies(buf *bytes.Buffer, h codegen.SerializedHandlerInfo, handlerPkgs map[string]codegen.PackageAlias, reqType, respType string, isDeleteNoBody bool, convertedPath string) {
+	// Generate method signature with cookies return
+	fmt.Fprintf(buf, "// %sWithCookies calls %s %s and returns response cookies.\n", h.FuncName, h.Method, h.Path)
+
+	if isDeleteNoBody {
+		fmt.Fprintf(buf, "func (c *Client) %sWithCookies(ctx context.Context, req %s) ([]*http.Cookie, error) {\n", h.FuncName, reqType)
+	} else {
+		fmt.Fprintf(buf, "func (c *Client) %sWithCookies(ctx context.Context, req %s) (%s, []*http.Cookie, error) {\n", h.FuncName, reqType, respType)
+	}
+
+	// Declare response variable if needed
+	if !isDeleteNoBody {
+		fmt.Fprintf(buf, "\tvar resp %s\n", respType)
+	}
+
+	// Build URL with path parameter substitution
+	generateURLConstruction(buf, convertedPath, h)
+
+	// Create request with optional body
+	generateRequestCreationWithCookies(buf, h, isDeleteNoBody)
+
+	// Add auth cookie if present
+	buf.WriteString("\tc.addAuth(httpReq)\n\n")
+
+	// Execute request
+	buf.WriteString("\thttpResp, err := c.http.Do(httpReq)\n")
+	buf.WriteString("\tif err != nil {\n")
+	if isDeleteNoBody {
+		buf.WriteString("\t\treturn nil, err\n")
+	} else {
+		buf.WriteString("\t\treturn resp, nil, err\n")
+	}
+	buf.WriteString("\t}\n")
+	buf.WriteString("\tdefer httpResp.Body.Close()\n\n")
+
+	// Get cookies from response
+	buf.WriteString("\tcookies := httpResp.Cookies()\n\n")
+
+	// Handle error responses
+	buf.WriteString("\tif httpResp.StatusCode >= 400 {\n")
+	buf.WriteString("\t\tbodyBytes, _ := io.ReadAll(httpResp.Body)\n")
+	if isDeleteNoBody {
+		buf.WriteString("\t\treturn cookies, fmt.Errorf(\"HTTP %d: %s\", httpResp.StatusCode, string(bodyBytes))\n")
+	} else {
+		buf.WriteString("\t\treturn resp, cookies, fmt.Errorf(\"HTTP %d: %s\", httpResp.StatusCode, string(bodyBytes))\n")
+	}
+	buf.WriteString("\t}\n\n")
+
+	// Decode response
+	if isDeleteNoBody {
+		buf.WriteString("\treturn cookies, nil\n")
+	} else {
+		buf.WriteString("\tif err := json.NewDecoder(httpResp.Body).Decode(&resp); err != nil {\n")
+		buf.WriteString("\t\treturn resp, cookies, fmt.Errorf(\"failed to decode response: %w\", err)\n")
+		buf.WriteString("\t}\n\n")
+		buf.WriteString("\treturn resp, cookies, nil\n")
+	}
+
+	buf.WriteString("}\n\n")
+}
+
+// generateRequestCreationWithCookies generates code to create the HTTP request (for WithCookies variant).
+func generateRequestCreationWithCookies(buf *bytes.Buffer, h codegen.SerializedHandlerInfo, isDeleteNoBody bool) {
+	hasBody := codegen.MethodHasBody(h.Method)
+
+	if hasBody && h.Request != nil && len(h.Request.Fields) > 0 {
+		// Marshal request body
+		buf.WriteString("\tbody, err := json.Marshal(req)\n")
+		buf.WriteString("\tif err != nil {\n")
+		if isDeleteNoBody {
+			buf.WriteString("\t\treturn nil, fmt.Errorf(\"failed to marshal request: %w\", err)\n")
+		} else {
+			buf.WriteString("\t\treturn resp, nil, fmt.Errorf(\"failed to marshal request: %w\", err)\n")
+		}
+		buf.WriteString("\t}\n\n")
+
+		fmt.Fprintf(buf, "\thttpReq, err := http.NewRequestWithContext(ctx, %q, url, bytes.NewReader(body))\n", h.Method)
+		buf.WriteString("\tif err != nil {\n")
+		if isDeleteNoBody {
+			buf.WriteString("\t\treturn nil, fmt.Errorf(\"failed to create request: %w\", err)\n")
+		} else {
+			buf.WriteString("\t\treturn resp, nil, fmt.Errorf(\"failed to create request: %w\", err)\n")
+		}
+		buf.WriteString("\t}\n")
+		buf.WriteString("\thttpReq.Header.Set(\"Content-Type\", \"application/json\")\n\n")
+	} else {
+		// No body
+		fmt.Fprintf(buf, "\thttpReq, err := http.NewRequestWithContext(ctx, %q, url, nil)\n", h.Method)
+		buf.WriteString("\tif err != nil {\n")
+		if isDeleteNoBody {
+			buf.WriteString("\t\treturn nil, fmt.Errorf(\"failed to create request: %w\", err)\n")
+		} else {
+			buf.WriteString("\t\treturn resp, nil, fmt.Errorf(\"failed to create request: %w\", err)\n")
+		}
+		buf.WriteString("\t}\n\n")
+	}
 }
 
 // generateURLConstruction generates code to build the URL with path parameter substitution.

@@ -44,6 +44,8 @@ func generateTestHarnessImports(buf *bytes.Buffer, cfg HTTPTestHarnessGenConfig)
 	buf.WriteString("import (\n")
 	buf.WriteString("\t\"context\"\n")
 	buf.WriteString("\t\"database/sql\"\n")
+	buf.WriteString("\t\"io\"\n")
+	buf.WriteString("\t\"log/slog\"\n")
 	buf.WriteString("\t\"net/http/httptest\"\n")
 	buf.WriteString("\t\"testing\"\n")
 	buf.WriteString(")\n\n")
@@ -71,7 +73,12 @@ func (ts *TestServer) Tx() *sql.Tx {
 
 // generateNewTestServer generates the NewUnauthenticatedTestServer function.
 func generateNewTestServer(buf *bytes.Buffer) {
-	buf.WriteString(`// NewUnauthenticatedTestServer creates a test server with a rolled-back transaction.
+	buf.WriteString(`// testLogger returns a logger that discards all output for tests.
+func testLogger() *slog.Logger {
+	return slog.New(slog.NewTextHandler(io.Discard, nil))
+}
+
+// NewUnauthenticatedTestServer creates a test server with a rolled-back transaction.
 // The transaction is automatically rolled back when the test completes, ensuring
 // test isolation without affecting the database.
 //
@@ -94,9 +101,9 @@ func NewUnauthenticatedTestServer(t *testing.T, db *sql.DB) *TestServer {
 		t.Fatalf("failed to begin transaction: %v", err)
 	}
 
-	// Create mux with transaction-backed querier
+	// Create mux with transaction-backed querier and discarded logger
 	// The transaction implements the Querier interface (ExecContext, QueryContext, QueryRowContext)
-	mux := NewMux(tx)
+	mux := NewMux(tx, testLogger())
 
 	ts := httptest.NewServer(mux)
 
