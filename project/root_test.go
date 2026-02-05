@@ -174,3 +174,138 @@ func TestHasShipqIni(t *testing.T) {
 		}
 	})
 }
+
+func TestFindShipqRootFrom(t *testing.T) {
+	t.Run("finds shipq root in current directory", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		shipqIniPath := filepath.Join(tmpDir, ShipqIniFile)
+		if err := os.WriteFile(shipqIniPath, []byte("[db]\n"), 0644); err != nil {
+			t.Fatalf("failed to create shipq.ini: %v", err)
+		}
+
+		root, err := FindShipqRootFrom(tmpDir)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if root != tmpDir {
+			t.Errorf("got %q, want %q", root, tmpDir)
+		}
+	})
+
+	t.Run("finds shipq root in parent directory", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		shipqIniPath := filepath.Join(tmpDir, ShipqIniFile)
+		if err := os.WriteFile(shipqIniPath, []byte("[db]\n"), 0644); err != nil {
+			t.Fatalf("failed to create shipq.ini: %v", err)
+		}
+
+		subDir := filepath.Join(tmpDir, "sub", "deep")
+		if err := os.MkdirAll(subDir, 0755); err != nil {
+			t.Fatalf("failed to create subdirectory: %v", err)
+		}
+
+		root, err := FindShipqRootFrom(subDir)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if root != tmpDir {
+			t.Errorf("got %q, want %q", root, tmpDir)
+		}
+	})
+
+	t.Run("returns error when no shipq.ini found", func(t *testing.T) {
+		tmpDir := t.TempDir()
+
+		_, err := FindShipqRootFrom(tmpDir)
+		if err != ErrNoShipqIni {
+			t.Errorf("got error %v, want %v", err, ErrNoShipqIni)
+		}
+	})
+}
+
+func TestFindProjectRootsFrom(t *testing.T) {
+	t.Run("standard setup - both files in same directory", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		goModPath := filepath.Join(tmpDir, GoModFile)
+		shipqIniPath := filepath.Join(tmpDir, ShipqIniFile)
+
+		if err := os.WriteFile(goModPath, []byte("module test\n"), 0644); err != nil {
+			t.Fatalf("failed to create go.mod: %v", err)
+		}
+		if err := os.WriteFile(shipqIniPath, []byte("[db]\n"), 0644); err != nil {
+			t.Fatalf("failed to create shipq.ini: %v", err)
+		}
+
+		roots, err := FindProjectRootsFrom(tmpDir)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if roots.GoModRoot != tmpDir {
+			t.Errorf("GoModRoot = %q, want %q", roots.GoModRoot, tmpDir)
+		}
+		if roots.ShipqRoot != tmpDir {
+			t.Errorf("ShipqRoot = %q, want %q", roots.ShipqRoot, tmpDir)
+		}
+	})
+
+	t.Run("monorepo setup - shipq.ini in subdirectory of go.mod", func(t *testing.T) {
+		// Create monorepo structure:
+		// tmpDir/
+		//   go.mod
+		//   services/
+		//     myservice/
+		//       shipq.ini
+		tmpDir := t.TempDir()
+		goModPath := filepath.Join(tmpDir, GoModFile)
+		if err := os.WriteFile(goModPath, []byte("module github.com/company/monorepo\n"), 0644); err != nil {
+			t.Fatalf("failed to create go.mod: %v", err)
+		}
+
+		serviceDir := filepath.Join(tmpDir, "services", "myservice")
+		if err := os.MkdirAll(serviceDir, 0755); err != nil {
+			t.Fatalf("failed to create service directory: %v", err)
+		}
+
+		shipqIniPath := filepath.Join(serviceDir, ShipqIniFile)
+		if err := os.WriteFile(shipqIniPath, []byte("[db]\n"), 0644); err != nil {
+			t.Fatalf("failed to create shipq.ini: %v", err)
+		}
+
+		roots, err := FindProjectRootsFrom(serviceDir)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if roots.GoModRoot != tmpDir {
+			t.Errorf("GoModRoot = %q, want %q", roots.GoModRoot, tmpDir)
+		}
+		if roots.ShipqRoot != serviceDir {
+			t.Errorf("ShipqRoot = %q, want %q", roots.ShipqRoot, serviceDir)
+		}
+	})
+
+	t.Run("error when shipq.ini not found", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		goModPath := filepath.Join(tmpDir, GoModFile)
+		if err := os.WriteFile(goModPath, []byte("module test\n"), 0644); err != nil {
+			t.Fatalf("failed to create go.mod: %v", err)
+		}
+
+		_, err := FindProjectRootsFrom(tmpDir)
+		if err != ErrNoShipqIni {
+			t.Errorf("got error %v, want %v", err, ErrNoShipqIni)
+		}
+	})
+
+	t.Run("error when go.mod not found above shipq.ini", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		shipqIniPath := filepath.Join(tmpDir, ShipqIniFile)
+		if err := os.WriteFile(shipqIniPath, []byte("[db]\n"), 0644); err != nil {
+			t.Fatalf("failed to create shipq.ini: %v", err)
+		}
+
+		_, err := FindProjectRootsFrom(tmpDir)
+		if err != ErrNotInProject {
+			t.Errorf("got error %v, want %v", err, ErrNotInProject)
+		}
+	})
+}

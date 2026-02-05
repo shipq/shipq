@@ -8,6 +8,7 @@ import (
 	"github.com/shipq/shipq/codegen"
 	dbcodegen "github.com/shipq/shipq/db/portsql/codegen"
 	"github.com/shipq/shipq/db/portsql/migrate"
+	"github.com/shipq/shipq/project"
 	"github.com/shipq/shipq/registry"
 )
 
@@ -25,22 +26,22 @@ func handlerGenerateCmd(args []string) {
 
 	tableName := args[0]
 
-	// Get project root and module path
-	projectRoot, err := os.Getwd()
+	// Find project roots (supports monorepo setup)
+	roots, err := project.FindProjectRoots()
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "error: failed to get current directory: %v\n", err)
+		fmt.Fprintf(os.Stderr, "error: failed to find project: %v\n", err)
 		os.Exit(1)
 	}
 
-	modulePath, err := codegen.GetModulePath(projectRoot)
+	modulePath, err := codegen.GetModulePath(roots.GoModRoot)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "error: %v\n", err)
 		fmt.Fprintln(os.Stderr, "Make sure you're in a Go project with a go.mod file.")
 		os.Exit(1)
 	}
 
-	// Load the migration plan (schema.json)
-	schemaPath := filepath.Join(projectRoot, "shipq", "db", "migrate", "schema.json")
+	// Load the migration plan (schema.json) from shipq root
+	schemaPath := filepath.Join(roots.ShipqRoot, "shipq", "db", "migrate", "schema.json")
 	schemaData, err := os.ReadFile(schemaPath)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "error: failed to read schema.json: %v\n", err)
@@ -66,13 +67,13 @@ func handlerGenerateCmd(args []string) {
 		os.Exit(1)
 	}
 
-	// Load CRUD config for scope settings
+	// Load CRUD config for scope settings (from shipq root)
 	tableNames := make([]string, 0, len(plan.Schema.Tables))
 	for name := range plan.Schema.Tables {
 		tableNames = append(tableNames, name)
 	}
 
-	crudCfg, err := codegen.LoadCRUDConfigWithTables(projectRoot, tableNames, plan.Schema.Tables)
+	crudCfg, err := codegen.LoadCRUDConfigWithTables(roots.ShipqRoot, tableNames, plan.Schema.Tables)
 	if err != nil {
 		// If config doesn't exist, use defaults
 		crudCfg = &codegen.CRUDConfig{
@@ -101,8 +102,8 @@ func handlerGenerateCmd(args []string) {
 		os.Exit(1)
 	}
 
-	// Create the api/<table> directory
-	apiDir := filepath.Join(projectRoot, "api", tableName)
+	// Create the api/<table> directory (in shipq root)
+	apiDir := filepath.Join(roots.ShipqRoot, "api", tableName)
 	if err := codegen.EnsureDir(apiDir); err != nil {
 		fmt.Fprintf(os.Stderr, "error: failed to create directory %s: %v\n", apiDir, err)
 		os.Exit(1)
@@ -126,10 +127,10 @@ func handlerGenerateCmd(args []string) {
 	fmt.Println("")
 	fmt.Printf("Handler files for %q generated in api/%s/\n", tableName, tableName)
 
-	// Compile the registry
+	// Compile the registry (in shipq root)
 	fmt.Println("")
 	fmt.Println("Compiling handler registry...")
-	if err := registry.Run(projectRoot); err != nil {
+	if err := registry.Run(roots.ShipqRoot, roots.GoModRoot); err != nil {
 		fmt.Fprintf(os.Stderr, "warning: failed to compile registry: %v\n", err)
 		// Don't exit - handler generation succeeded
 	}

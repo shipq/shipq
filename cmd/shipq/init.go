@@ -13,7 +13,9 @@ import (
 )
 
 // initCmd implements the "shipq init" command.
-// It initializes a new shipq project by creating go.mod and shipq.ini if needed.
+// It initializes a new shipq project by creating go.mod (if needed) and shipq.ini.
+// In a monorepo setup, if a go.mod exists in a parent directory, it will be used
+// instead of creating a new one.
 func initCmd() {
 	cwd, err := os.Getwd()
 	if err != nil {
@@ -24,16 +26,24 @@ func initCmd() {
 	createdGoMod := false
 	createdShipqIni := false
 	updatedGitignore := false
+	existingGoModRoot := ""
 
-	// Create go.mod if it doesn't exist
-	if !project.HasGoMod(cwd) {
+	// Check if a go.mod exists anywhere up the directory tree (monorepo support)
+	goModRoot, err := project.FindGoModRootFrom(cwd)
+	if err == project.ErrNotInProject {
+		// No go.mod found anywhere - create one in current directory
 		if err := createGoMod(cwd, projectName); err != nil {
 			cli.FatalErr("failed to create go.mod", err)
 		}
 		createdGoMod = true
+	} else if err != nil {
+		cli.FatalErr("failed to check for go.mod", err)
+	} else {
+		// Found existing go.mod - don't create a new one
+		existingGoModRoot = goModRoot
 	}
 
-	// Create shipq.ini if it doesn't exist
+	// Create shipq.ini if it doesn't exist in current directory
 	if !project.HasShipqIni(cwd) {
 		if err := createShipqIni(cwd); err != nil {
 			cli.FatalErr("failed to create shipq.ini", err)
@@ -64,6 +74,9 @@ func initCmd() {
 		}
 	} else if createdShipqIni {
 		cli.Success("Created shipq.ini")
+		if existingGoModRoot != "" && existingGoModRoot != cwd {
+			cli.Infof("  Using existing go.mod from %s", existingGoModRoot)
+		}
 		if updatedGitignore {
 			cli.Info("  Updated .gitignore")
 		}

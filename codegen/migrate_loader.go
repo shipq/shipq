@@ -90,7 +90,13 @@ func DiscoverMigrations(migrationsPath string) ([]MigrationFile, error) {
 // BuildMigrationPlan executes all migration functions and returns the JSON plan.
 // This creates a temporary Go program that imports the migrations package and
 // calls each migration function in order.
-func BuildMigrationPlan(projectRoot, modulePath, migrationsPath string, migrations []MigrationFile) ([]byte, error) {
+//
+// Parameters:
+//   - goModRoot: directory containing go.mod
+//   - modulePath: module path from go.mod
+//   - migrationsPath: absolute path to migrations directory (within shipqRoot)
+//   - migrations: list of migration files to execute
+func BuildMigrationPlan(goModRoot, modulePath, migrationsPath string, migrations []MigrationFile) ([]byte, error) {
 	if len(migrations) == 0 {
 		// Return empty plan
 		return []byte(`{"schema":{"name":"","tables":{}},"migrations":[]}`), nil
@@ -103,8 +109,8 @@ func BuildMigrationPlan(projectRoot, modulePath, migrationsPath string, migratio
 	}
 	defer os.RemoveAll(tmpDir)
 
-	// Determine migrations package path
-	relMigrationsPath, err := filepath.Rel(projectRoot, migrationsPath)
+	// Determine migrations package path - must be relative to goModRoot for correct Go imports
+	relMigrationsPath, err := filepath.Rel(goModRoot, migrationsPath)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get relative migrations path: %w", err)
 	}
@@ -118,6 +124,7 @@ func BuildMigrationPlan(projectRoot, modulePath, migrationsPath string, migratio
 	}
 
 	// Generate go.mod that requires the user's module
+	// The replace directive must point to goModRoot where the actual go.mod lives
 	goModContent := fmt.Sprintf(`module shipq-migrate-runner
 
 go 1.21
@@ -125,7 +132,7 @@ go 1.21
 require %s v0.0.0
 
 replace %s => %s
-`, modulePath, modulePath, projectRoot)
+`, modulePath, modulePath, goModRoot)
 
 	goModPath := filepath.Join(tmpDir, "go.mod")
 	if err := os.WriteFile(goModPath, []byte(goModContent), 0644); err != nil {
@@ -215,9 +222,10 @@ func GenerateMigrationRunnerForTest(migrations []MigrationFile) string {
 }
 
 // LoadMigrationPlan loads the migration plan from schema.json.
+// The shipqRoot is the directory containing shipq.ini (where schema.json lives).
 // Returns nil if schema.json doesn't exist.
-func LoadMigrationPlan(projectRoot string) (*migrate.MigrationPlan, error) {
-	schemaPath := filepath.Join(projectRoot, "shipq", "db", "migrate", "schema.json")
+func LoadMigrationPlan(shipqRoot string) (*migrate.MigrationPlan, error) {
+	schemaPath := filepath.Join(shipqRoot, "shipq", "db", "migrate", "schema.json")
 
 	data, err := os.ReadFile(schemaPath)
 	if err != nil {

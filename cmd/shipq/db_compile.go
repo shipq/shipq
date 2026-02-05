@@ -1,7 +1,6 @@
 package main
 
 import (
-	"os"
 	"path/filepath"
 
 	"github.com/shipq/shipq/cli"
@@ -9,18 +8,20 @@ import (
 	portsqlcodegen "github.com/shipq/shipq/db/portsql/codegen"
 	"github.com/shipq/shipq/db/portsql/ddl"
 	"github.com/shipq/shipq/db/portsql/query"
+	"github.com/shipq/shipq/project"
 )
 
 // dbCompileCmd implements the "shipq db compile" command.
 // It generates type-safe query runner code from user-defined queries.
 func dbCompileCmd() {
-	cwd, err := os.Getwd()
+	// Find project roots (supports monorepo setup)
+	roots, err := project.FindProjectRoots()
 	if err != nil {
-		cli.FatalErr("failed to get current directory", err)
+		cli.FatalErr("failed to find project", err)
 	}
 
 	// 1. Load project configuration
-	cfg, err := codegen.LoadDBPackageConfig(cwd)
+	cfg, err := codegen.LoadDBPackageConfig(roots.GoModRoot, roots.ShipqRoot)
 	if err != nil {
 		cli.FatalErr("failed to load project config", err)
 	}
@@ -28,7 +29,7 @@ func dbCompileCmd() {
 	cli.Infof("Compiling queries for %s dialect...", cfg.Dialect)
 
 	// 2. Discover querydefs packages
-	pkgs, err := codegen.DiscoverQuerydefsPackages(cwd, cfg.ModulePath)
+	pkgs, err := codegen.DiscoverQuerydefsPackages(roots.GoModRoot, roots.ShipqRoot, cfg.ModulePath)
 	if err != nil {
 		cli.FatalErr("failed to discover querydefs packages", err)
 	}
@@ -39,20 +40,20 @@ func dbCompileCmd() {
 		cli.Infof("Found %d querydefs package(s)", len(pkgs))
 	}
 
-	// 3. Generate and write compile program
+	// 3. Generate and write compile program (in shipq root)
 	programCfg := codegen.CompileProgramConfig{
 		ModulePath:    cfg.ModulePath,
 		QuerydefsPkgs: pkgs,
 	}
 
-	if err := codegen.WriteCompileProgram(cwd, programCfg); err != nil {
+	if err := codegen.WriteCompileProgram(roots.ShipqRoot, programCfg); err != nil {
 		cli.FatalErr("failed to write compile program", err)
 	}
 
 	// 4. Build and run compile program to extract query definitions
 	var userQueries []query.SerializedQuery
 	if len(pkgs) > 0 {
-		queries, err := codegen.RunCompileProgram(cwd)
+		queries, err := codegen.RunCompileProgram(roots.ShipqRoot)
 		if err != nil {
 			cli.FatalErr("failed to extract queries", err)
 		}
@@ -60,8 +61,8 @@ func dbCompileCmd() {
 		cli.Infof("Found %d user-defined query(ies)", len(userQueries))
 	}
 
-	// 5. Load schema for CRUD generation
-	plan, err := codegen.LoadMigrationPlan(cwd)
+	// 5. Load schema for CRUD generation (from shipq root)
+	plan, err := codegen.LoadMigrationPlan(roots.ShipqRoot)
 	if err != nil {
 		cli.Warn("Could not load schema: " + err.Error())
 		cli.Warn("CRUD operations will not be generated.")
@@ -85,7 +86,7 @@ func dbCompileCmd() {
 		}
 
 		// Re-load CRUD config with actual tables and apply filtering
-		if updatedCfg, err := codegen.LoadCRUDConfigWithTables(cfg.ProjectRoot, tableNames, tables); err == nil {
+		if updatedCfg, err := codegen.LoadCRUDConfigWithTables(roots.ShipqRoot, tableNames, tables); err == nil {
 			tableOpts = updatedCfg.TableOpts
 		}
 	}
@@ -99,8 +100,8 @@ func dbCompileCmd() {
 		}
 	}
 
-	// 6. Create output directories
-	queriesDir := filepath.Join(cwd, "shipq", "queries")
+	// 6. Create output directories (in shipq root)
+	queriesDir := filepath.Join(roots.ShipqRoot, "shipq", "queries")
 	if err := codegen.EnsureDir(queriesDir); err != nil {
 		cli.FatalErr("failed to create queries directory", err)
 	}
@@ -149,7 +150,7 @@ func dbCompileCmd() {
 	}
 
 	// 9. Clean up compile artifacts
-	if err := codegen.CleanCompileArtifacts(cwd); err != nil {
+	if err := codegen.CleanCompileArtifacts(roots.ShipqRoot); err != nil {
 		cli.Warn("Failed to clean compile artifacts: " + err.Error())
 	}
 

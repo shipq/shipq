@@ -6,13 +6,14 @@ import (
 
 // CompileConfig holds all configuration needed for registry compilation.
 type CompileConfig struct {
-	ProjectRoot string
-	ModulePath  string
-	Handlers    []codegen.SerializedHandlerInfo
+	GoModRoot  string // Directory containing go.mod
+	ShipqRoot  string // Directory containing shipq.ini
+	ModulePath string
+	Handlers   []codegen.SerializedHandlerInfo
 	// OutputPkg is the package name for generated HTTP server code (e.g., "api").
 	// Defaults to "api" if empty.
 	OutputPkg string
-	// OutputDir is the directory for generated HTTP server code relative to ProjectRoot.
+	// OutputDir is the directory for generated HTTP server code relative to ShipqRoot.
 	// Defaults to "api" if empty.
 	OutputDir string
 	// DBDialect is the database dialect for main.go generation ("mysql", "postgres", "sqlite").

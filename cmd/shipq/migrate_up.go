@@ -22,23 +22,19 @@ import (
 
 // migrateUpCmd implements the "shipq migrate up" command.
 func migrateUpCmd() {
-	// Step 1: Find and validate project
-	projectRoot, err := project.FindProjectRoot()
+	// Step 1: Find and validate project roots (supports monorepo setup)
+	roots, err := project.FindProjectRoots()
 	if err != nil {
-		cli.FatalErr("failed to find project root", err)
-	}
-
-	if err := project.ValidateProjectRoot(projectRoot); err != nil {
-		cli.FatalErr("invalid project", err)
+		cli.FatalErr("failed to find project", err)
 	}
 
 	// Step 2: Load configuration
-	modulePath, err := codegen.GetModulePath(projectRoot)
+	modulePath, err := codegen.GetModulePath(roots.GoModRoot)
 	if err != nil {
 		cli.FatalErr("failed to get module path", err)
 	}
 
-	shipqIniPath := filepath.Join(projectRoot, project.ShipqIniFile)
+	shipqIniPath := filepath.Join(roots.ShipqRoot, project.ShipqIniFile)
 	ini, err := inifile.ParseFile(shipqIniPath)
 	if err != nil {
 		cli.FatalErr("failed to parse shipq.ini", err)
@@ -54,15 +50,15 @@ func migrateUpCmd() {
 		cli.FatalErr("failed to determine database dialect", err)
 	}
 
-	// Step 3: Generate/update shipq/db package
+	// Step 3: Generate/update shipq/db package (in shipq root)
 	cli.Info("Generating shipq/db package...")
-	if err := codegen.EnsureDBPackage(projectRoot); err != nil {
+	if err := codegen.EnsureDBPackage(roots.ShipqRoot); err != nil {
 		cli.FatalErr("failed to generate db package", err)
 	}
 	cli.Success("Generated shipq/db/db.go")
 
-	// Step 4: Discover and load migrations
-	migrationsPath := getMigrationsPath(ini, projectRoot)
+	// Step 4: Discover and load migrations (from shipq root)
+	migrationsPath := getMigrationsPath(ini, roots.ShipqRoot)
 	migrations, err := codegen.DiscoverMigrations(migrationsPath)
 	if err != nil {
 		cli.FatalErr("failed to discover migrations", err)
@@ -77,14 +73,15 @@ func migrateUpCmd() {
 	cli.Infof("Found %d migration(s)", len(migrations))
 
 	// Step 5: Build migration plan by executing migration functions
+	// Use GoModRoot for the replace directive in temp go.mod
 	cli.Info("Building migration plan...")
-	planJSON, err := codegen.BuildMigrationPlan(projectRoot, modulePath, migrationsPath, migrations)
+	planJSON, err := codegen.BuildMigrationPlan(roots.GoModRoot, modulePath, migrationsPath, migrations)
 	if err != nil {
 		cli.FatalErr("failed to build migration plan", err)
 	}
 
-	// Step 6: Write schema.json
-	migratePkgPath := filepath.Join(projectRoot, "shipq", "db", "migrate")
+	// Step 6: Write schema.json (in shipq root)
+	migratePkgPath := filepath.Join(roots.ShipqRoot, "shipq", "db", "migrate")
 	if err := codegen.EnsureDir(migratePkgPath); err != nil {
 		cli.FatalErr("failed to create migrate directory", err)
 	}
@@ -147,9 +144,9 @@ func migrateUpCmd() {
 	}
 	cli.Success("Test database migrated")
 
-	// Step 10: Generate query runner
+	// Step 10: Generate query runner (in shipq root)
 	cli.Info("Generating shipq/queries package...")
-	if err := generateQueryRunner(projectRoot, modulePath, plan, dialect); err != nil {
+	if err := generateQueryRunner(roots.ShipqRoot, modulePath, plan, dialect); err != nil {
 		cli.FatalErr("failed to generate query runner", err)
 	}
 	cli.Successf("Generated shipq/queries/%s/runner.go", dialect)
@@ -158,9 +155,9 @@ func migrateUpCmd() {
 }
 
 // generateQueryRunner generates the shipq/queries package with the unified query runner.
-func generateQueryRunner(projectRoot, modulePath string, plan *migrate.MigrationPlan, dialect string) error {
-	// Create output directories
-	queriesDir := filepath.Join(projectRoot, "shipq", "queries")
+func generateQueryRunner(shipqRoot, modulePath string, plan *migrate.MigrationPlan, dialect string) error {
+	// Create output directories (in shipq root)
+	queriesDir := filepath.Join(shipqRoot, "shipq", "queries")
 	if err := codegen.EnsureDir(queriesDir); err != nil {
 		return fmt.Errorf("failed to create queries directory: %w", err)
 	}

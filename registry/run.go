@@ -12,16 +12,20 @@ import (
 //  2. Generate and run the compile program
 //  3. Call CompileRegistry with the results
 //
+// Parameters:
+//   - shipqRoot: directory containing shipq.ini (where api/ directory lives)
+//   - goModRoot: directory containing go.mod
+//
 // This is the function called by CLI commands.
-func Run(projectRoot string) error {
+func Run(shipqRoot, goModRoot string) error {
 	// Get module path
-	modulePath, err := codegen.GetModulePath(projectRoot)
+	modulePath, err := codegen.GetModulePath(goModRoot)
 	if err != nil {
 		return fmt.Errorf("failed to get module path: %w", err)
 	}
 
-	// Discover API packages
-	apiPkgs, err := codegen.DiscoverAPIPackages(projectRoot, modulePath)
+	// Discover API packages (in shipq root, but import paths relative to go.mod root)
+	apiPkgs, err := codegen.DiscoverAPIPackages(goModRoot, shipqRoot, modulePath)
 	if err != nil {
 		return fmt.Errorf("failed to discover API packages: %w", err)
 	}
@@ -32,22 +36,23 @@ func Run(projectRoot string) error {
 		return nil
 	}
 
-	// Build and run the compile program
+	// Build and run the compile program (uses goModRoot for replace directive)
 	cfg := codegen.HandlerCompileProgramConfig{
 		ModulePath: modulePath,
 		APIPkgs:    apiPkgs,
 	}
 
-	handlers, err := codegen.BuildAndRunHandlerCompileProgram(projectRoot, cfg)
+	handlers, err := codegen.BuildAndRunHandlerCompileProgram(goModRoot, cfg)
 	if err != nil {
 		return fmt.Errorf("failed to compile handlers: %w", err)
 	}
 
 	// Run the registry compilation (the central codegen hook)
 	compileCfg := CompileConfig{
-		ProjectRoot: projectRoot,
-		ModulePath:  modulePath,
-		Handlers:    handlers,
+		GoModRoot:  goModRoot,
+		ShipqRoot:  shipqRoot,
+		ModulePath: modulePath,
+		Handlers:   handlers,
 	}
 
 	return CompileRegistry(compileCfg)

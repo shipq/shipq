@@ -20,8 +20,8 @@ func generateHTTPTestClient(cfg CompileConfig) error {
 		return fmt.Errorf("failed to generate HTTP test client: %w", err)
 	}
 
-	// Ensure output directory exists
-	outputDir := filepath.Join(cfg.ProjectRoot, cfg.OutputDir)
+	// Ensure output directory exists (in shipq root)
+	outputDir := filepath.Join(cfg.ShipqRoot, cfg.OutputDir)
 	if err := codegen.EnsureDir(outputDir); err != nil {
 		return fmt.Errorf("failed to create output directory: %w", err)
 	}

@@ -22,23 +22,19 @@ import (
 // migrateResetCmd implements the "shipq migrate reset" command.
 // It drops and recreates dev/test databases, then re-runs all migrations.
 func migrateResetCmd() {
-	// Step 1: Find and validate project
-	projectRoot, err := project.FindProjectRoot()
+	// Step 1: Find and validate project roots (supports monorepo setup)
+	roots, err := project.FindProjectRoots()
 	if err != nil {
-		cli.FatalErr("failed to find project root", err)
-	}
-
-	if err := project.ValidateProjectRoot(projectRoot); err != nil {
-		cli.FatalErr("invalid project", err)
+		cli.FatalErr("failed to find project", err)
 	}
 
 	// Step 2: Load configuration
-	modulePath, err := codegen.GetModulePath(projectRoot)
+	modulePath, err := codegen.GetModulePath(roots.GoModRoot)
 	if err != nil {
 		cli.FatalErr("failed to get module path", err)
 	}
 
-	shipqIniPath := filepath.Join(projectRoot, project.ShipqIniFile)
+	shipqIniPath := filepath.Join(roots.ShipqRoot, project.ShipqIniFile)
 	ini, err := inifile.ParseFile(shipqIniPath)
 	if err != nil {
 		cli.FatalErr("failed to parse shipq.ini", err)
@@ -59,15 +55,15 @@ func migrateResetCmd() {
 		cli.Fatal("migrate reset only works on localhost databases for safety")
 	}
 
-	// Step 4: Generate/update shipq/db package
+	// Step 4: Generate/update shipq/db package (in shipq root)
 	cli.Info("Generating shipq/db package...")
-	if err := codegen.EnsureDBPackage(projectRoot); err != nil {
+	if err := codegen.EnsureDBPackage(roots.ShipqRoot); err != nil {
 		cli.FatalErr("failed to generate db package", err)
 	}
 	cli.Success("Generated shipq/db/db.go")
 
 	// Step 5: Get database names
-	projectName := project.GetProjectName(projectRoot)
+	projectName := project.GetProjectName(roots.ShipqRoot)
 	devDBName := dburl.ParseDatabaseName(databaseURL)
 	if devDBName == "" {
 		devDBName = projectName
@@ -76,20 +72,20 @@ func migrateResetCmd() {
 
 	// Step 6: Drop databases
 	cli.Info("Dropping databases...")
-	if err := dropDatabases(databaseURL, dialect, devDBName, testDBName, projectRoot); err != nil {
+	if err := dropDatabases(databaseURL, dialect, devDBName, testDBName, roots.ShipqRoot); err != nil {
 		cli.FatalErr("failed to drop databases", err)
 	}
 	cli.Successf("Dropped databases: %s, %s", devDBName, testDBName)
 
 	// Step 7: Recreate databases
 	cli.Info("Creating databases...")
-	if err := createDatabases(databaseURL, dialect, devDBName, testDBName, projectRoot); err != nil {
+	if err := createDatabases(databaseURL, dialect, devDBName, testDBName, roots.ShipqRoot); err != nil {
 		cli.FatalErr("failed to create databases", err)
 	}
 	cli.Successf("Created databases: %s, %s", devDBName, testDBName)
 
-	// Step 8: Discover and load migrations
-	migrationsPath := getMigrationsPath(ini, projectRoot)
+	// Step 8: Discover and load migrations (from shipq root)
+	migrationsPath := getMigrationsPath(ini, roots.ShipqRoot)
 	migrations, err := codegen.DiscoverMigrations(migrationsPath)
 	if err != nil {
 		cli.FatalErr("failed to discover migrations", err)
@@ -104,15 +100,15 @@ func migrateResetCmd() {
 
 	cli.Infof("Found %d migration(s)", len(migrations))
 
-	// Step 9: Build migration plan
+	// Step 9: Build migration plan (use GoModRoot for replace directive)
 	cli.Info("Building migration plan...")
-	planJSON, err := codegen.BuildMigrationPlan(projectRoot, modulePath, migrationsPath, migrations)
+	planJSON, err := codegen.BuildMigrationPlan(roots.GoModRoot, modulePath, migrationsPath, migrations)
 	if err != nil {
 		cli.FatalErr("failed to build migration plan", err)
 	}
 
-	// Step 10: Write schema.json
-	migratePkgPath := filepath.Join(projectRoot, "shipq", "db", "migrate")
+	// Step 10: Write schema.json (in shipq root)
+	migratePkgPath := filepath.Join(roots.ShipqRoot, "shipq", "db", "migrate")
 	if err := codegen.EnsureDir(migratePkgPath); err != nil {
 		cli.FatalErr("failed to create migrate directory", err)
 	}
@@ -171,9 +167,9 @@ func migrateResetCmd() {
 	}
 	cli.Success("Test database migrated")
 
-	// Step 14: Generate query runner
+	// Step 14: Generate query runner (in shipq root)
 	cli.Info("Generating shipq/queries package...")
-	if err := generateQueryRunnerForReset(projectRoot, modulePath, plan, dialect); err != nil {
+	if err := generateQueryRunnerForReset(roots.ShipqRoot, modulePath, plan, dialect); err != nil {
 		cli.FatalErr("failed to generate query runner", err)
 	}
 	cli.Successf("Generated shipq/queries/%s/runner.go", dialect)
@@ -182,9 +178,9 @@ func migrateResetCmd() {
 }
 
 // generateQueryRunnerForReset generates the shipq/queries package with the unified query runner.
-func generateQueryRunnerForReset(projectRoot, modulePath string, plan *migrate.MigrationPlan, dialect string) error {
-	// Create output directories
-	queriesDir := filepath.Join(projectRoot, "shipq", "queries")
+func generateQueryRunnerForReset(shipqRoot, modulePath string, plan *migrate.MigrationPlan, dialect string) error {
+	// Create output directories (in shipq root)
+	queriesDir := filepath.Join(shipqRoot, "shipq", "queries")
 	if err := codegen.EnsureDir(queriesDir); err != nil {
 		return fmt.Errorf("failed to create queries directory: %w", err)
 	}

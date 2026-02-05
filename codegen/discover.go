@@ -8,14 +8,20 @@ import (
 // DiscoverPackages finds all Go packages under a directory.
 // Returns a slice of import paths relative to the module.
 //
-// For example, if projectRoot is "/home/user/myapp", dir is "querydefs",
-// and modulePath is "github.com/user/myapp", it will return paths like:
-//   - "github.com/user/myapp/querydefs"
-//   - "github.com/user/myapp/querydefs/users"
-//   - "github.com/user/myapp/querydefs/orders"
-func DiscoverPackages(projectRoot, dir, modulePath string) ([]string, error) {
+// Parameters:
+//   - goModRoot: directory containing go.mod
+//   - shipqRoot: directory containing shipq.ini (may be same as goModRoot or a subdirectory)
+//   - dir: subdirectory to search within shipqRoot (e.g., "querydefs")
+//   - modulePath: module path from go.mod
+//
+// For example, in a monorepo where goModRoot is "/monorepo", shipqRoot is "/monorepo/services/myservice",
+// dir is "querydefs", and modulePath is "github.com/company/monorepo", it will return paths like:
+//   - "github.com/company/monorepo/services/myservice/querydefs"
+//   - "github.com/company/monorepo/services/myservice/querydefs/users"
+//   - "github.com/company/monorepo/services/myservice/querydefs/orders"
+func DiscoverPackages(goModRoot, shipqRoot, dir, modulePath string) ([]string, error) {
 	var packages []string
-	baseDir := filepath.Join(projectRoot, dir)
+	baseDir := filepath.Join(shipqRoot, dir)
 
 	// Check if the directory exists
 	if _, err := os.Stat(baseDir); os.IsNotExist(err) {
@@ -55,8 +61,8 @@ func DiscoverPackages(projectRoot, dir, modulePath string) ([]string, error) {
 			return nil
 		}
 
-		// Convert to import path
-		relPath, err := filepath.Rel(projectRoot, path)
+		// Convert to import path - must be relative to goModRoot for correct Go imports
+		relPath, err := filepath.Rel(goModRoot, path)
 		if err != nil {
 			return err
 		}
@@ -94,6 +100,6 @@ func containsGoFiles(dir string) (bool, error) {
 
 // DiscoverQuerydefsPackages is a convenience function that discovers
 // packages in the standard "querydefs" directory.
-func DiscoverQuerydefsPackages(projectRoot, modulePath string) ([]string, error) {
-	return DiscoverPackages(projectRoot, "querydefs", modulePath)
+func DiscoverQuerydefsPackages(goModRoot, shipqRoot, modulePath string) ([]string, error) {
+	return DiscoverPackages(goModRoot, shipqRoot, "querydefs", modulePath)
 }

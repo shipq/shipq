@@ -65,11 +65,12 @@ func TestProperty_GenerateDBFile_ValidGoCode(t *testing.T) {
 				// Generate random but valid database URL
 				dbURL := generateRandomDBURL(g, dialect)
 
-				cfg := &codegen.DBPackageConfig{
-					ProjectRoot: "/fake/root",
-					ModulePath:  "example.com/myapp",
-					DatabaseURL: dbURL,
-					Dialect:     dialect,
+			cfg := &codegen.DBPackageConfig{
+				GoModRoot:   "/fake/root",
+				ShipqRoot:   "/fake/root",
+				ModulePath:  "example.com/myapp",
+				DatabaseURL: dbURL,
+				Dialect:     dialect,
 				}
 
 				content, err := codegen.GenerateDBFile(cfg)

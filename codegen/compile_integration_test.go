@@ -475,8 +475,8 @@ func TestDiscoverPackages_Integration(t *testing.T) {
 		t.Fatalf("failed to create test file: %v", err)
 	}
 
-	// Discover packages
-	pkgs, err := DiscoverPackages(tmpDir, "querydefs", "example.com/testapp")
+	// Discover packages (in standard case, goModRoot and shipqRoot are the same)
+	pkgs, err := DiscoverPackages(tmpDir, tmpDir, "querydefs", "example.com/testapp")
 	if err != nil {
 		t.Fatalf("DiscoverPackages failed: %v", err)
 	}

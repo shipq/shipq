@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"fmt"
 	"go/format"
+	"os"
 	"path/filepath"
 
 	"github.com/shipq/shipq/db/portsql/codegen"
@@ -13,8 +14,9 @@ import (
 
 // DBPackageConfig holds configuration for generating the db package.
 type DBPackageConfig struct {
-	ProjectRoot string
-	ModulePath  string
+	GoModRoot   string      // Directory containing go.mod
+	ShipqRoot   string      // Directory containing shipq.ini
+	ModulePath  string      // Module path from go.mod
 	DatabaseURL string      // From shipq.ini [db] database_url
 	Dialect     string      // postgres, mysql, or sqlite
 	CRUDConfig  *CRUDConfig // Scope and order configuration for CRUD generation
@@ -29,13 +31,15 @@ func (c *DBPackageConfig) GetTableOpts() map[string]codegen.CRUDOptions {
 }
 
 // LoadDBPackageConfig reads shipq.ini and builds the config.
-func LoadDBPackageConfig(projectRoot string) (*DBPackageConfig, error) {
-	modulePath, err := GetModulePath(projectRoot)
+// goModRoot is the directory containing go.mod, shipqRoot is the directory containing shipq.ini.
+// In a standard setup these are the same; in a monorepo, shipqRoot may be a subdirectory.
+func LoadDBPackageConfig(goModRoot, shipqRoot string) (*DBPackageConfig, error) {
+	modulePath, err := GetModulePath(goModRoot)
 	if err != nil {
 		return nil, err
 	}
 
-	shipqIniPath := filepath.Join(projectRoot, "shipq.ini")
+	shipqIniPath := filepath.Join(shipqRoot, "shipq.ini")
 	ini, err := inifile.ParseFile(shipqIniPath)
 	if err != nil {
 		return nil, fmt.Errorf("failed to parse shipq.ini: %w", err)
@@ -56,7 +60,8 @@ func LoadDBPackageConfig(projectRoot string) (*DBPackageConfig, error) {
 	crudCfg, _ := LoadCRUDConfig(ini, nil) // Pass nil tables for now
 
 	return &DBPackageConfig{
-		ProjectRoot: projectRoot,
+		GoModRoot:   goModRoot,
+		ShipqRoot:   shipqRoot,
 		ModulePath:  modulePath,
 		DatabaseURL: databaseURL,
 		Dialect:     dialect,
@@ -246,14 +251,21 @@ func urlToDSN(dbURL string) (string, error) {
 
 // EnsureDBPackage generates or updates the shipq/db package.
 // This is the main entry point that other commands should call.
-func EnsureDBPackage(projectRoot string) error {
-	cfg, err := LoadDBPackageConfig(projectRoot)
+// shipqRoot is the directory containing shipq.ini where the db package will be generated.
+func EnsureDBPackage(shipqRoot string) error {
+	// Find go.mod root from shipq root for loading module path
+	goModRoot, err := findGoModRootFrom(shipqRoot)
+	if err != nil {
+		return fmt.Errorf("failed to find go.mod: %w", err)
+	}
+
+	cfg, err := LoadDBPackageConfig(goModRoot, shipqRoot)
 	if err != nil {
 		return err
 	}
 
-	// Create shipq/db directory
-	dbPkgPath := filepath.Join(projectRoot, "shipq", "db")
+	// Create shipq/db directory (in shipq root)
+	dbPkgPath := filepath.Join(shipqRoot, "shipq", "db")
 	if err := EnsureDir(dbPkgPath); err != nil {
 		return fmt.Errorf("failed to create shipq/db directory: %w", err)
 	}
@@ -270,4 +282,22 @@ func EnsureDBPackage(projectRoot string) error {
 	}
 
 	return nil
+}
+
+// findGoModRootFrom walks up from the given directory looking for go.mod.
+// This is a local helper to avoid circular import with project package.
+func findGoModRootFrom(startDir string) (string, error) {
+	dir := startDir
+	for {
+		goModPath := filepath.Join(dir, "go.mod")
+		if _, err := os.Stat(goModPath); err == nil {
+			return dir, nil
+		}
+
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			return "", fmt.Errorf("go.mod not found")
+		}
+		dir = parent
+	}
 }

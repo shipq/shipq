@@ -20,7 +20,8 @@ func TestDiscoverPackages_EmptyDir(t *testing.T) {
 		t.Fatalf("failed to create querydefs dir: %v", err)
 	}
 
-	pkgs, err := DiscoverPackages(tmpDir, "querydefs", "example.com/myapp")
+	// In standard case, goModRoot and shipqRoot are the same
+	pkgs, err := DiscoverPackages(tmpDir, tmpDir, "querydefs", "example.com/myapp")
 	if err != nil {
 		t.Fatalf("DiscoverPackages failed: %v", err)
 	}
@@ -39,7 +40,7 @@ func TestDiscoverPackages_MissingDir(t *testing.T) {
 	defer os.RemoveAll(tmpDir)
 
 	// Don't create querydefs - it should return empty, not error
-	pkgs, err := DiscoverPackages(tmpDir, "querydefs", "example.com/myapp")
+	pkgs, err := DiscoverPackages(tmpDir, tmpDir, "querydefs", "example.com/myapp")
 	if err != nil {
 		t.Fatalf("DiscoverPackages failed: %v", err)
 	}
@@ -68,7 +69,7 @@ func TestDiscoverPackages_SinglePackage(t *testing.T) {
 		t.Fatalf("failed to create Go file: %v", err)
 	}
 
-	pkgs, err := DiscoverPackages(tmpDir, "querydefs", "example.com/myapp")
+	pkgs, err := DiscoverPackages(tmpDir, tmpDir, "querydefs", "example.com/myapp")
 	if err != nil {
 		t.Fatalf("DiscoverPackages failed: %v", err)
 	}
@@ -111,7 +112,7 @@ func TestDiscoverPackages_NestedPackages(t *testing.T) {
 		}
 	}
 
-	pkgs, err := DiscoverPackages(tmpDir, "querydefs", "example.com/myapp")
+	pkgs, err := DiscoverPackages(tmpDir, tmpDir, "querydefs", "example.com/myapp")
 	if err != nil {
 		t.Fatalf("DiscoverPackages failed: %v", err)
 	}
@@ -162,7 +163,7 @@ func TestDiscoverPackages_SkipsTestFiles(t *testing.T) {
 		t.Fatalf("failed to create test file: %v", err)
 	}
 
-	pkgs, err := DiscoverPackages(tmpDir, "querydefs", "example.com/myapp")
+	pkgs, err := DiscoverPackages(tmpDir, tmpDir, "querydefs", "example.com/myapp")
 	if err != nil {
 		t.Fatalf("DiscoverPackages failed: %v", err)
 	}
@@ -197,7 +198,7 @@ func TestDiscoverPackages_SkipsHiddenDirs(t *testing.T) {
 		t.Fatalf("failed to create hidden Go file: %v", err)
 	}
 
-	pkgs, err := DiscoverPackages(tmpDir, "querydefs", "example.com/myapp")
+	pkgs, err := DiscoverPackages(tmpDir, tmpDir, "querydefs", "example.com/myapp")
 	if err != nil {
 		t.Fatalf("DiscoverPackages failed: %v", err)
 	}
@@ -237,7 +238,7 @@ func TestDiscoverPackages_SkipsVendor(t *testing.T) {
 		t.Fatalf("failed to create vendor Go file: %v", err)
 	}
 
-	pkgs, err := DiscoverPackages(tmpDir, "querydefs", "example.com/myapp")
+	pkgs, err := DiscoverPackages(tmpDir, tmpDir, "querydefs", "example.com/myapp")
 	if err != nil {
 		t.Fatalf("DiscoverPackages failed: %v", err)
 	}
@@ -272,7 +273,7 @@ func TestDiscoverPackages_SkipsTestdata(t *testing.T) {
 		t.Fatalf("failed to create testdata Go file: %v", err)
 	}
 
-	pkgs, err := DiscoverPackages(tmpDir, "querydefs", "example.com/myapp")
+	pkgs, err := DiscoverPackages(tmpDir, tmpDir, "querydefs", "example.com/myapp")
 	if err != nil {
 		t.Fatalf("DiscoverPackages failed: %v", err)
 	}
@@ -302,7 +303,7 @@ func TestDiscoverQuerydefsPackages(t *testing.T) {
 		t.Fatalf("failed to create Go file: %v", err)
 	}
 
-	pkgs, err := DiscoverQuerydefsPackages(tmpDir, "example.com/myapp")
+	pkgs, err := DiscoverQuerydefsPackages(tmpDir, tmpDir, "example.com/myapp")
 	if err != nil {
 		t.Fatalf("DiscoverQuerydefsPackages failed: %v", err)
 	}
@@ -380,5 +381,80 @@ func TestContainsGoFiles_OnlyTestFiles(t *testing.T) {
 	}
 	if has {
 		t.Error("expected false for directory with only test files")
+	}
+}
+
+func TestDiscoverPackages_MonorepoSetup(t *testing.T) {
+	// Create a monorepo structure:
+	// tmpDir/ (goModRoot)
+	//   go.mod
+	//   services/
+	//     myservice/ (shipqRoot)
+	//       shipq.ini
+	//       querydefs/
+	//         users.go
+	//         orders/
+	//           orders.go
+	tmpDir, err := os.MkdirTemp("", "shipq-monorepo-test-*")
+	if err != nil {
+		t.Fatalf("failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	goModRoot := tmpDir
+	shipqRoot := filepath.Join(tmpDir, "services", "myservice")
+
+	// Create directories
+	if err := os.MkdirAll(filepath.Join(shipqRoot, "querydefs", "orders"), 0755); err != nil {
+		t.Fatalf("failed to create directories: %v", err)
+	}
+
+	// Create go.mod in root
+	if err := os.WriteFile(filepath.Join(goModRoot, "go.mod"), []byte("module github.com/company/monorepo\n"), 0644); err != nil {
+		t.Fatalf("failed to create go.mod: %v", err)
+	}
+
+	// Create shipq.ini in service directory
+	if err := os.WriteFile(filepath.Join(shipqRoot, "shipq.ini"), []byte("[db]\n"), 0644); err != nil {
+		t.Fatalf("failed to create shipq.ini: %v", err)
+	}
+
+	// Create Go files
+	if err := os.WriteFile(filepath.Join(shipqRoot, "querydefs", "users.go"), []byte("package querydefs\n"), 0644); err != nil {
+		t.Fatalf("failed to create users.go: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(shipqRoot, "querydefs", "orders", "orders.go"), []byte("package orders\n"), 0644); err != nil {
+		t.Fatalf("failed to create orders.go: %v", err)
+	}
+
+	// Discover packages with different goModRoot and shipqRoot
+	modulePath := "github.com/company/monorepo"
+	pkgs, err := DiscoverPackages(goModRoot, shipqRoot, "querydefs", modulePath)
+	if err != nil {
+		t.Fatalf("DiscoverPackages failed: %v", err)
+	}
+
+	// Should find 2 packages with import paths relative to goModRoot
+	if len(pkgs) != 2 {
+		t.Fatalf("expected 2 packages, got %d: %v", len(pkgs), pkgs)
+	}
+
+	// Check that import paths are relative to goModRoot, not shipqRoot
+	expectedPkgs := map[string]bool{
+		"github.com/company/monorepo/services/myservice/querydefs":        false,
+		"github.com/company/monorepo/services/myservice/querydefs/orders": false,
+	}
+
+	for _, pkg := range pkgs {
+		if _, ok := expectedPkgs[pkg]; !ok {
+			t.Errorf("unexpected package: %s", pkg)
+		}
+		expectedPkgs[pkg] = true
+	}
+
+	for pkg, found := range expectedPkgs {
+		if !found {
+			t.Errorf("missing expected package: %s", pkg)
+		}
 	}
 }

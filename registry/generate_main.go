@@ -21,8 +21,8 @@ func generateHTTPMain(cfg CompileConfig) error {
 		return fmt.Errorf("failed to generate main.go: %w", err)
 	}
 
-	// Ensure cmd/server directory exists
-	cmdDir := filepath.Join(cfg.ProjectRoot, "cmd", "server")
+	// Ensure cmd/server directory exists (in shipq root)
+	cmdDir := filepath.Join(cfg.ShipqRoot, "cmd", "server")
 	if err := codegen.EnsureDir(cmdDir); err != nil {
 		return fmt.Errorf("failed to create cmd/server directory: %w", err)
 	}

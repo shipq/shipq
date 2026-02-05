@@ -8,14 +8,15 @@ import (
 	"github.com/shipq/shipq/codegen"
 	dbcodegen "github.com/shipq/shipq/db/portsql/codegen"
 	"github.com/shipq/shipq/db/portsql/migrate"
+	"github.com/shipq/shipq/project"
 	"github.com/shipq/shipq/registry"
 )
 
 func createBaseHandlers() error {
-	// Get project root
-	projectRoot, err := os.Getwd()
+	// Find project roots (supports monorepo setup)
+	roots, err := project.FindProjectRoots()
 	if err != nil {
-		return fmt.Errorf("failed to get current directory: %w", err)
+		return fmt.Errorf("failed to find project: %w", err)
 	}
 
 	// Step 1: Run migrations
@@ -26,13 +27,13 @@ func createBaseHandlers() error {
 	fmt.Println("")
 	fmt.Println("Regenerating handlers...")
 
-	modulePath, err := codegen.GetModulePath(projectRoot)
+	modulePath, err := codegen.GetModulePath(roots.GoModRoot)
 	if err != nil {
 		return fmt.Errorf("%w\nMake sure you're in a Go project with a go.mod file.", err)
 	}
 
-	// Load the migration plan (schema.json)
-	schemaPath := filepath.Join(projectRoot, "shipq", "db", "migrate", "schema.json")
+	// Load the migration plan (schema.json) from shipq root
+	schemaPath := filepath.Join(roots.ShipqRoot, "shipq", "db", "migrate", "schema.json")
 	schemaData, err := os.ReadFile(schemaPath)
 	if err != nil {
 		return fmt.Errorf("failed to read schema.json: %w\nMake sure migrations have been run.", err)
@@ -43,10 +44,10 @@ func createBaseHandlers() error {
 		return fmt.Errorf("failed to parse schema.json: %w", err)
 	}
 
-	// Load CRUD config for scope settings
+	// Load CRUD config for scope settings (from shipq root)
 	tableNames := codegen.SortedTableNames(plan.Schema.Tables)
 
-	crudCfg, err := codegen.LoadCRUDConfigWithTables(projectRoot, tableNames, plan.Schema.Tables)
+	crudCfg, err := codegen.LoadCRUDConfigWithTables(roots.ShipqRoot, tableNames, plan.Schema.Tables)
 	if err != nil {
 		// If config doesn't exist, use defaults
 		crudCfg = &codegen.CRUDConfig{
@@ -68,8 +69,8 @@ func createBaseHandlers() error {
 			continue
 		}
 
-		// Check for opt-out marker file
-		optOutPath := filepath.Join(projectRoot, "api", tableName, ".shipq-no-regen")
+		// Check for opt-out marker file (in shipq root)
+		optOutPath := filepath.Join(roots.ShipqRoot, "api", tableName, ".shipq-no-regen")
 		if _, err := os.Stat(optOutPath); err == nil {
 			fmt.Printf("Skipping %s (opted out via .shipq-no-regen)\n", tableName)
 			skippedCount++
@@ -96,8 +97,8 @@ func createBaseHandlers() error {
 			return fmt.Errorf("failed to generate handlers for %s: %w", tableName, err)
 		}
 
-		// Create the api/<table> directory
-		apiDir := filepath.Join(projectRoot, "api", tableName)
+		// Create the api/<table> directory (in shipq root)
+		apiDir := filepath.Join(roots.ShipqRoot, "api", tableName)
 		if err := codegen.EnsureDir(apiDir); err != nil {
 			return fmt.Errorf("failed to create directory %s: %w", apiDir, err)
 		}
@@ -140,10 +141,10 @@ func createBaseHandlers() error {
 	}
 	fmt.Println(".")
 
-	// Compile the registry
+	// Compile the registry (in shipq root)
 	fmt.Println("")
 	fmt.Println("Compiling handler registry...")
-	if err := registry.Run(projectRoot); err != nil {
+	if err := registry.Run(roots.ShipqRoot, roots.GoModRoot); err != nil {
 		return fmt.Errorf("failed to compile registry: %w", err)
 	}
 

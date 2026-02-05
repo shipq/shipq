@@ -33,7 +33,8 @@ func generateResourceTests(cfg CompileConfig) error {
 
 		// Create test directory: {resource_pkg}_test
 		// Extract the resource package directory from the full path
-		resourceDir := extractResourceDir(cfg.ProjectRoot, cfg.ModulePath, resource.PackagePath)
+		// Use GoModRoot since package paths are relative to the module root
+		resourceDir := extractResourceDir(cfg.GoModRoot, cfg.ModulePath, resource.PackagePath)
 		testDir := resourceDir + "_test"
 
 		if err := codegen.EnsureDir(testDir); err != nil {

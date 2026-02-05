@@ -27,7 +27,8 @@ database_url = postgres://user@localhost:5432/mydb
 			t.Fatalf("failed to write shipq.ini: %v", err)
 		}
 
-		cfg, err := codegen.LoadDBPackageConfig(tmpDir)
+		// In standard case, goModRoot and shipqRoot are the same
+		cfg, err := codegen.LoadDBPackageConfig(tmpDir, tmpDir)
 		if err != nil {
 			t.Fatalf("LoadDBPackageConfig() error = %v", err)
 		}
@@ -41,8 +42,11 @@ database_url = postgres://user@localhost:5432/mydb
 		if cfg.Dialect != "postgres" {
 			t.Errorf("Dialect = %q, want %q", cfg.Dialect, "postgres")
 		}
-		if cfg.ProjectRoot != tmpDir {
-			t.Errorf("ProjectRoot = %q, want %q", cfg.ProjectRoot, tmpDir)
+		if cfg.ShipqRoot != tmpDir {
+			t.Errorf("ShipqRoot = %q, want %q", cfg.ShipqRoot, tmpDir)
+		}
+		if cfg.GoModRoot != tmpDir {
+			t.Errorf("GoModRoot = %q, want %q", cfg.GoModRoot, tmpDir)
 		}
 	})
 
@@ -61,7 +65,7 @@ database_url = mysql://user@localhost:3306/mydb
 			t.Fatalf("failed to write shipq.ini: %v", err)
 		}
 
-		cfg, err := codegen.LoadDBPackageConfig(tmpDir)
+		cfg, err := codegen.LoadDBPackageConfig(tmpDir, tmpDir)
 		if err != nil {
 			t.Fatalf("LoadDBPackageConfig() error = %v", err)
 		}
@@ -86,7 +90,7 @@ database_url = sqlite:///path/to/db.sqlite
 			t.Fatalf("failed to write shipq.ini: %v", err)
 		}
 
-		cfg, err := codegen.LoadDBPackageConfig(tmpDir)
+		cfg, err := codegen.LoadDBPackageConfig(tmpDir, tmpDir)
 		if err != nil {
 			t.Fatalf("LoadDBPackageConfig() error = %v", err)
 		}
@@ -111,7 +115,7 @@ migrations = migrations
 			t.Fatalf("failed to write shipq.ini: %v", err)
 		}
 
-		_, err := codegen.LoadDBPackageConfig(tmpDir)
+		_, err := codegen.LoadDBPackageConfig(tmpDir, tmpDir)
 		if err == nil {
 			t.Error("LoadDBPackageConfig() expected error when database_url missing")
 		}
@@ -127,7 +131,7 @@ database_url = postgres://user@localhost:5432/mydb
 			t.Fatalf("failed to write shipq.ini: %v", err)
 		}
 
-		_, err := codegen.LoadDBPackageConfig(tmpDir)
+		_, err := codegen.LoadDBPackageConfig(tmpDir, tmpDir)
 		if err == nil {
 			t.Error("LoadDBPackageConfig() expected error when go.mod missing")
 		}
@@ -141,7 +145,7 @@ database_url = postgres://user@localhost:5432/mydb
 			t.Fatalf("failed to write go.mod: %v", err)
 		}
 
-		_, err := codegen.LoadDBPackageConfig(tmpDir)
+		_, err := codegen.LoadDBPackageConfig(tmpDir, tmpDir)
 		if err == nil {
 			t.Error("LoadDBPackageConfig() expected error when shipq.ini missing")
 		}
@@ -151,7 +155,8 @@ database_url = postgres://user@localhost:5432/mydb
 func TestGenerateDBFile(t *testing.T) {
 	t.Run("generates valid go code for postgres", func(t *testing.T) {
 		cfg := &codegen.DBPackageConfig{
-			ProjectRoot: "/fake/root",
+			GoModRoot:   "/fake/root",
+			ShipqRoot:   "/fake/root",
 			ModulePath:  "example.com/myapp",
 			DatabaseURL: "postgres://user@localhost:5432/mydb",
 			Dialect:     "postgres",
@@ -202,7 +207,8 @@ func TestGenerateDBFile(t *testing.T) {
 
 	t.Run("generates valid go code for mysql", func(t *testing.T) {
 		cfg := &codegen.DBPackageConfig{
-			ProjectRoot: "/fake/root",
+			GoModRoot:   "/fake/root",
+			ShipqRoot:   "/fake/root",
 			ModulePath:  "example.com/myapp",
 			DatabaseURL: "mysql://user@localhost:3306/mydb",
 			Dialect:     "mysql",
@@ -238,7 +244,8 @@ func TestGenerateDBFile(t *testing.T) {
 
 	t.Run("generates valid go code for sqlite", func(t *testing.T) {
 		cfg := &codegen.DBPackageConfig{
-			ProjectRoot: "/fake/root",
+			GoModRoot:   "/fake/root",
+			ShipqRoot:   "/fake/root",
 			ModulePath:  "example.com/myapp",
 			DatabaseURL: "sqlite:///path/to/db.sqlite",
 			Dialect:     "sqlite",
@@ -264,7 +271,8 @@ func TestGenerateDBFile(t *testing.T) {
 
 	t.Run("error for unsupported dialect", func(t *testing.T) {
 		cfg := &codegen.DBPackageConfig{
-			ProjectRoot: "/fake/root",
+			GoModRoot:   "/fake/root",
+			ShipqRoot:   "/fake/root",
 			ModulePath:  "example.com/myapp",
 			DatabaseURL: "oracle://user@localhost:1521/mydb",
 			Dialect:     "oracle",

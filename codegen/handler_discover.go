@@ -4,11 +4,16 @@ package codegen
 // that contain a Register function.
 // Returns a slice of import paths relative to the module.
 //
-// For example, if projectRoot is "/home/user/myapp", and modulePath is
-// "github.com/user/myapp", it will return paths like:
-//   - "github.com/user/myapp/api/posts"
-//   - "github.com/user/myapp/api/users"
-//   - "github.com/user/myapp/api/comments"
-func DiscoverAPIPackages(projectRoot, modulePath string) ([]string, error) {
-	return DiscoverPackages(projectRoot, "api", modulePath)
+// Parameters:
+//   - goModRoot: directory containing go.mod
+//   - shipqRoot: directory containing shipq.ini (where api/ directory lives)
+//   - modulePath: module path from go.mod
+//
+// For example, in a monorepo where goModRoot is "/monorepo", shipqRoot is "/monorepo/services/myservice",
+// and modulePath is "github.com/company/monorepo", it will return paths like:
+//   - "github.com/company/monorepo/services/myservice/api/posts"
+//   - "github.com/company/monorepo/services/myservice/api/users"
+//   - "github.com/company/monorepo/services/myservice/api/comments"
+func DiscoverAPIPackages(goModRoot, shipqRoot, modulePath string) ([]string, error) {
+	return DiscoverPackages(goModRoot, shipqRoot, "api", modulePath)
 }
