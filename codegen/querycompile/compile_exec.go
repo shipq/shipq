@@ -1,4 +1,4 @@
-package codegen
+package querycompile
 
 import (
 	"bytes"
@@ -8,6 +8,7 @@ import (
 	"os/exec"
 	"path/filepath"
 
+	"github.com/shipq/shipq/codegen"
 	"github.com/shipq/shipq/db/portsql/query"
 )
 
@@ -28,13 +29,13 @@ func WriteCompileProgram(projectRoot string, cfg CompileProgramConfig) error {
 
 	// Create the directory
 	compileDir := filepath.Join(projectRoot, CompileProgramDir)
-	if err := EnsureDir(compileDir); err != nil {
+	if err := codegen.EnsureDir(compileDir); err != nil {
 		return fmt.Errorf("failed to create compile directory: %w", err)
 	}
 
 	// Write the program
 	programPath := filepath.Join(compileDir, CompileProgramFile)
-	if _, err := WriteFileIfChanged(programPath, programCode); err != nil {
+	if _, err := codegen.WriteFileIfChanged(programPath, programCode); err != nil {
 		return fmt.Errorf("failed to write compile program: %w", err)
 	}
 

@@ -1,4 +1,4 @@
-package codegen
+package discovery
 
 // DiscoverAPIPackages finds all Go packages under the api directory
 // that contain a Register function.

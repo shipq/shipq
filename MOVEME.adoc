@@ -1,0 +1,89 @@
+== REFACTORING GUIDE
+
+=== cmd/shipq/ stays
+
+----
+cmd/shipq/main.go
+cmd/shipq/config.go
+----
+
+=== internal/commands/init/
+
+----
+cmd/shipq/init.go
+cmd/shipq/init_test.go
+----
+
+=== internal/commands/db/
+
+----
+cmd/shipq/db_compile.go
+cmd/shipq/db_setup.go
+cmd/shipq/db_setup_test.go
+cmd/shipq/db_start.go
+cmd/shipq/db_start_test.go
+----
+
+=== internal/commands/migrate/
+
+----
+cmd/shipq/migrate_new.go
+cmd/shipq/migrate_new_test.go
+cmd/shipq/migrate_up.go
+cmd/shipq/migrate_up_test.go
+cmd/shipq/migrate_reset.go
+cmd/shipq/migrate_parser.go
+cmd/shipq/migrate_parser_test.go
+cmd/shipq/migrate_generator.go
+cmd/shipq/migrate_generator_test.go
+----
+
+=== internal/commands/handler/
+
+----
+cmd/shipq/handler_generate.go
+cmd/shipq/handler_compile.go
+----
+
+=== internal/commands/resource/
+
+----
+cmd/shipq/resource_up.go
+cmd/shipq/resource_up_test.go
+----
+
+=== codegen/ stays
+
+----
+codegen/codegen.go
+codegen/codegen_test.go
+----
+
+=== codegen/httpserver/server
+
+----
+codegen/http_server_gen.go
+codegen/http_server_gen_test.go
+codegen/http_server_gen_property_test.go
+codegen/http_main_gen.go
+codegen/http_main_gen_test.go
+----
+
+=== codegen/httpserver/testclient
+
+----
+codegen/http_testclient_gen.go
+codegen/http_testclient_gen_test.go
+codegen/http_testclient_integration_test.go
+codegen/http_testharness_gen.go
+codegen/http_testharness_gen_test.go
+----
+
+=== codegen/resourcegen/
+
+----
+codegen/resource_detection.go
+codegen/resource_detection_test.go
+codegen/resource_test_gen.go
+codegen/resource_test_gen_test.go
+----

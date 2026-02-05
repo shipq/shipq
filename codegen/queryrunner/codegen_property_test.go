@@ -1,4 +1,4 @@
-package codegen_test
+package queryrunner_test
 
 import (
 	"fmt"
@@ -9,6 +9,8 @@ import (
 	"testing"
 
 	"github.com/shipq/shipq/codegen"
+	"github.com/shipq/shipq/codegen/dbpkg"
+	codegenMigrate "github.com/shipq/shipq/codegen/migrate"
 	"github.com/shipq/shipq/proptest"
 )
 
@@ -36,7 +38,7 @@ func TestProperty_DiscoverMigrations_SortedByTimestamp(t *testing.T) {
 		}
 
 		// Discover migrations
-		discovered, err := codegen.DiscoverMigrations(tmpDir)
+		discovered, err := codegenMigrate.DiscoverMigrations(tmpDir)
 		if err != nil {
 			t.Logf("DiscoverMigrations failed: %v", err)
 			return false
@@ -65,7 +67,7 @@ func TestProperty_GenerateDBFile_ValidGoCode(t *testing.T) {
 				// Generate random but valid database URL
 				dbURL := generateRandomDBURL(g, dialect)
 
-			cfg := &codegen.DBPackageConfig{
+			cfg := &dbpkg.DBPackageConfig{
 				GoModRoot:   "/fake/root",
 				ShipqRoot:   "/fake/root",
 				ModulePath:  "example.com/myapp",
@@ -73,7 +75,7 @@ func TestProperty_GenerateDBFile_ValidGoCode(t *testing.T) {
 				Dialect:     dialect,
 				}
 
-				content, err := codegen.GenerateDBFile(cfg)
+				content, err := dbpkg.GenerateDBFile(cfg)
 				if err != nil {
 					t.Logf("GenerateDBFile failed: %v", err)
 					return false
@@ -260,7 +262,7 @@ func TestProperty_DiscoverMigrations_Correctness(t *testing.T) {
 		}
 
 		// Discover migrations
-		discovered, err := codegen.DiscoverMigrations(tmpDir)
+		discovered, err := codegenMigrate.DiscoverMigrations(tmpDir)
 		if err != nil {
 			t.Logf("DiscoverMigrations failed: %v", err)
 			return false
@@ -290,7 +292,7 @@ func TestProperty_GenerateMigrateRunner_ValidCode(t *testing.T) {
 			modulePath = "example"
 		}
 
-		content, err := codegen.GenerateMigrateRunner(modulePath)
+		content, err := codegenMigrate.GenerateMigrateRunner(modulePath)
 		if err != nil {
 			t.Logf("GenerateMigrateRunner failed: %v", err)
 			return false

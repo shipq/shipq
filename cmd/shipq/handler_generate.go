@@ -6,6 +6,8 @@ import (
 	"path/filepath"
 
 	"github.com/shipq/shipq/codegen"
+	"github.com/shipq/shipq/codegen/crud"
+	"github.com/shipq/shipq/codegen/handlergen"
 	dbcodegen "github.com/shipq/shipq/db/portsql/codegen"
 	"github.com/shipq/shipq/db/portsql/migrate"
 	"github.com/shipq/shipq/project"
@@ -73,10 +75,10 @@ func handlerGenerateCmd(args []string) {
 		tableNames = append(tableNames, name)
 	}
 
-	crudCfg, err := codegen.LoadCRUDConfigWithTables(roots.ShipqRoot, tableNames, plan.Schema.Tables)
+	crudCfg, err := crud.LoadCRUDConfigWithTables(roots.ShipqRoot, tableNames, plan.Schema.Tables)
 	if err != nil {
 		// If config doesn't exist, use defaults
-		crudCfg = &codegen.CRUDConfig{
+		crudCfg = &crud.CRUDConfig{
 			TableOpts: make(map[string]dbcodegen.CRUDOptions),
 		}
 	}
@@ -88,7 +90,7 @@ func handlerGenerateCmd(args []string) {
 	}
 
 	// Generate handler files
-	cfg := codegen.HandlerGenConfig{
+	cfg := handlergen.HandlerGenConfig{
 		ModulePath:  modulePath,
 		TableName:   tableName,
 		Table:       table,
@@ -96,7 +98,7 @@ func handlerGenerateCmd(args []string) {
 		ScopeColumn: scopeColumn,
 	}
 
-	files, err := codegen.GenerateHandlerFiles(cfg)
+	files, err := handlergen.GenerateHandlerFiles(cfg)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "error: failed to generate handlers: %v\n", err)
 		os.Exit(1)

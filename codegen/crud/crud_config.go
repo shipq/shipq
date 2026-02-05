@@ -1,4 +1,4 @@
-package codegen
+package crud
 
 import (
 	"fmt"
@@ -84,14 +84,14 @@ func LoadCRUDConfig(ini *inifile.File, tables []string) (*CRUDConfig, error) {
 func InferScopeTable(column string) string {
 	if strings.HasSuffix(column, "_id") {
 		singular := strings.TrimSuffix(column, "_id")
-		return toPlural(singular)
+		return ToPlural(singular)
 	}
 	return column + "s"
 }
 
-// toPlural converts a singular noun to plural using simple English rules.
+// ToPlural converts a singular noun to plural using simple English rules.
 // This is a basic implementation that handles common cases.
-func toPlural(singular string) string {
+func ToPlural(singular string) string {
 	if singular == "" {
 		return ""
 	}

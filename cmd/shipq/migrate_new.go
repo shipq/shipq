@@ -6,7 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/shipq/shipq/codegen"
+	"github.com/shipq/shipq/codegen/crud"
 	"github.com/shipq/shipq/inifile"
 )
 
@@ -135,7 +135,7 @@ func loadScopeConfig(cfg *ProjectConfig) (string, string) {
 	table := ini.Get("db", "scope_table")
 	if table == "" {
 		// Infer from column name: organization_id -> organizations
-		table = codegen.InferScopeTable(column)
+		table = crud.InferScopeTable(column)
 	}
 
 	return column, table

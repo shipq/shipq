@@ -1,4 +1,4 @@
-package codegen
+package queryrunner
 
 import (
 	"bytes"
@@ -7,7 +7,8 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/shipq/shipq/db/portsql/codegen"
+	"github.com/shipq/shipq/codegen"
+	portsqlcodegen "github.com/shipq/shipq/db/portsql/codegen"
 	"github.com/shipq/shipq/db/portsql/ddl"
 	"github.com/shipq/shipq/db/portsql/migrate"
 	"github.com/shipq/shipq/db/portsql/query"
@@ -22,7 +23,7 @@ type UnifiedRunnerConfig struct {
 	Dialect     string // "postgres", "mysql", "sqlite"
 	UserQueries []query.SerializedQuery
 	Schema      *migrate.MigrationPlan
-	TableOpts   map[string]codegen.CRUDOptions
+	TableOpts   map[string]portsqlcodegen.CRUDOptions
 }
 
 // GenerateUnifiedRunner generates the complete runner for a dialect.
@@ -168,26 +169,26 @@ func writeContextHelpers(buf *bytes.Buffer, cfg UnifiedRunnerConfig) {
 	if cfg.Schema != nil {
 		tableNames := sortedTableNames(cfg.Schema.Schema.Tables)
 		for _, tableName := range tableNames {
-			getMethod := CRUD.GetMethodName(tableName)
-			getResult := CRUD.GetResultType(tableName)
+			getMethod := codegen.CRUD.GetMethodName(tableName)
+			getResult := codegen.CRUD.GetResultType(tableName)
 			buf.WriteString(fmt.Sprintf("\t%s(ctx context.Context, publicID string) (*%s, error)\n", getMethod, getResult))
 
-			listMethod := CRUD.ListMethodName(tableName)
-			listParams := CRUD.ListParamsType(tableName)
-			listResult := CRUD.ListResultType(tableName)
+			listMethod := codegen.CRUD.ListMethodName(tableName)
+			listParams := codegen.CRUD.ListParamsType(tableName)
+			listResult := codegen.CRUD.ListResultType(tableName)
 			buf.WriteString(fmt.Sprintf("\t%s(ctx context.Context, params %s) (*%s, error)\n", listMethod, listParams, listResult))
 
-			createMethod := CRUD.CreateMethodName(tableName)
-			createParams := CRUD.CreateParamsType(tableName)
-			createResult := CRUD.CreateResultType(tableName)
+			createMethod := codegen.CRUD.CreateMethodName(tableName)
+			createParams := codegen.CRUD.CreateParamsType(tableName)
+			createResult := codegen.CRUD.CreateResultType(tableName)
 			buf.WriteString(fmt.Sprintf("\t%s(ctx context.Context, params %s) (*%s, error)\n", createMethod, createParams, createResult))
 
-			updateMethod := CRUD.UpdateMethodName(tableName)
-			updateParams := CRUD.UpdateParamsType(tableName)
+			updateMethod := codegen.CRUD.UpdateMethodName(tableName)
+			updateParams := codegen.CRUD.UpdateParamsType(tableName)
 			// Update returns GetResult since it fetches the updated record
 			buf.WriteString(fmt.Sprintf("\t%s(ctx context.Context, publicID string, params %s) (*%s, error)\n", updateMethod, updateParams, getResult))
 
-			softDeleteMethod := CRUD.SoftDeleteMethodName(tableName)
+			softDeleteMethod := codegen.CRUD.SoftDeleteMethodName(tableName)
 			buf.WriteString(fmt.Sprintf("\t%s(ctx context.Context, publicID string) error\n", softDeleteMethod))
 		}
 	}
@@ -559,7 +560,7 @@ func collectRunnerImports(cfg UnifiedRunnerConfig, queries []userQueryInfo) map[
 	// We only need nanoid for generating public IDs.
 	if cfg.Schema != nil {
 		for _, table := range cfg.Schema.Schema.Tables {
-			analysis := codegen.AnalyzeTable(table)
+			analysis := portsqlcodegen.AnalyzeTable(table)
 			if analysis.HasPublicID {
 				imports["github.com/shipq/shipq/nanoid"] = true
 			}
@@ -596,7 +597,7 @@ func collectTypesImports(queries []userQueryInfo, cfg UnifiedRunnerConfig) map[s
 	if cfg.Schema != nil {
 		for _, table := range cfg.Schema.Schema.Tables {
 			for _, col := range table.Columns {
-				mapping := codegen.MapColumnType(col)
+				mapping := portsqlcodegen.MapColumnType(col)
 				if mapping.NeedsImport == "time" {
 					imports["time"] = true
 				}
@@ -738,7 +739,7 @@ func NewQueryRunner(db Querier) *QueryRunner {
 		tableNames := sortedTableNames(cfg.Schema.Schema.Tables)
 		for _, tableName := range tableNames {
 			table := cfg.Schema.Schema.Tables[tableName]
-			analysis := codegen.AnalyzeTable(table)
+			analysis := portsqlcodegen.AnalyzeTable(table)
 			singular := dbstrings.ToSingular(tableName)
 			pascal := dbstrings.ToPascalCase(singular)
 
@@ -966,7 +967,7 @@ func writeCRUDMethods(buf *bytes.Buffer, cfg UnifiedRunnerConfig, compiler *comp
 	tableNames := sortedTableNames(cfg.Schema.Schema.Tables)
 	for _, tableName := range tableNames {
 		table := cfg.Schema.Schema.Tables[tableName]
-		analysis := codegen.AnalyzeTable(table)
+		analysis := portsqlcodegen.AnalyzeTable(table)
 		singular := dbstrings.ToSingular(tableName)
 		pascal := dbstrings.ToPascalCase(singular)
 
@@ -997,7 +998,7 @@ func writeCRUDTypes(buf *bytes.Buffer, cfg UnifiedRunnerConfig) {
 	tableNames := sortedTableNames(cfg.Schema.Schema.Tables)
 	for _, tableName := range tableNames {
 		table := cfg.Schema.Schema.Tables[tableName]
-		analysis := codegen.AnalyzeTable(table)
+		analysis := portsqlcodegen.AnalyzeTable(table)
 		singular := dbstrings.ToSingular(tableName)
 		pascal := dbstrings.ToPascalCase(singular)
 
@@ -1018,8 +1019,8 @@ func writeCRUDTypes(buf *bytes.Buffer, cfg UnifiedRunnerConfig) {
 	}
 }
 
-func writeGetTypes(buf *bytes.Buffer, tableName string, table ddl.Table, analysis codegen.TableAnalysis, pascal string) {
-	resultType := CRUD.GetResultType(tableName)
+func writeGetTypes(buf *bytes.Buffer, tableName string, table ddl.Table, analysis portsqlcodegen.TableAnalysis, pascal string) {
+	resultType := codegen.CRUD.GetResultType(tableName)
 
 	// No params type needed for GetByPublicID - publicID is passed directly
 	// Result only
@@ -1029,18 +1030,18 @@ func writeGetTypes(buf *bytes.Buffer, tableName string, table ddl.Table, analysi
 		if col.Name == "id" {
 			continue // Skip internal ID
 		}
-		mapping := codegen.MapColumnType(col)
+		mapping := portsqlcodegen.MapColumnType(col)
 		buf.WriteString(fmt.Sprintf("\t%s %s\n", dbstrings.ToPascalCase(col.Name), mapping.GoType))
 	}
 	buf.WriteString("}\n\n")
 	_ = analysis // suppress unused
 }
 
-func writeListTypes(buf *bytes.Buffer, tableName string, table ddl.Table, analysis codegen.TableAnalysis) {
+func writeListTypes(buf *bytes.Buffer, tableName string, table ddl.Table, analysis portsqlcodegen.TableAnalysis) {
 	plural := dbstrings.ToPascalCase(tableName)
-	cursorType := CRUD.ListCursorType(tableName)
-	encodeCursorFunc := CRUD.EncodeCursorFunc(tableName)
-	decodeCursorFunc := CRUD.DecodeCursorFunc(tableName)
+	cursorType := codegen.CRUD.ListCursorType(tableName)
+	encodeCursorFunc := codegen.CRUD.EncodeCursorFunc(tableName)
+	decodeCursorFunc := codegen.CRUD.DecodeCursorFunc(tableName)
 
 	// Cursor type for pagination
 	buf.WriteString(fmt.Sprintf("// %s holds pagination state for listing %s.\n", cursorType, tableName))
@@ -1090,7 +1091,7 @@ func writeListTypes(buf *bytes.Buffer, tableName string, table ddl.Table, analys
 		if col.Name == "id" {
 			continue
 		}
-		mapping := codegen.MapColumnType(col)
+		mapping := portsqlcodegen.MapColumnType(col)
 		buf.WriteString(fmt.Sprintf("\t%s %s\n", dbstrings.ToPascalCase(col.Name), mapping.GoType))
 	}
 	buf.WriteString("}\n\n")
@@ -1103,7 +1104,7 @@ func writeListTypes(buf *bytes.Buffer, tableName string, table ddl.Table, analys
 	buf.WriteString("}\n\n")
 }
 
-func writeCreateTypes(buf *bytes.Buffer, tableName string, table ddl.Table, analysis codegen.TableAnalysis, pascal string) {
+func writeCreateTypes(buf *bytes.Buffer, tableName string, table ddl.Table, analysis portsqlcodegen.TableAnalysis, pascal string) {
 	// Params
 	buf.WriteString(fmt.Sprintf("// Create%sParams are the parameters for creating a %s.\n", pascal, singular(tableName)))
 	buf.WriteString(fmt.Sprintf("type Create%sParams struct {\n", pascal))
@@ -1112,7 +1113,7 @@ func writeCreateTypes(buf *bytes.Buffer, tableName string, table ddl.Table, anal
 		if col.Name == "id" || col.Name == "public_id" || col.Name == "created_at" || col.Name == "updated_at" || col.Name == "deleted_at" {
 			continue
 		}
-		mapping := codegen.MapColumnType(col)
+		mapping := portsqlcodegen.MapColumnType(col)
 		buf.WriteString(fmt.Sprintf("\t%s %s\n", dbstrings.ToPascalCase(col.Name), mapping.GoType))
 	}
 	buf.WriteString("}\n\n")
@@ -1127,15 +1128,15 @@ func writeCreateTypes(buf *bytes.Buffer, tableName string, table ddl.Table, anal
 		if col.Name == "id" {
 			continue
 		}
-		mapping := codegen.MapColumnType(col)
+		mapping := portsqlcodegen.MapColumnType(col)
 		buf.WriteString(fmt.Sprintf("\t%s %s\n", dbstrings.ToPascalCase(col.Name), mapping.GoType))
 	}
 	buf.WriteString("}\n\n")
 }
 
-func writeUpdateTypes(buf *bytes.Buffer, tableName string, table ddl.Table, analysis codegen.TableAnalysis, pascal string) {
-	updateParamsType := CRUD.UpdateParamsType(tableName)
-	updateResultType := CRUD.UpdateResultType(tableName)
+func writeUpdateTypes(buf *bytes.Buffer, tableName string, table ddl.Table, analysis portsqlcodegen.TableAnalysis, pascal string) {
+	updateParamsType := codegen.CRUD.UpdateParamsType(tableName)
+	updateResultType := codegen.CRUD.UpdateResultType(tableName)
 
 	// Params - no identifier needed since it's passed separately in ByPublicID signature
 	buf.WriteString(fmt.Sprintf("// %s are the parameters for updating a %s.\n", updateParamsType, singular(tableName)))
@@ -1145,7 +1146,7 @@ func writeUpdateTypes(buf *bytes.Buffer, tableName string, table ddl.Table, anal
 		if col.Name == "id" || col.Name == "public_id" || col.Name == "created_at" || col.Name == "updated_at" || col.Name == "deleted_at" {
 			continue
 		}
-		mapping := codegen.MapColumnType(col)
+		mapping := portsqlcodegen.MapColumnType(col)
 		// Make fields pointers for optional updates (PATCH semantics)
 		buf.WriteString(fmt.Sprintf("\t%s *%s\n", dbstrings.ToPascalCase(col.Name), mapping.GoType))
 	}
@@ -1158,13 +1159,13 @@ func writeUpdateTypes(buf *bytes.Buffer, tableName string, table ddl.Table, anal
 		if col.Name == "id" {
 			continue // Skip internal ID
 		}
-		mapping := codegen.MapColumnType(col)
+		mapping := portsqlcodegen.MapColumnType(col)
 		buf.WriteString(fmt.Sprintf("\t%s %s\n", dbstrings.ToPascalCase(col.Name), mapping.GoType))
 	}
 	buf.WriteString("}\n\n")
 }
 
-func writeDeleteTypes(buf *bytes.Buffer, tableName string, table ddl.Table, analysis codegen.TableAnalysis, pascal string) {
+func writeDeleteTypes(buf *bytes.Buffer, tableName string, table ddl.Table, analysis portsqlcodegen.TableAnalysis, pascal string) {
 	// No params type needed for SoftDeleteByPublicID - publicID is passed directly
 	// This function is kept for compatibility but generates nothing
 	_ = tableName
@@ -1174,10 +1175,10 @@ func writeDeleteTypes(buf *bytes.Buffer, tableName string, table ddl.Table, anal
 }
 
 // CRUD method writers
-func writeGetMethod(buf *bytes.Buffer, tableName string, table ddl.Table, analysis codegen.TableAnalysis, pascal string, cfg UnifiedRunnerConfig) {
+func writeGetMethod(buf *bytes.Buffer, tableName string, table ddl.Table, analysis portsqlcodegen.TableAnalysis, pascal string, cfg UnifiedRunnerConfig) {
 	typesPackage := "queries"
-	methodName := CRUD.GetMethodName(tableName)
-	resultType := fmt.Sprintf("%s.%s", typesPackage, CRUD.GetResultType(tableName))
+	methodName := codegen.CRUD.GetMethodName(tableName)
+	resultType := fmt.Sprintf("%s.%s", typesPackage, codegen.CRUD.GetResultType(tableName))
 
 	// Use ByPublicID signature - takes publicID directly, not params struct
 	buf.WriteString(fmt.Sprintf("// %s fetches a single %s by its public ID.\n", methodName, singular(tableName)))
@@ -1206,14 +1207,14 @@ func writeGetMethod(buf *bytes.Buffer, tableName string, table ddl.Table, analys
 	buf.WriteString("}\n\n")
 }
 
-func writeListMethod(buf *bytes.Buffer, tableName string, table ddl.Table, analysis codegen.TableAnalysis, cfg UnifiedRunnerConfig) {
+func writeListMethod(buf *bytes.Buffer, tableName string, table ddl.Table, analysis portsqlcodegen.TableAnalysis, cfg UnifiedRunnerConfig) {
 	typesPackage := "queries"
 	plural := dbstrings.ToPascalCase(tableName)
-	methodName := CRUD.ListMethodName(tableName)
-	paramType := fmt.Sprintf("%s.%s", typesPackage, CRUD.ListParamsType(tableName))
-	itemType := fmt.Sprintf("%s.%s", typesPackage, CRUD.ListItemType(tableName))
-	resultType := fmt.Sprintf("%s.%s", typesPackage, CRUD.ListResultType(tableName))
-	cursorType := fmt.Sprintf("%s.%s", typesPackage, CRUD.ListCursorType(tableName))
+	methodName := codegen.CRUD.ListMethodName(tableName)
+	paramType := fmt.Sprintf("%s.%s", typesPackage, codegen.CRUD.ListParamsType(tableName))
+	itemType := fmt.Sprintf("%s.%s", typesPackage, codegen.CRUD.ListItemType(tableName))
+	resultType := fmt.Sprintf("%s.%s", typesPackage, codegen.CRUD.ListResultType(tableName))
+	cursorType := fmt.Sprintf("%s.%s", typesPackage, codegen.CRUD.ListCursorType(tableName))
 
 	buf.WriteString(fmt.Sprintf("// %s fetches %s with pagination.\n", methodName, tableName))
 	buf.WriteString(fmt.Sprintf("func (r *QueryRunner) %s(ctx context.Context, params %s) (*%s, error) {\n", methodName, paramType, resultType))
@@ -1262,7 +1263,7 @@ func writeListMethod(buf *bytes.Buffer, tableName string, table ddl.Table, analy
 	buf.WriteString("}\n\n")
 }
 
-func writeCreateMethod(buf *bytes.Buffer, tableName string, table ddl.Table, analysis codegen.TableAnalysis, pascal string, cfg UnifiedRunnerConfig) {
+func writeCreateMethod(buf *bytes.Buffer, tableName string, table ddl.Table, analysis portsqlcodegen.TableAnalysis, pascal string, cfg UnifiedRunnerConfig) {
 	typesPackage := "queries"
 	paramType := fmt.Sprintf("%s.Create%sParams", typesPackage, pascal)
 	resultType := fmt.Sprintf("%s.Create%sResult", typesPackage, pascal)
@@ -1305,12 +1306,12 @@ func writeCreateMethod(buf *bytes.Buffer, tableName string, table ddl.Table, ana
 	buf.WriteString("}\n\n")
 }
 
-func writeUpdateMethod(buf *bytes.Buffer, tableName string, table ddl.Table, analysis codegen.TableAnalysis, pascal string, cfg UnifiedRunnerConfig) {
+func writeUpdateMethod(buf *bytes.Buffer, tableName string, table ddl.Table, analysis portsqlcodegen.TableAnalysis, pascal string, cfg UnifiedRunnerConfig) {
 	typesPackage := "queries"
-	methodName := CRUD.UpdateMethodName(tableName)
-	paramType := fmt.Sprintf("%s.%s", typesPackage, CRUD.UpdateParamsType(tableName))
+	methodName := codegen.CRUD.UpdateMethodName(tableName)
+	paramType := fmt.Sprintf("%s.%s", typesPackage, codegen.CRUD.UpdateParamsType(tableName))
 	// Return GetResult type since we fetch the updated record using Get method
-	resultType := fmt.Sprintf("%s.%s", typesPackage, CRUD.GetResultType(tableName))
+	resultType := fmt.Sprintf("%s.%s", typesPackage, codegen.CRUD.GetResultType(tableName))
 
 	// Use ByPublicID signature - takes publicID and params separately
 	buf.WriteString(fmt.Sprintf("// %s updates an existing %s by its public ID.\n", methodName, singular(tableName)))
@@ -1335,13 +1336,13 @@ func writeUpdateMethod(buf *bytes.Buffer, tableName string, table ddl.Table, ana
 	buf.WriteString("\t}\n\n")
 
 	// Fetch the updated record using the Get method
-	getMethodName := CRUD.GetMethodName(tableName)
+	getMethodName := codegen.CRUD.GetMethodName(tableName)
 	buf.WriteString(fmt.Sprintf("\treturn r.%s(ctx, publicID)\n", getMethodName))
 	buf.WriteString("}\n\n")
 }
 
-func writeDeleteMethod(buf *bytes.Buffer, tableName string, table ddl.Table, analysis codegen.TableAnalysis, pascal string, cfg UnifiedRunnerConfig) {
-	methodName := CRUD.SoftDeleteMethodName(tableName)
+func writeDeleteMethod(buf *bytes.Buffer, tableName string, table ddl.Table, analysis portsqlcodegen.TableAnalysis, pascal string, cfg UnifiedRunnerConfig) {
+	methodName := codegen.CRUD.SoftDeleteMethodName(tableName)
 
 	// Use ByPublicID signature - takes publicID directly
 	buf.WriteString(fmt.Sprintf("// %s soft-deletes a %s by its public ID.\n", methodName, singular(tableName)))
@@ -1358,7 +1359,7 @@ func writeDeleteMethod(buf *bytes.Buffer, tableName string, table ddl.Table, ana
 // SQL Generation for CRUD
 // =============================================================================
 
-func generateGetSQL(table ddl.Table, analysis codegen.TableAnalysis, compiler *compile.Compiler) string {
+func generateGetSQL(table ddl.Table, analysis portsqlcodegen.TableAnalysis, compiler *compile.Compiler) string {
 	dialect := compiler
 	_ = dialect // TODO: Use dialect for proper quoting
 
@@ -1388,7 +1389,7 @@ func generateGetSQL(table ddl.Table, analysis codegen.TableAnalysis, compiler *c
 	return sql
 }
 
-func generateListSQL(table ddl.Table, analysis codegen.TableAnalysis, compiler *compile.Compiler) string {
+func generateListSQL(table ddl.Table, analysis portsqlcodegen.TableAnalysis, compiler *compile.Compiler) string {
 	var cols []string
 	for _, col := range table.Columns {
 		if col.Name == "id" {
@@ -1408,7 +1409,7 @@ func generateListSQL(table ddl.Table, analysis codegen.TableAnalysis, compiler *
 	return sql
 }
 
-func generateCreateSQL(table ddl.Table, analysis codegen.TableAnalysis, compiler *compile.Compiler) string {
+func generateCreateSQL(table ddl.Table, analysis portsqlcodegen.TableAnalysis, compiler *compile.Compiler) string {
 	var cols []string
 	var placeholders []string
 	var returnCols []string
@@ -1446,7 +1447,7 @@ func generateCreateSQL(table ddl.Table, analysis codegen.TableAnalysis, compiler
 	return sql
 }
 
-func generateUpdateSQL(table ddl.Table, analysis codegen.TableAnalysis, compiler *compile.Compiler) string {
+func generateUpdateSQL(table ddl.Table, analysis portsqlcodegen.TableAnalysis, compiler *compile.Compiler) string {
 	var setClauses []string
 	paramNum := 1
 
@@ -1477,7 +1478,7 @@ func generateUpdateSQL(table ddl.Table, analysis codegen.TableAnalysis, compiler
 	return sql
 }
 
-func generateDeleteSQL(table ddl.Table, analysis codegen.TableAnalysis, compiler *compile.Compiler) string {
+func generateDeleteSQL(table ddl.Table, analysis portsqlcodegen.TableAnalysis, compiler *compile.Compiler) string {
 	whereCol := "public_id"
 	if !analysis.HasPublicID && analysis.PrimaryKey != nil {
 		whereCol = analysis.PrimaryKey.Name

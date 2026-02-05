@@ -1,4 +1,4 @@
-package codegen_test
+package migrate_test
 
 import (
 	"os"
@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/shipq/shipq/codegen"
+	"github.com/shipq/shipq/codegen/migrate"
 )
 
 func TestDiscoverMigrations(t *testing.T) {
@@ -49,7 +49,7 @@ func Migrate_20260115120100_posts(plan *migrate.MigrationPlan) error {
 			}
 		}
 
-		discovered, err := codegen.DiscoverMigrations(tmpDir)
+		discovered, err := migrate.DiscoverMigrations(tmpDir)
 		if err != nil {
 			t.Fatalf("DiscoverMigrations() error = %v", err)
 		}
@@ -96,7 +96,7 @@ func Migrate_20260115120100_posts(plan *migrate.MigrationPlan) error {
 			}
 		}
 
-		discovered, err := codegen.DiscoverMigrations(tmpDir)
+		discovered, err := migrate.DiscoverMigrations(tmpDir)
 		if err != nil {
 			t.Fatalf("DiscoverMigrations() error = %v", err)
 		}
@@ -129,7 +129,7 @@ func Migrate_20260115120100_posts(plan *migrate.MigrationPlan) error {
 			}
 		}
 
-		discovered, err := codegen.DiscoverMigrations(tmpDir)
+		discovered, err := migrate.DiscoverMigrations(tmpDir)
 		if err != nil {
 			t.Fatalf("DiscoverMigrations() error = %v", err)
 		}
@@ -155,7 +155,7 @@ func Migrate_20260115120100_posts(plan *migrate.MigrationPlan) error {
 			}
 		}
 
-		discovered, err := codegen.DiscoverMigrations(tmpDir)
+		discovered, err := migrate.DiscoverMigrations(tmpDir)
 		if err != nil {
 			t.Fatalf("DiscoverMigrations() error = %v", err)
 		}
@@ -183,7 +183,7 @@ func Migrate_20260115120100_posts(plan *migrate.MigrationPlan) error {
 			}
 		}
 
-		discovered, err := codegen.DiscoverMigrations(tmpDir)
+		discovered, err := migrate.DiscoverMigrations(tmpDir)
 		if err != nil {
 			t.Fatalf("DiscoverMigrations() error = %v", err)
 		}
@@ -212,7 +212,7 @@ func Migrate_20260115120100_posts(plan *migrate.MigrationPlan) error {
 			t.Fatalf("failed to write file: %v", err)
 		}
 
-		discovered, err := codegen.DiscoverMigrations(tmpDir)
+		discovered, err := migrate.DiscoverMigrations(tmpDir)
 		if err != nil {
 			t.Fatalf("DiscoverMigrations() error = %v", err)
 		}
@@ -223,7 +223,7 @@ func Migrate_20260115120100_posts(plan *migrate.MigrationPlan) error {
 	})
 
 	t.Run("returns empty slice for nonexistent directory", func(t *testing.T) {
-		discovered, err := codegen.DiscoverMigrations("/nonexistent/path")
+		discovered, err := migrate.DiscoverMigrations("/nonexistent/path")
 		if err != nil {
 			t.Fatalf("DiscoverMigrations() error = %v, expected nil for nonexistent directory", err)
 		}
@@ -236,7 +236,7 @@ func Migrate_20260115120100_posts(plan *migrate.MigrationPlan) error {
 	t.Run("returns empty slice for empty directory", func(t *testing.T) {
 		tmpDir := t.TempDir()
 
-		discovered, err := codegen.DiscoverMigrations(tmpDir)
+		discovered, err := migrate.DiscoverMigrations(tmpDir)
 		if err != nil {
 			t.Fatalf("DiscoverMigrations() error = %v", err)
 		}
@@ -254,7 +254,7 @@ func Migrate_20260115120100_posts(plan *migrate.MigrationPlan) error {
 			t.Fatalf("failed to write file: %v", err)
 		}
 
-		discovered, err := codegen.DiscoverMigrations(tmpDir)
+		discovered, err := migrate.DiscoverMigrations(tmpDir)
 		if err != nil {
 			t.Fatalf("DiscoverMigrations() error = %v", err)
 		}
@@ -281,7 +281,7 @@ func TestMigrationFile_Fields(t *testing.T) {
 		t.Fatalf("failed to write file: %v", err)
 	}
 
-	discovered, err := codegen.DiscoverMigrations(tmpDir)
+	discovered, err := migrate.DiscoverMigrations(tmpDir)
 	if err != nil {
 		t.Fatalf("DiscoverMigrations() error = %v", err)
 	}
@@ -317,7 +317,7 @@ func TestMigrationFile_Fields(t *testing.T) {
 // calls SetCurrentMigration before each migration function. This is critical for ensuring
 // migration names are stable across rebuilds.
 func TestGeneratedRunnerCallsSetCurrentMigration(t *testing.T) {
-	migrations := []codegen.MigrationFile{
+	migrations := []migrate.MigrationFile{
 		{
 			Path:      "/path/to/20260115120000_users.go",
 			Timestamp: "20260115120000",
@@ -332,7 +332,7 @@ func TestGeneratedRunnerCallsSetCurrentMigration(t *testing.T) {
 		},
 	}
 
-	code := codegen.GenerateMigrationRunnerForTest(migrations)
+	code := migrate.GenerateMigrationRunnerForTest(migrations)
 
 	// Verify SetCurrentMigration is called before each migration
 	if !strings.Contains(code, `plan.SetCurrentMigration("20260115120000_users")`) {
@@ -359,7 +359,7 @@ func TestGeneratedRunnerCallsSetCurrentMigration(t *testing.T) {
 // TestGeneratedRunnerMigrationNamesMatchFilenames verifies that the migration names
 // passed to SetCurrentMigration match the expected format: TIMESTAMP_name
 func TestGeneratedRunnerMigrationNamesMatchFilenames(t *testing.T) {
-	migrations := []codegen.MigrationFile{
+	migrations := []migrate.MigrationFile{
 		{
 			Path:      "/path/to/20260204134211_accounts.go",
 			Timestamp: "20260204134211",
@@ -368,7 +368,7 @@ func TestGeneratedRunnerMigrationNamesMatchFilenames(t *testing.T) {
 		},
 	}
 
-	code := codegen.GenerateMigrationRunnerForTest(migrations)
+	code := migrate.GenerateMigrationRunnerForTest(migrations)
 
 	// The migration name should be TIMESTAMP_name (from the filename)
 	expectedName := "20260204134211_accounts"

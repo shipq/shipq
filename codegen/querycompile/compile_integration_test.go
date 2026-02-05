@@ -1,4 +1,4 @@
-package codegen
+package querycompile
 
 import (
 	"encoding/json"
@@ -8,6 +8,9 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/shipq/shipq/codegen/discovery"
+	"github.com/shipq/shipq/codegen/handlergen"
+	"github.com/shipq/shipq/codegen/queryrunner"
 	"github.com/shipq/shipq/db/portsql/ddl"
 	"github.com/shipq/shipq/db/portsql/migrate"
 	"github.com/shipq/shipq/db/portsql/query"
@@ -181,7 +184,7 @@ func TestCompileWorkflow_EndToEnd(t *testing.T) {
 
 	for _, dialect := range dialects {
 		t.Run(dialect, func(t *testing.T) {
-			cfg := UnifiedRunnerConfig{
+			cfg := queryrunner.UnifiedRunnerConfig{
 				ModulePath:  "example.com/testapp",
 				Dialect:     dialect,
 				UserQueries: userQueries,
@@ -189,7 +192,7 @@ func TestCompileWorkflow_EndToEnd(t *testing.T) {
 			}
 
 			// Generate shared types
-			typesCode, err := GenerateSharedTypes(cfg)
+			typesCode, err := queryrunner.GenerateSharedTypes(cfg)
 			if err != nil {
 				t.Fatalf("GenerateSharedTypes failed: %v", err)
 			}
@@ -216,7 +219,7 @@ func TestCompileWorkflow_EndToEnd(t *testing.T) {
 			}
 
 			// Generate unified runner
-			runnerCode, err := GenerateUnifiedRunner(cfg)
+			runnerCode, err := queryrunner.GenerateUnifiedRunner(cfg)
 			if err != nil {
 				t.Fatalf("GenerateUnifiedRunner failed: %v", err)
 			}
@@ -476,7 +479,7 @@ func TestDiscoverPackages_Integration(t *testing.T) {
 	}
 
 	// Discover packages (in standard case, goModRoot and shipqRoot are the same)
-	pkgs, err := DiscoverPackages(tmpDir, tmpDir, "querydefs", "example.com/testapp")
+	pkgs, err := discovery.DiscoverPackages(tmpDir, tmpDir, "querydefs", "example.com/testapp")
 	if err != nil {
 		t.Fatalf("DiscoverPackages failed: %v", err)
 	}
@@ -548,14 +551,14 @@ func TestGenerateRunner_AllQueryTypes(t *testing.T) {
 		},
 	}
 
-	cfg := UnifiedRunnerConfig{
+			cfg := queryrunner.UnifiedRunnerConfig{
 		ModulePath:  "example.com/testapp",
 		Dialect:     dburl.DialectPostgres,
 		UserQueries: queries,
 		Schema:      nil,
 	}
 
-	runnerCode, err := GenerateUnifiedRunner(cfg)
+			runnerCode, err := queryrunner.GenerateUnifiedRunner(cfg)
 	if err != nil {
 		t.Fatalf("GenerateUnifiedRunner failed: %v", err)
 	}
@@ -595,13 +598,13 @@ func TestGeneratedCodeCompiles(t *testing.T) {
 	}
 
 	// Generate shared types
-	typesCfg := UnifiedRunnerConfig{
+	typesCfg := queryrunner.UnifiedRunnerConfig{
 		ModulePath: "testproject",
 		Dialect:    dburl.DialectPostgres,
 		Schema:     plan,
 	}
 
-	typesCode, err := GenerateSharedTypes(typesCfg)
+	typesCode, err := queryrunner.GenerateSharedTypes(typesCfg)
 	if err != nil {
 		t.Fatalf("GenerateSharedTypes failed: %v", err)
 	}
@@ -640,7 +643,7 @@ func TestGeneratedCodeCompiles(t *testing.T) {
 	}
 
 	// Generate runner
-	runnerCode, err := GenerateUnifiedRunner(typesCfg)
+	runnerCode, err := queryrunner.GenerateUnifiedRunner(typesCfg)
 	if err != nil {
 		t.Fatalf("GenerateUnifiedRunner failed: %v", err)
 	}
@@ -668,7 +671,7 @@ func TestGeneratedCodeCompiles(t *testing.T) {
 
 	// Generate handlers
 	table := plan.Schema.Tables["accounts"]
-	handlerCfg := HandlerGenConfig{
+	handlerCfg := handlergen.HandlerGenConfig{
 		ModulePath: "testproject",
 		TableName:  "accounts",
 		Table:      table,
@@ -676,12 +679,12 @@ func TestGeneratedCodeCompiles(t *testing.T) {
 	}
 
 	// Generate each handler and verify it's valid Go
-	handlers := map[string]func(HandlerGenConfig, []RelationshipInfo) ([]byte, error){
-		"create":      GenerateCreateHandler,
-		"get_one":     GenerateGetOneHandler,
-		"list":        GenerateListHandler,
-		"update":      GenerateUpdateHandler,
-		"soft_delete": GenerateSoftDeleteHandler,
+	handlers := map[string]func(handlergen.HandlerGenConfig, []handlergen.RelationshipInfo) ([]byte, error){
+		"create":      handlergen.GenerateCreateHandler,
+		"get_one":     handlergen.GenerateGetOneHandler,
+		"list":        handlergen.GenerateListHandler,
+		"update":      handlergen.GenerateUpdateHandler,
+		"soft_delete": handlergen.GenerateSoftDeleteHandler,
 	}
 
 	for name, generator := range handlers {
@@ -697,7 +700,7 @@ func TestGeneratedCodeCompiles(t *testing.T) {
 	}
 
 	// Verify handler code uses contract-based names
-	createCode, _ := GenerateCreateHandler(handlerCfg, nil)
+	createCode, _ := handlergen.GenerateCreateHandler(handlerCfg, nil)
 	createStr := string(createCode)
 
 	// Check that handlers call the right query methods
@@ -731,15 +734,15 @@ func TestGeneratedCodeCompiles(t *testing.T) {
 		var code []byte
 		switch handlerName {
 		case "create":
-			code, _ = GenerateCreateHandler(handlerCfg, nil)
+			code, _ = handlergen.GenerateCreateHandler(handlerCfg, nil)
 		case "get_one":
-			code, _ = GenerateGetOneHandler(handlerCfg, nil)
+			code, _ = handlergen.GenerateGetOneHandler(handlerCfg, nil)
 		case "list":
-			code, _ = GenerateListHandler(handlerCfg, nil)
+			code, _ = handlergen.GenerateListHandler(handlerCfg, nil)
 		case "update":
-			code, _ = GenerateUpdateHandler(handlerCfg, nil)
+			code, _ = handlergen.GenerateUpdateHandler(handlerCfg, nil)
 		case "soft_delete":
-			code, _ = GenerateSoftDeleteHandler(handlerCfg, nil)
+			code, _ = handlergen.GenerateSoftDeleteHandler(handlerCfg, nil)
 		}
 
 		codeStr := string(code)
@@ -815,13 +818,13 @@ func TestGeneratedCodeCompiles_WithRelationships(t *testing.T) {
 	}
 
 	// Generate shared types
-	typesCfg := UnifiedRunnerConfig{
+	typesCfg := queryrunner.UnifiedRunnerConfig{
 		ModulePath: "testproject",
 		Dialect:    dburl.DialectPostgres,
 		Schema:     plan,
 	}
 
-	typesCode, err := GenerateSharedTypes(typesCfg)
+	typesCode, err := queryrunner.GenerateSharedTypes(typesCfg)
 	if err != nil {
 		t.Fatalf("GenerateSharedTypes failed: %v", err)
 	}
@@ -870,7 +873,7 @@ func TestGeneratedCodeCompiles_WithRelationships(t *testing.T) {
 	}
 
 	// Generate runner
-	runnerCode, err := GenerateUnifiedRunner(typesCfg)
+	runnerCode, err := queryrunner.GenerateUnifiedRunner(typesCfg)
 	if err != nil {
 		t.Fatalf("GenerateUnifiedRunner failed: %v", err)
 	}
@@ -904,7 +907,7 @@ func TestGeneratedCodeCompiles_WithRelationships(t *testing.T) {
 	}
 
 	// Generate handlers for posts table (which has the relationship)
-	postsHandlerCfg := HandlerGenConfig{
+	postsHandlerCfg := handlergen.HandlerGenConfig{
 		ModulePath: "testproject",
 		TableName:  "posts",
 		Table:      plan.Schema.Tables["posts"],
@@ -912,7 +915,7 @@ func TestGeneratedCodeCompiles_WithRelationships(t *testing.T) {
 	}
 
 	// Analyze relationships for posts
-	relations := AnalyzeRelationships(postsHandlerCfg.Table, postsHandlerCfg.Schema)
+	relations := handlergen.AnalyzeRelationships(postsHandlerCfg.Table, postsHandlerCfg.Schema)
 
 	// Verify relationship was detected
 	if len(relations) != 1 {
@@ -934,7 +937,7 @@ func TestGeneratedCodeCompiles_WithRelationships(t *testing.T) {
 	}
 
 	// Generate get_one handler which should include embedded relation
-	getOneCode, err := GenerateGetOneHandler(postsHandlerCfg, relations)
+	getOneCode, err := handlergen.GenerateGetOneHandler(postsHandlerCfg, relations)
 	if err != nil {
 		t.Fatalf("GenerateGetOneHandler failed: %v", err)
 	}
@@ -971,12 +974,12 @@ func TestGeneratedCodeCompiles_WithRelationships(t *testing.T) {
 	}
 
 	// Generate all handlers and verify they compile
-	handlers := map[string]func(HandlerGenConfig, []RelationshipInfo) ([]byte, error){
-		"create":      GenerateCreateHandler,
-		"get_one":     GenerateGetOneHandler,
-		"list":        GenerateListHandler,
-		"update":      GenerateUpdateHandler,
-		"soft_delete": GenerateSoftDeleteHandler,
+	handlers := map[string]func(handlergen.HandlerGenConfig, []handlergen.RelationshipInfo) ([]byte, error){
+		"create":      handlergen.GenerateCreateHandler,
+		"get_one":     handlergen.GenerateGetOneHandler,
+		"list":        handlergen.GenerateListHandler,
+		"update":      handlergen.GenerateUpdateHandler,
+		"soft_delete": handlergen.GenerateSoftDeleteHandler,
 	}
 
 	// Test handlers for posts (with relations)
@@ -992,13 +995,13 @@ func TestGeneratedCodeCompiles_WithRelationships(t *testing.T) {
 	}
 
 	// Test handlers for users (no relations)
-	usersHandlerCfg := HandlerGenConfig{
+	usersHandlerCfg := handlergen.HandlerGenConfig{
 		ModulePath: "testproject",
 		TableName:  "users",
 		Table:      plan.Schema.Tables["users"],
 		Schema:     plan.Schema.Tables,
 	}
-	usersRelations := AnalyzeRelationships(usersHandlerCfg.Table, usersHandlerCfg.Schema)
+	usersRelations := handlergen.AnalyzeRelationships(usersHandlerCfg.Table, usersHandlerCfg.Schema)
 
 	for name, generator := range handlers {
 		code, err := generator(usersHandlerCfg, usersRelations)

@@ -13,6 +13,9 @@ import (
 
 	"github.com/shipq/shipq/cli"
 	"github.com/shipq/shipq/codegen"
+	"github.com/shipq/shipq/codegen/dbpkg"
+	codegenMigrate "github.com/shipq/shipq/codegen/migrate"
+	"github.com/shipq/shipq/codegen/queryrunner"
 	"github.com/shipq/shipq/db/portsql/migrate"
 	"github.com/shipq/shipq/dburl"
 	"github.com/shipq/shipq/inifile"
@@ -52,14 +55,14 @@ func migrateUpCmd() {
 
 	// Step 3: Generate/update shipq/db package (in shipq root)
 	cli.Info("Generating shipq/db package...")
-	if err := codegen.EnsureDBPackage(roots.ShipqRoot); err != nil {
+	if err := dbpkg.EnsureDBPackage(roots.ShipqRoot); err != nil {
 		cli.FatalErr("failed to generate db package", err)
 	}
 	cli.Success("Generated shipq/db/db.go")
 
 	// Step 4: Discover and load migrations (from shipq root)
 	migrationsPath := getMigrationsPath(ini, roots.ShipqRoot)
-	migrations, err := codegen.DiscoverMigrations(migrationsPath)
+	migrations, err := codegenMigrate.DiscoverMigrations(migrationsPath)
 	if err != nil {
 		cli.FatalErr("failed to discover migrations", err)
 	}
@@ -75,7 +78,7 @@ func migrateUpCmd() {
 	// Step 5: Build migration plan by executing migration functions
 	// Use GoModRoot for the replace directive in temp go.mod
 	cli.Info("Building migration plan...")
-	planJSON, err := codegen.BuildMigrationPlan(roots.GoModRoot, modulePath, migrationsPath, migrations)
+	planJSON, err := codegenMigrate.BuildMigrationPlan(roots.GoModRoot, modulePath, migrationsPath, migrations)
 	if err != nil {
 		cli.FatalErr("failed to build migration plan", err)
 	}
@@ -93,7 +96,7 @@ func migrateUpCmd() {
 	cli.Success("Generated shipq/db/migrate/schema.json")
 
 	// Step 7: Generate runner.go
-	runnerContent, err := codegen.GenerateMigrateRunner(modulePath)
+	runnerContent, err := codegenMigrate.GenerateMigrateRunner(modulePath)
 	if err != nil {
 		cli.FatalErr("failed to generate runner", err)
 	}
@@ -168,7 +171,7 @@ func generateQueryRunner(shipqRoot, modulePath string, plan *migrate.MigrationPl
 	}
 
 	// Build config for the runner generator
-	runnerCfg := codegen.UnifiedRunnerConfig{
+	runnerCfg := queryrunner.UnifiedRunnerConfig{
 		ModulePath:  modulePath,
 		Dialect:     dialect,
 		UserQueries: nil, // No user queries from migrate up - use db compile for that
@@ -176,7 +179,7 @@ func generateQueryRunner(shipqRoot, modulePath string, plan *migrate.MigrationPl
 	}
 
 	// Generate and write types.go
-	typesCode, err := codegen.GenerateSharedTypes(runnerCfg)
+	typesCode, err := queryrunner.GenerateSharedTypes(runnerCfg)
 	if err != nil {
 		return fmt.Errorf("failed to generate types.go: %w", err)
 	}
@@ -187,7 +190,7 @@ func generateQueryRunner(shipqRoot, modulePath string, plan *migrate.MigrationPl
 	}
 
 	// Generate and write runner.go
-	runnerCode, err := codegen.GenerateUnifiedRunner(runnerCfg)
+	runnerCode, err := queryrunner.GenerateUnifiedRunner(runnerCfg)
 	if err != nil {
 		return fmt.Errorf("failed to generate runner.go: %w", err)
 	}

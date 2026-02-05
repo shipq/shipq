@@ -5,6 +5,8 @@ import (
 	"os"
 
 	"github.com/shipq/shipq/codegen"
+	"github.com/shipq/shipq/codegen/discovery"
+	"github.com/shipq/shipq/codegen/handlercompile"
 )
 
 // Run executes the full handler compile pipeline:
@@ -25,7 +27,7 @@ func Run(shipqRoot, goModRoot string) error {
 	}
 
 	// Discover API packages (in shipq root, but import paths relative to go.mod root)
-	apiPkgs, err := codegen.DiscoverAPIPackages(goModRoot, shipqRoot, modulePath)
+	apiPkgs, err := discovery.DiscoverAPIPackages(goModRoot, shipqRoot, modulePath)
 	if err != nil {
 		return fmt.Errorf("failed to discover API packages: %w", err)
 	}
@@ -37,12 +39,12 @@ func Run(shipqRoot, goModRoot string) error {
 	}
 
 	// Build and run the compile program (uses goModRoot for replace directive)
-	cfg := codegen.HandlerCompileProgramConfig{
+	cfg := handlercompile.HandlerCompileProgramConfig{
 		ModulePath: modulePath,
 		APIPkgs:    apiPkgs,
 	}
 
-	handlers, err := codegen.BuildAndRunHandlerCompileProgram(goModRoot, cfg)
+	handlers, err := handlercompile.BuildAndRunHandlerCompileProgram(goModRoot, cfg)
 	if err != nil {
 		return fmt.Errorf("failed to compile handlers: %w", err)
 	}

@@ -1,17 +1,17 @@
-package codegen_test
+package migrate_test
 
 import (
 	"strings"
 	"testing"
 
-	"github.com/shipq/shipq/codegen"
+	"github.com/shipq/shipq/codegen/migrate"
 )
 
 func TestGenerateMigrateRunner(t *testing.T) {
 	t.Run("generates valid go code", func(t *testing.T) {
 		modulePath := "example.com/myapp"
 
-		content, err := codegen.GenerateMigrateRunner(modulePath)
+		content, err := migrate.GenerateMigrateRunner(modulePath)
 		if err != nil {
 			t.Fatalf("GenerateMigrateRunner() error = %v", err)
 		}
@@ -71,7 +71,7 @@ func TestGenerateMigrateRunner(t *testing.T) {
 	t.Run("includes correct module path import", func(t *testing.T) {
 		modulePath := "github.com/user/myproject"
 
-		content, err := codegen.GenerateMigrateRunner(modulePath)
+		content, err := migrate.GenerateMigrateRunner(modulePath)
 		if err != nil {
 			t.Fatalf("GenerateMigrateRunner() error = %v", err)
 		}
@@ -110,7 +110,7 @@ func TestGenerateMigrateRunner(t *testing.T) {
 
 		for _, tc := range testCases {
 			t.Run(tc.name, func(t *testing.T) {
-				content, err := codegen.GenerateMigrateRunner(tc.modulePath)
+				content, err := migrate.GenerateMigrateRunner(tc.modulePath)
 				if err != nil {
 					t.Fatalf("GenerateMigrateRunner() error = %v", err)
 				}
@@ -125,7 +125,7 @@ func TestGenerateMigrateRunner(t *testing.T) {
 	})
 
 	t.Run("uses db.Dialect constant", func(t *testing.T) {
-		content, err := codegen.GenerateMigrateRunner("example.com/myapp")
+		content, err := migrate.GenerateMigrateRunner("example.com/myapp")
 		if err != nil {
 			t.Fatalf("GenerateMigrateRunner() error = %v", err)
 		}
@@ -139,7 +139,7 @@ func TestGenerateMigrateRunner(t *testing.T) {
 	})
 
 	t.Run("calls db.DB() in Run function", func(t *testing.T) {
-		content, err := codegen.GenerateMigrateRunner("example.com/myapp")
+		content, err := migrate.GenerateMigrateRunner("example.com/myapp")
 		if err != nil {
 			t.Fatalf("GenerateMigrateRunner() error = %v", err)
 		}
@@ -152,7 +152,7 @@ func TestGenerateMigrateRunner(t *testing.T) {
 	})
 
 	t.Run("calls migrate.PlanFromJSON", func(t *testing.T) {
-		content, err := codegen.GenerateMigrateRunner("example.com/myapp")
+		content, err := migrate.GenerateMigrateRunner("example.com/myapp")
 		if err != nil {
 			t.Fatalf("GenerateMigrateRunner() error = %v", err)
 		}
@@ -165,7 +165,7 @@ func TestGenerateMigrateRunner(t *testing.T) {
 	})
 
 	t.Run("calls migrate.Run in RunWithDB", func(t *testing.T) {
-		content, err := codegen.GenerateMigrateRunner("example.com/myapp")
+		content, err := migrate.GenerateMigrateRunner("example.com/myapp")
 		if err != nil {
 			t.Fatalf("GenerateMigrateRunner() error = %v", err)
 		}

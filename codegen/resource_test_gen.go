@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"go/format"
 	"strings"
+
+	"github.com/shipq/shipq/dbstrings"
 )
 
 // ResourceTestGenConfig holds configuration for generating resource tests.
@@ -62,8 +64,8 @@ func generateResourceTestImports(buf *bytes.Buffer, cfg ResourceTestGenConfig, r
 
 // generateCRUDTestFunction generates the main CRUD test function.
 func generateCRUDTestFunction(buf *bytes.Buffer, cfg ResourceTestGenConfig, resource ResourceInfo) {
-	resourceName := toPascalCase(resource.PackageName)
-	singularName := toSingular(resourceName)
+	resourceName := dbstrings.ToPascalCase(resource.PackageName)
+	singularName := dbstrings.ToSingular(resourceName)
 
 	fmt.Fprintf(buf, "func TestResource_%s_CRUD(t *testing.T) {\n", singularName)
 

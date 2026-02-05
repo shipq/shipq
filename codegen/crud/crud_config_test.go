@@ -1,4 +1,4 @@
-package codegen
+package crud
 
 import (
 	"os"
@@ -209,9 +209,9 @@ func TestToPlural(t *testing.T) {
 	}
 
 	for _, tt := range tests {
-		got := toPlural(tt.singular)
+		got := ToPlural(tt.singular)
 		if got != tt.expected {
-			t.Errorf("toPlural(%q) = %q, want %q", tt.singular, got, tt.expected)
+			t.Errorf("ToPlural(%q) = %q, want %q", tt.singular, got, tt.expected)
 		}
 	}
 }

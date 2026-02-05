@@ -6,6 +6,8 @@ import (
 	"path/filepath"
 
 	"github.com/shipq/shipq/codegen"
+	"github.com/shipq/shipq/codegen/crud"
+	"github.com/shipq/shipq/codegen/handlergen"
 	dbcodegen "github.com/shipq/shipq/db/portsql/codegen"
 	"github.com/shipq/shipq/db/portsql/migrate"
 	"github.com/shipq/shipq/project"
@@ -45,12 +47,12 @@ func createBaseHandlers() error {
 	}
 
 	// Load CRUD config for scope settings (from shipq root)
-	tableNames := codegen.SortedTableNames(plan.Schema.Tables)
+	tableNames := handlergen.SortedTableNames(plan.Schema.Tables)
 
-	crudCfg, err := codegen.LoadCRUDConfigWithTables(roots.ShipqRoot, tableNames, plan.Schema.Tables)
+	crudCfg, err := crud.LoadCRUDConfigWithTables(roots.ShipqRoot, tableNames, plan.Schema.Tables)
 	if err != nil {
 		// If config doesn't exist, use defaults
-		crudCfg = &codegen.CRUDConfig{
+		crudCfg = &crud.CRUDConfig{
 			TableOpts: make(map[string]dbcodegen.CRUDOptions),
 		}
 	}
@@ -84,7 +86,7 @@ func createBaseHandlers() error {
 		}
 
 		// Generate handler files
-		cfg := codegen.HandlerGenConfig{
+		cfg := handlergen.HandlerGenConfig{
 			ModulePath:  modulePath,
 			TableName:   tableName,
 			Table:       table,
@@ -92,7 +94,7 @@ func createBaseHandlers() error {
 			ScopeColumn: scopeColumn,
 		}
 
-		files, err := codegen.GenerateHandlerFiles(cfg)
+		files, err := handlergen.GenerateHandlerFiles(cfg)
 		if err != nil {
 			return fmt.Errorf("failed to generate handlers for %s: %w", tableName, err)
 		}

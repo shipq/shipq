@@ -1,4 +1,4 @@
-package codegen
+package dbpkg
 
 import (
 	"bytes"
@@ -7,34 +7,36 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/shipq/shipq/db/portsql/codegen"
+	"github.com/shipq/shipq/codegen"
+	"github.com/shipq/shipq/codegen/crud"
+	portsqlcodegen "github.com/shipq/shipq/db/portsql/codegen"
 	"github.com/shipq/shipq/dburl"
 	"github.com/shipq/shipq/inifile"
 )
 
 // DBPackageConfig holds configuration for generating the db package.
 type DBPackageConfig struct {
-	GoModRoot   string      // Directory containing go.mod
-	ShipqRoot   string      // Directory containing shipq.ini
-	ModulePath  string      // Module path from go.mod
-	DatabaseURL string      // From shipq.ini [db] database_url
-	Dialect     string      // postgres, mysql, or sqlite
-	CRUDConfig  *CRUDConfig // Scope and order configuration for CRUD generation
+	GoModRoot   string           // Directory containing go.mod
+	ShipqRoot   string           // Directory containing shipq.ini
+	ModulePath  string           // Module path from go.mod
+	DatabaseURL string           // From shipq.ini [db] database_url
+	Dialect     string           // postgres, mysql, or sqlite
+	CRUDConfig  *crud.CRUDConfig // Scope and order configuration for CRUD generation
 }
 
 // GetTableOpts returns the TableOpts map from CRUDConfig, or an empty map if not configured.
-func (c *DBPackageConfig) GetTableOpts() map[string]codegen.CRUDOptions {
+func (c *DBPackageConfig) GetTableOpts() map[string]portsqlcodegen.CRUDOptions {
 	if c.CRUDConfig != nil {
 		return c.CRUDConfig.TableOpts
 	}
-	return make(map[string]codegen.CRUDOptions)
+	return make(map[string]portsqlcodegen.CRUDOptions)
 }
 
 // LoadDBPackageConfig reads shipq.ini and builds the config.
 // goModRoot is the directory containing go.mod, shipqRoot is the directory containing shipq.ini.
 // In a standard setup these are the same; in a monorepo, shipqRoot may be a subdirectory.
 func LoadDBPackageConfig(goModRoot, shipqRoot string) (*DBPackageConfig, error) {
-	modulePath, err := GetModulePath(goModRoot)
+	modulePath, err := codegen.GetModulePath(goModRoot)
 	if err != nil {
 		return nil, err
 	}
@@ -57,7 +59,7 @@ func LoadDBPackageConfig(goModRoot, shipqRoot string) (*DBPackageConfig, error) 
 
 	// Load CRUD config (scope, order) - this doesn't require tables yet
 	// Tables will be loaded later and ApplyScopeFiltering will be called
-	crudCfg, _ := LoadCRUDConfig(ini, nil) // Pass nil tables for now
+	crudCfg, _ := crud.LoadCRUDConfig(ini, nil) // Pass nil tables for now
 
 	return &DBPackageConfig{
 		GoModRoot:   goModRoot,
@@ -266,7 +268,7 @@ func EnsureDBPackage(shipqRoot string) error {
 
 	// Create shipq/db directory (in shipq root)
 	dbPkgPath := filepath.Join(shipqRoot, "shipq", "db")
-	if err := EnsureDir(dbPkgPath); err != nil {
+	if err := codegen.EnsureDir(dbPkgPath); err != nil {
 		return fmt.Errorf("failed to create shipq/db directory: %w", err)
 	}
 
@@ -277,7 +279,7 @@ func EnsureDBPackage(shipqRoot string) error {
 	}
 
 	dbFilePath := filepath.Join(dbPkgPath, "db.go")
-	if _, err := WriteFileIfChanged(dbFilePath, dbContent); err != nil {
+	if _, err := codegen.WriteFileIfChanged(dbFilePath, dbContent); err != nil {
 		return fmt.Errorf("failed to write db.go: %w", err)
 	}
 

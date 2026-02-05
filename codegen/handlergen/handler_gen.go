@@ -1,4 +1,4 @@
-package codegen
+package handlergen
 
 import (
 	"bytes"
@@ -7,6 +7,8 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/shipq/shipq/codegen"
+	"github.com/shipq/shipq/codegen/crud"
 	"github.com/shipq/shipq/db/portsql/ddl"
 )
 
@@ -111,7 +113,7 @@ func getJunctionReferences(junction ddl.Table, tableName string, schema map[stri
 	}
 
 	return &RelationshipInfo{
-		FieldName:    toPlural(toEmbedFieldName(otherRef)),
+		FieldName:    crud.ToPlural(toEmbedFieldName(otherRef)),
 		TargetTable:  otherTable.Name,
 		IsMany:       true,
 		IsNullable:   false, // Many-to-many is always an array
@@ -229,7 +231,7 @@ func GenerateHandlerFiles(cfg HandlerGenConfig) (map[string][]byte, error) {
 // GenerateCreateHandler generates api/<table>/create.go
 func GenerateCreateHandler(cfg HandlerGenConfig, _ []RelationshipInfo) ([]byte, error) {
 	var buf bytes.Buffer
-	res := CRUD.ResourceName(cfg.TableName)
+	res := codegen.CRUD.ResourceName(cfg.TableName)
 	pkgName := cfg.TableName
 
 	buf.WriteString(generatedFileHeader)
@@ -281,11 +283,11 @@ func GenerateCreateHandler(cfg HandlerGenConfig, _ []RelationshipInfo) ([]byte, 
 	// Handler function
 	buf.WriteString("// Create" + res + " handles POST /" + cfg.TableName + "\n")
 	buf.WriteString("func Create" + res + "(ctx context.Context, req *Create" + res + "Request) (*Create" + res + "Response, error) {\n")
-	buf.WriteString(fmt.Sprintf("\trunner := queries.%s(ctx)\n\n", RunnerFromContextFunc))
+	buf.WriteString(fmt.Sprintf("\trunner := queries.%s(ctx)\n\n", codegen.RunnerFromContextFunc))
 
 	// Build params - use contract for method and type names
-	createMethod := CRUD.CreateMethodName(cfg.TableName)
-	createParamsType := CRUD.CreateParamsType(cfg.TableName)
+	createMethod := codegen.CRUD.CreateMethodName(cfg.TableName)
+	createParamsType := codegen.CRUD.CreateParamsType(cfg.TableName)
 	buf.WriteString(fmt.Sprintf("\tresult, err := runner.%s(ctx, queries.%s{\n", createMethod, createParamsType))
 	for _, col := range cfg.Table.Columns {
 		if isAutoColumn(col.Name) {
@@ -336,7 +338,7 @@ func GenerateCreateHandler(cfg HandlerGenConfig, _ []RelationshipInfo) ([]byte, 
 // GenerateGetOneHandler generates api/<table>/get_one.go
 func GenerateGetOneHandler(cfg HandlerGenConfig, relations []RelationshipInfo) ([]byte, error) {
 	var buf bytes.Buffer
-	res := CRUD.ResourceName(cfg.TableName)
+	res := codegen.CRUD.ResourceName(cfg.TableName)
 	pkgName := cfg.TableName
 
 	buf.WriteString(generatedFileHeader)
@@ -421,9 +423,9 @@ func GenerateGetOneHandler(cfg HandlerGenConfig, relations []RelationshipInfo) (
 	// Handler function
 	buf.WriteString("// Get" + res + " handles GET /" + cfg.TableName + "/:id\n")
 	buf.WriteString("func Get" + res + "(ctx context.Context, req *Get" + res + "Request) (*Get" + res + "Response, error) {\n")
-	buf.WriteString(fmt.Sprintf("\trunner := queries.%s(ctx)\n\n", RunnerFromContextFunc))
+	buf.WriteString(fmt.Sprintf("\trunner := queries.%s(ctx)\n\n", codegen.RunnerFromContextFunc))
 
-	getMethod := CRUD.GetMethodName(cfg.TableName)
+	getMethod := codegen.CRUD.GetMethodName(cfg.TableName)
 	if len(relations) > 0 {
 		buf.WriteString("\tresult, err := runner." + res + "ByPublicIDWithRelations(ctx, req.ID)\n")
 	} else {
@@ -525,16 +527,16 @@ func GenerateGetOneHandler(cfg HandlerGenConfig, relations []RelationshipInfo) (
 // GenerateListHandler generates api/<table>/list.go
 func GenerateListHandler(cfg HandlerGenConfig, _ []RelationshipInfo) ([]byte, error) {
 	var buf bytes.Buffer
-	res := CRUD.ResourceName(cfg.TableName)
-	plural := CRUD.PluralResourceName(cfg.TableName)
+	res := codegen.CRUD.ResourceName(cfg.TableName)
+	plural := codegen.CRUD.PluralResourceName(cfg.TableName)
 	pkgName := cfg.TableName
 
 	// Contract-based type/method names
-	listMethod := CRUD.ListMethodName(cfg.TableName)
-	listParamsType := CRUD.ListParamsType(cfg.TableName)
-	listCursorType := CRUD.ListCursorType(cfg.TableName)
-	decodeCursorFunc := CRUD.DecodeCursorFunc(cfg.TableName)
-	encodeCursorFunc := CRUD.EncodeCursorFunc(cfg.TableName)
+	listMethod := codegen.CRUD.ListMethodName(cfg.TableName)
+	listParamsType := codegen.CRUD.ListParamsType(cfg.TableName)
+	listCursorType := codegen.CRUD.ListCursorType(cfg.TableName)
+	decodeCursorFunc := codegen.CRUD.DecodeCursorFunc(cfg.TableName)
+	encodeCursorFunc := codegen.CRUD.EncodeCursorFunc(cfg.TableName)
 
 	buf.WriteString(generatedFileHeader)
 	buf.WriteString("package " + pkgName + "\n\n")
@@ -593,7 +595,7 @@ func GenerateListHandler(cfg HandlerGenConfig, _ []RelationshipInfo) ([]byte, er
 	// Handler function
 	buf.WriteString("// List" + plural + " handles GET /" + cfg.TableName + "\n")
 	buf.WriteString("func List" + plural + "(ctx context.Context, req *List" + plural + "Request) (*List" + plural + "Response, error) {\n")
-	buf.WriteString(fmt.Sprintf("\trunner := queries.%s(ctx)\n\n", RunnerFromContextFunc))
+	buf.WriteString(fmt.Sprintf("\trunner := queries.%s(ctx)\n\n", codegen.RunnerFromContextFunc))
 
 	// Validate and set defaults
 	buf.WriteString("\t// Validate and set defaults\n")
@@ -665,12 +667,12 @@ func GenerateListHandler(cfg HandlerGenConfig, _ []RelationshipInfo) ([]byte, er
 // GenerateUpdateHandler generates api/<table>/update.go
 func GenerateUpdateHandler(cfg HandlerGenConfig, _ []RelationshipInfo) ([]byte, error) {
 	var buf bytes.Buffer
-	res := CRUD.ResourceName(cfg.TableName)
+	res := codegen.CRUD.ResourceName(cfg.TableName)
 	pkgName := cfg.TableName
 
 	// Contract-based type/method names
-	updateMethod := CRUD.UpdateMethodName(cfg.TableName)
-	updateParamsType := CRUD.UpdateParamsType(cfg.TableName)
+	updateMethod := codegen.CRUD.UpdateMethodName(cfg.TableName)
+	updateParamsType := codegen.CRUD.UpdateParamsType(cfg.TableName)
 
 	buf.WriteString(generatedFileHeader)
 	buf.WriteString("package " + pkgName + "\n\n")
@@ -719,7 +721,7 @@ func GenerateUpdateHandler(cfg HandlerGenConfig, _ []RelationshipInfo) ([]byte, 
 	// Handler function
 	buf.WriteString("// Update" + res + " handles PATCH /" + cfg.TableName + "/:id\n")
 	buf.WriteString("func Update" + res + "(ctx context.Context, req *Update" + res + "Request) (*Update" + res + "Response, error) {\n")
-	buf.WriteString(fmt.Sprintf("\trunner := queries.%s(ctx)\n\n", RunnerFromContextFunc))
+	buf.WriteString(fmt.Sprintf("\trunner := queries.%s(ctx)\n\n", codegen.RunnerFromContextFunc))
 
 	// Build params
 	buf.WriteString(fmt.Sprintf("\tresult, err := runner.%s(ctx, req.ID, queries.%s{\n", updateMethod, updateParamsType))
@@ -764,11 +766,11 @@ func GenerateUpdateHandler(cfg HandlerGenConfig, _ []RelationshipInfo) ([]byte, 
 // GenerateSoftDeleteHandler generates api/<table>/soft_delete.go
 func GenerateSoftDeleteHandler(cfg HandlerGenConfig, _ []RelationshipInfo) ([]byte, error) {
 	var buf bytes.Buffer
-	res := CRUD.ResourceName(cfg.TableName)
+	res := codegen.CRUD.ResourceName(cfg.TableName)
 	pkgName := cfg.TableName
 
 	// Contract-based method name
-	softDeleteMethod := CRUD.SoftDeleteMethodName(cfg.TableName)
+	softDeleteMethod := codegen.CRUD.SoftDeleteMethodName(cfg.TableName)
 
 	buf.WriteString(generatedFileHeader)
 	buf.WriteString("package " + pkgName + "\n\n")
@@ -795,7 +797,7 @@ func GenerateSoftDeleteHandler(cfg HandlerGenConfig, _ []RelationshipInfo) ([]by
 	// Handler function
 	buf.WriteString("// SoftDelete" + res + " handles DELETE /" + cfg.TableName + "/:id\n")
 	buf.WriteString("func SoftDelete" + res + "(ctx context.Context, req *SoftDelete" + res + "Request) (*SoftDelete" + res + "Response, error) {\n")
-	buf.WriteString(fmt.Sprintf("\trunner := queries.%s(ctx)\n\n", RunnerFromContextFunc))
+	buf.WriteString(fmt.Sprintf("\trunner := queries.%s(ctx)\n\n", codegen.RunnerFromContextFunc))
 
 	buf.WriteString(fmt.Sprintf("\terr := runner.%s(ctx, req.ID)\n", softDeleteMethod))
 	buf.WriteString("\tif err != nil {\n")
@@ -813,8 +815,8 @@ func GenerateSoftDeleteHandler(cfg HandlerGenConfig, _ []RelationshipInfo) ([]by
 // GenerateRegister generates api/<table>/register.go
 func GenerateRegister(cfg HandlerGenConfig, _ []RelationshipInfo) ([]byte, error) {
 	var buf bytes.Buffer
-	res := CRUD.ResourceName(cfg.TableName)
-	plural := CRUD.PluralResourceName(cfg.TableName)
+	res := codegen.CRUD.ResourceName(cfg.TableName)
+	plural := codegen.CRUD.PluralResourceName(cfg.TableName)
 	pkgName := cfg.TableName
 
 	buf.WriteString(generatedFileHeader)

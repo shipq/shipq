@@ -74,6 +74,41 @@ func GetModuleInfo(goModRoot, shipqRoot string) (*ModuleInfo, error) {
 	}, nil
 }
 
+// SerializedHandlerInfo is a JSON-serializable version of handler.HandlerInfo.
+// This type is used across codegen packages for handler registry information.
+type SerializedHandlerInfo struct {
+	Method      string                `json:"method"`
+	Path        string                `json:"path"`
+	PathParams  []SerializedPathParam `json:"path_params"`
+	FuncName    string                `json:"func_name"`
+	PackagePath string                `json:"package_path"`
+	Request     *SerializedStructInfo `json:"request,omitempty"`
+	Response    *SerializedStructInfo `json:"response,omitempty"`
+}
+
+// SerializedPathParam is a JSON-serializable version of handler.PathParam.
+type SerializedPathParam struct {
+	Name     string `json:"name"`
+	Position int    `json:"position"`
+}
+
+// SerializedStructInfo is a JSON-serializable version of handler.StructInfo.
+type SerializedStructInfo struct {
+	Name    string                `json:"name"`
+	Package string                `json:"package"`
+	Fields  []SerializedFieldInfo `json:"fields"`
+}
+
+// SerializedFieldInfo is a JSON-serializable version of handler.FieldInfo.
+type SerializedFieldInfo struct {
+	Name     string            `json:"name"`
+	Type     string            `json:"type"`
+	JSONName string            `json:"json_name"`
+	JSONOmit bool              `json:"json_omit"`
+	Required bool              `json:"required"`
+	Tags     map[string]string `json:"tags"`
+}
+
 // EnsureDir creates a directory and all parent directories if they don't exist.
 func EnsureDir(path string) error {
 	return os.MkdirAll(path, 0755)

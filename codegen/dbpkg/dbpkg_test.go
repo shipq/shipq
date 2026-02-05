@@ -1,4 +1,4 @@
-package codegen_test
+package dbpkg_test
 
 import (
 	"os"
@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/shipq/shipq/codegen"
+	"github.com/shipq/shipq/codegen/dbpkg"
 )
 
 func TestLoadDBPackageConfig(t *testing.T) {
@@ -28,7 +28,7 @@ database_url = postgres://user@localhost:5432/mydb
 		}
 
 		// In standard case, goModRoot and shipqRoot are the same
-		cfg, err := codegen.LoadDBPackageConfig(tmpDir, tmpDir)
+		cfg, err := dbpkg.LoadDBPackageConfig(tmpDir, tmpDir)
 		if err != nil {
 			t.Fatalf("LoadDBPackageConfig() error = %v", err)
 		}
@@ -65,7 +65,7 @@ database_url = mysql://user@localhost:3306/mydb
 			t.Fatalf("failed to write shipq.ini: %v", err)
 		}
 
-		cfg, err := codegen.LoadDBPackageConfig(tmpDir, tmpDir)
+		cfg, err := dbpkg.LoadDBPackageConfig(tmpDir, tmpDir)
 		if err != nil {
 			t.Fatalf("LoadDBPackageConfig() error = %v", err)
 		}
@@ -90,7 +90,7 @@ database_url = sqlite:///path/to/db.sqlite
 			t.Fatalf("failed to write shipq.ini: %v", err)
 		}
 
-		cfg, err := codegen.LoadDBPackageConfig(tmpDir, tmpDir)
+		cfg, err := dbpkg.LoadDBPackageConfig(tmpDir, tmpDir)
 		if err != nil {
 			t.Fatalf("LoadDBPackageConfig() error = %v", err)
 		}
@@ -115,7 +115,7 @@ migrations = migrations
 			t.Fatalf("failed to write shipq.ini: %v", err)
 		}
 
-		_, err := codegen.LoadDBPackageConfig(tmpDir, tmpDir)
+		_, err := dbpkg.LoadDBPackageConfig(tmpDir, tmpDir)
 		if err == nil {
 			t.Error("LoadDBPackageConfig() expected error when database_url missing")
 		}
@@ -131,7 +131,7 @@ database_url = postgres://user@localhost:5432/mydb
 			t.Fatalf("failed to write shipq.ini: %v", err)
 		}
 
-		_, err := codegen.LoadDBPackageConfig(tmpDir, tmpDir)
+		_, err := dbpkg.LoadDBPackageConfig(tmpDir, tmpDir)
 		if err == nil {
 			t.Error("LoadDBPackageConfig() expected error when go.mod missing")
 		}
@@ -145,7 +145,7 @@ database_url = postgres://user@localhost:5432/mydb
 			t.Fatalf("failed to write go.mod: %v", err)
 		}
 
-		_, err := codegen.LoadDBPackageConfig(tmpDir, tmpDir)
+		_, err := dbpkg.LoadDBPackageConfig(tmpDir, tmpDir)
 		if err == nil {
 			t.Error("LoadDBPackageConfig() expected error when shipq.ini missing")
 		}
@@ -154,7 +154,7 @@ database_url = postgres://user@localhost:5432/mydb
 
 func TestGenerateDBFile(t *testing.T) {
 	t.Run("generates valid go code for postgres", func(t *testing.T) {
-		cfg := &codegen.DBPackageConfig{
+		cfg := &dbpkg.DBPackageConfig{
 			GoModRoot:   "/fake/root",
 			ShipqRoot:   "/fake/root",
 			ModulePath:  "example.com/myapp",
@@ -162,7 +162,7 @@ func TestGenerateDBFile(t *testing.T) {
 			Dialect:     "postgres",
 		}
 
-		content, err := codegen.GenerateDBFile(cfg)
+		content, err := dbpkg.GenerateDBFile(cfg)
 		if err != nil {
 			t.Fatalf("GenerateDBFile() error = %v", err)
 		}
@@ -206,7 +206,7 @@ func TestGenerateDBFile(t *testing.T) {
 	})
 
 	t.Run("generates valid go code for mysql", func(t *testing.T) {
-		cfg := &codegen.DBPackageConfig{
+		cfg := &dbpkg.DBPackageConfig{
 			GoModRoot:   "/fake/root",
 			ShipqRoot:   "/fake/root",
 			ModulePath:  "example.com/myapp",
@@ -214,7 +214,7 @@ func TestGenerateDBFile(t *testing.T) {
 			Dialect:     "mysql",
 		}
 
-		content, err := codegen.GenerateDBFile(cfg)
+		content, err := dbpkg.GenerateDBFile(cfg)
 		if err != nil {
 			t.Fatalf("GenerateDBFile() error = %v", err)
 		}
@@ -243,7 +243,7 @@ func TestGenerateDBFile(t *testing.T) {
 	})
 
 	t.Run("generates valid go code for sqlite", func(t *testing.T) {
-		cfg := &codegen.DBPackageConfig{
+		cfg := &dbpkg.DBPackageConfig{
 			GoModRoot:   "/fake/root",
 			ShipqRoot:   "/fake/root",
 			ModulePath:  "example.com/myapp",
@@ -251,7 +251,7 @@ func TestGenerateDBFile(t *testing.T) {
 			Dialect:     "sqlite",
 		}
 
-		content, err := codegen.GenerateDBFile(cfg)
+		content, err := dbpkg.GenerateDBFile(cfg)
 		if err != nil {
 			t.Fatalf("GenerateDBFile() error = %v", err)
 		}
@@ -270,7 +270,7 @@ func TestGenerateDBFile(t *testing.T) {
 	})
 
 	t.Run("error for unsupported dialect", func(t *testing.T) {
-		cfg := &codegen.DBPackageConfig{
+		cfg := &dbpkg.DBPackageConfig{
 			GoModRoot:   "/fake/root",
 			ShipqRoot:   "/fake/root",
 			ModulePath:  "example.com/myapp",
@@ -278,7 +278,7 @@ func TestGenerateDBFile(t *testing.T) {
 			Dialect:     "oracle",
 		}
 
-		_, err := codegen.GenerateDBFile(cfg)
+		_, err := dbpkg.GenerateDBFile(cfg)
 		if err == nil {
 			t.Error("GenerateDBFile() expected error for unsupported dialect")
 		}
@@ -303,7 +303,7 @@ database_url = postgres://user@localhost:5432/mydb
 			t.Fatalf("failed to write shipq.ini: %v", err)
 		}
 
-		err := codegen.EnsureDBPackage(tmpDir)
+		err := dbpkg.EnsureDBPackage(tmpDir)
 		if err != nil {
 			t.Fatalf("EnsureDBPackage() error = %v", err)
 		}
@@ -349,12 +349,12 @@ database_url = postgres://user@localhost:5432/mydb
 		}
 
 		// Run twice
-		err := codegen.EnsureDBPackage(tmpDir)
+		err := dbpkg.EnsureDBPackage(tmpDir)
 		if err != nil {
 			t.Fatalf("first EnsureDBPackage() error = %v", err)
 		}
 
-		err = codegen.EnsureDBPackage(tmpDir)
+		err = dbpkg.EnsureDBPackage(tmpDir)
 		if err != nil {
 			t.Fatalf("second EnsureDBPackage() error = %v", err)
 		}

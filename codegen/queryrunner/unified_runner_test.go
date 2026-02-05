@@ -1,4 +1,4 @@
-package codegen
+package queryrunner
 
 import (
 	"strings"

@@ -6,7 +6,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/shipq/shipq/codegen"
+	"github.com/shipq/shipq/codegen/dbpkg"
+	codegenMigrate "github.com/shipq/shipq/codegen/migrate"
 	"github.com/shipq/shipq/inifile"
 )
 
@@ -218,7 +219,7 @@ func TestMigrateUp_GeneratesDBPackage(t *testing.T) {
 	defer cleanup()
 
 	// Generate DB package directly using codegen
-	err := codegen.EnsureDBPackage(tmpDir)
+	err := dbpkg.EnsureDBPackage(tmpDir)
 	if err != nil {
 		t.Fatalf("EnsureDBPackage() error = %v", err)
 	}
@@ -275,7 +276,7 @@ func Migrate_20260115120000_users(plan *migrate.MigrationPlan) error {
 	}
 
 	// Discover migrations
-	migrations, err := codegen.DiscoverMigrations(migrationsDir)
+	migrations, err := codegenMigrate.DiscoverMigrations(migrationsDir)
 	if err != nil {
 		t.Fatalf("DiscoverMigrations() error = %v", err)
 	}
@@ -301,7 +302,7 @@ func Migrate_20260115120000_users(plan *migrate.MigrationPlan) error {
 func TestMigrateUp_GeneratesMigrateRunner(t *testing.T) {
 	modulePath := "testproject"
 
-	content, err := codegen.GenerateMigrateRunner(modulePath)
+	content, err := codegenMigrate.GenerateMigrateRunner(modulePath)
 	if err != nil {
 		t.Fatalf("GenerateMigrateRunner() error = %v", err)
 	}
@@ -336,7 +337,7 @@ func TestMigrateUp_NoMigrations(t *testing.T) {
 	migrationsDir := filepath.Join(tmpDir, "migrations")
 
 	// Discover migrations (should be empty)
-	migrations, err := codegen.DiscoverMigrations(migrationsDir)
+	migrations, err := codegenMigrate.DiscoverMigrations(migrationsDir)
 	if err != nil {
 		t.Fatalf("DiscoverMigrations() error = %v", err)
 	}
@@ -400,7 +401,7 @@ func Migrate_20260115120200_comments(plan *migrate.MigrationPlan) error {
 	}
 
 	// Discover migrations
-	migrations, err := codegen.DiscoverMigrations(migrationsDir)
+	migrations, err := codegenMigrate.DiscoverMigrations(migrationsDir)
 	if err != nil {
 		t.Fatalf("DiscoverMigrations() error = %v", err)
 	}
