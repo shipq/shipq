@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/shipq/shipq/codegen"
+	"github.com/shipq/shipq/codegen/handlergen"
 	"github.com/shipq/shipq/db/portsql/ddl"
 	"github.com/shipq/shipq/db/portsql/migrate"
 )
@@ -86,14 +86,14 @@ func TestGenerateHandlers_EmitsNoRegenMarker(t *testing.T) {
 	defer cleanup()
 
 	// Generate handlers for the posts table
-	cfg := codegen.HandlerGenConfig{
+	cfg := handlergen.HandlerGenConfig{
 		ModulePath: "testproject",
 		TableName:  "posts",
 		Table:      tables["posts"],
 		Schema:     tables,
 	}
 
-	files, err := codegen.GenerateHandlerFiles(cfg)
+	files, err := handlergen.GenerateHandlerFiles(cfg)
 	if err != nil {
 		t.Fatalf("GenerateHandlerFiles() error = %v", err)
 	}
@@ -242,14 +242,14 @@ func OldHandler() {}
 	}
 
 	// Generate new handlers (simulating what happens when marker is deleted)
-	cfg := codegen.HandlerGenConfig{
+	cfg := handlergen.HandlerGenConfig{
 		ModulePath: "testproject",
 		TableName:  "comments",
 		Table:      tables["comments"],
 		Schema:     tables,
 	}
 
-	files, err := codegen.GenerateHandlerFiles(cfg)
+	files, err := handlergen.GenerateHandlerFiles(cfg)
 	if err != nil {
 		t.Fatalf("GenerateHandlerFiles() error = %v", err)
 	}
@@ -342,14 +342,14 @@ func TestGeneratedFileHeader(t *testing.T) {
 		},
 	}
 
-	cfg := codegen.HandlerGenConfig{
+	cfg := handlergen.HandlerGenConfig{
 		ModulePath: "testproject",
 		TableName:  "items",
 		Table:      tables["items"],
 		Schema:     tables,
 	}
 
-	files, err := codegen.GenerateHandlerFiles(cfg)
+	files, err := handlergen.GenerateHandlerFiles(cfg)
 	if err != nil {
 		t.Fatalf("GenerateHandlerFiles() error = %v", err)
 	}
