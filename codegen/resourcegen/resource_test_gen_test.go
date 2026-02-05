@@ -1,10 +1,12 @@
-package codegen
+package resourcegen
 
 import (
 	"go/parser"
 	"go/token"
 	"strings"
 	"testing"
+
+	"github.com/shipq/shipq/codegen"
 )
 
 func TestGenerateResourceTest_FullResource(t *testing.T) {
@@ -21,92 +23,92 @@ func TestGenerateResourceTest_FullResource(t *testing.T) {
 		HasList:     true,
 		HasUpdate:   true,
 		HasDelete:   true,
-		CreateHandler: &SerializedHandlerInfo{
+		CreateHandler: &codegen.SerializedHandlerInfo{
 			Method:   "POST",
 			Path:     "/accounts",
 			FuncName: "CreateAccount",
-			Request: &SerializedStructInfo{
+			Request: &codegen.SerializedStructInfo{
 				Name: "CreateAccountRequest",
-				Fields: []SerializedFieldInfo{
+				Fields: []codegen.SerializedFieldInfo{
 					{Name: "Name", Type: "string", JSONName: "name", Required: true},
 				},
 			},
-			Response: &SerializedStructInfo{
+			Response: &codegen.SerializedStructInfo{
 				Name: "AccountResponse",
-				Fields: []SerializedFieldInfo{
+				Fields: []codegen.SerializedFieldInfo{
 					{Name: "PublicID", Type: "string", JSONName: "public_id"},
 					{Name: "Name", Type: "string", JSONName: "name"},
 				},
 			},
 		},
-		GetOneHandler: &SerializedHandlerInfo{
+		GetOneHandler: &codegen.SerializedHandlerInfo{
 			Method:   "GET",
 			Path:     "/accounts/:public_id",
 			FuncName: "GetAccount",
-			PathParams: []SerializedPathParam{
+			PathParams: []codegen.SerializedPathParam{
 				{Name: "public_id", Position: 1},
 			},
-			Request: &SerializedStructInfo{
+			Request: &codegen.SerializedStructInfo{
 				Name: "GetAccountRequest",
-				Fields: []SerializedFieldInfo{
+				Fields: []codegen.SerializedFieldInfo{
 					{Name: "PublicID", Type: "string", JSONName: "public_id", Required: true},
 				},
 			},
-			Response: &SerializedStructInfo{
+			Response: &codegen.SerializedStructInfo{
 				Name: "AccountResponse",
-				Fields: []SerializedFieldInfo{
+				Fields: []codegen.SerializedFieldInfo{
 					{Name: "PublicID", Type: "string", JSONName: "public_id"},
 					{Name: "Name", Type: "string", JSONName: "name"},
 				},
 			},
 		},
-		ListHandler: &SerializedHandlerInfo{
+		ListHandler: &codegen.SerializedHandlerInfo{
 			Method:   "GET",
 			Path:     "/accounts",
 			FuncName: "ListAccounts",
-			Request: &SerializedStructInfo{
+			Request: &codegen.SerializedStructInfo{
 				Name:   "ListAccountsRequest",
-				Fields: []SerializedFieldInfo{},
+				Fields: []codegen.SerializedFieldInfo{},
 			},
-			Response: &SerializedStructInfo{
+			Response: &codegen.SerializedStructInfo{
 				Name: "ListAccountsResponse",
-				Fields: []SerializedFieldInfo{
+				Fields: []codegen.SerializedFieldInfo{
 					{Name: "Items", Type: "[]AccountResponse", JSONName: "items"},
 				},
 			},
 		},
-		UpdateHandler: &SerializedHandlerInfo{
+		UpdateHandler: &codegen.SerializedHandlerInfo{
 			Method:   "PUT",
 			Path:     "/accounts/:public_id",
 			FuncName: "UpdateAccount",
-			PathParams: []SerializedPathParam{
+			PathParams: []codegen.SerializedPathParam{
 				{Name: "public_id", Position: 1},
 			},
-			Request: &SerializedStructInfo{
+			Request: &codegen.SerializedStructInfo{
 				Name: "UpdateAccountRequest",
-				Fields: []SerializedFieldInfo{
+				Fields: []codegen.SerializedFieldInfo{
 					{Name: "PublicID", Type: "string", JSONName: "public_id", Required: true},
 					{Name: "Name", Type: "string", JSONName: "name"},
 				},
 			},
-			Response: &SerializedStructInfo{
+			Response: &codegen.SerializedStructInfo{
 				Name: "AccountResponse",
-				Fields: []SerializedFieldInfo{
+				Fields: []codegen.SerializedFieldInfo{
 					{Name: "PublicID", Type: "string", JSONName: "public_id"},
 					{Name: "Name", Type: "string", JSONName: "name"},
 				},
 			},
 		},
-		DeleteHandler: &SerializedHandlerInfo{
+		DeleteHandler: &codegen.SerializedHandlerInfo{
 			Method:   "DELETE",
 			Path:     "/accounts/:public_id",
 			FuncName: "DeleteAccount",
-			PathParams: []SerializedPathParam{
+			PathParams: []codegen.SerializedPathParam{
 				{Name: "public_id", Position: 1},
 			},
-			Request: &SerializedStructInfo{
+			Request: &codegen.SerializedStructInfo{
 				Name: "DeleteAccountRequest",
-				Fields: []SerializedFieldInfo{
+				Fields: []codegen.SerializedFieldInfo{
 					{Name: "PublicID", Type: "string", JSONName: "public_id", Required: true},
 				},
 			},
@@ -352,7 +354,7 @@ func TestGetSampleValue(t *testing.T) {
 func TestFindResponseIDField(t *testing.T) {
 	tests := []struct {
 		name       string
-		response   *SerializedStructInfo
+		response   *codegen.SerializedStructInfo
 		idJSONName string
 		want       string
 	}{
@@ -364,8 +366,8 @@ func TestFindResponseIDField(t *testing.T) {
 		},
 		{
 			name: "finds public_id",
-			response: &SerializedStructInfo{
-				Fields: []SerializedFieldInfo{
+			response: &codegen.SerializedStructInfo{
+				Fields: []codegen.SerializedFieldInfo{
 					{Name: "PublicID", JSONName: "public_id"},
 					{Name: "Name", JSONName: "name"},
 				},
@@ -375,8 +377,8 @@ func TestFindResponseIDField(t *testing.T) {
 		},
 		{
 			name: "finds ID",
-			response: &SerializedStructInfo{
-				Fields: []SerializedFieldInfo{
+			response: &codegen.SerializedStructInfo{
+				Fields: []codegen.SerializedFieldInfo{
 					{Name: "ID", JSONName: "id"},
 					{Name: "Name", JSONName: "name"},
 				},
@@ -399,7 +401,7 @@ func TestFindResponseIDField(t *testing.T) {
 func TestFindListFieldName(t *testing.T) {
 	tests := []struct {
 		name     string
-		response *SerializedStructInfo
+		response *codegen.SerializedStructInfo
 		want     string
 	}{
 		{
@@ -409,8 +411,8 @@ func TestFindListFieldName(t *testing.T) {
 		},
 		{
 			name: "finds Items",
-			response: &SerializedStructInfo{
-				Fields: []SerializedFieldInfo{
+			response: &codegen.SerializedStructInfo{
+				Fields: []codegen.SerializedFieldInfo{
 					{Name: "Items", Type: "[]Account", JSONName: "items"},
 					{Name: "Total", Type: "int", JSONName: "total"},
 				},
@@ -419,8 +421,8 @@ func TestFindListFieldName(t *testing.T) {
 		},
 		{
 			name: "finds Data",
-			response: &SerializedStructInfo{
-				Fields: []SerializedFieldInfo{
+			response: &codegen.SerializedStructInfo{
+				Fields: []codegen.SerializedFieldInfo{
 					{Name: "Data", Type: "[]User", JSONName: "data"},
 				},
 			},
@@ -428,8 +430,8 @@ func TestFindListFieldName(t *testing.T) {
 		},
 		{
 			name: "finds slice field",
-			response: &SerializedStructInfo{
-				Fields: []SerializedFieldInfo{
+			response: &codegen.SerializedStructInfo{
+				Fields: []codegen.SerializedFieldInfo{
 					{Name: "Accounts", Type: "[]AccountResponse", JSONName: "accounts"},
 				},
 			},
@@ -461,32 +463,32 @@ func TestGenerateResourceTest_DifferentPackageNames(t *testing.T) {
 		HasList:     true,
 		HasUpdate:   true,
 		HasDelete:   true,
-		CreateHandler: &SerializedHandlerInfo{
+		CreateHandler: &codegen.SerializedHandlerInfo{
 			FuncName: "CreateUser",
-			Request:  &SerializedStructInfo{Name: "CreateUserRequest"},
-			Response: &SerializedStructInfo{
+			Request:  &codegen.SerializedStructInfo{Name: "CreateUserRequest"},
+			Response: &codegen.SerializedStructInfo{
 				Name:   "UserResponse",
-				Fields: []SerializedFieldInfo{{Name: "ID", JSONName: "id"}},
+				Fields: []codegen.SerializedFieldInfo{{Name: "ID", JSONName: "id"}},
 			},
 		},
-		GetOneHandler: &SerializedHandlerInfo{
+		GetOneHandler: &codegen.SerializedHandlerInfo{
 			FuncName: "GetUser",
-			Request:  &SerializedStructInfo{Name: "GetUserRequest", Fields: []SerializedFieldInfo{{Name: "ID", JSONName: "id"}}},
-			Response: &SerializedStructInfo{Name: "UserResponse", Fields: []SerializedFieldInfo{{Name: "ID", JSONName: "id"}}},
+			Request:  &codegen.SerializedStructInfo{Name: "GetUserRequest", Fields: []codegen.SerializedFieldInfo{{Name: "ID", JSONName: "id"}}},
+			Response: &codegen.SerializedStructInfo{Name: "UserResponse", Fields: []codegen.SerializedFieldInfo{{Name: "ID", JSONName: "id"}}},
 		},
-		ListHandler: &SerializedHandlerInfo{
+		ListHandler: &codegen.SerializedHandlerInfo{
 			FuncName: "ListUsers",
-			Request:  &SerializedStructInfo{Name: "ListUsersRequest"},
-			Response: &SerializedStructInfo{Name: "ListUsersResponse", Fields: []SerializedFieldInfo{{Name: "Items", Type: "[]User"}}},
+			Request:  &codegen.SerializedStructInfo{Name: "ListUsersRequest"},
+			Response: &codegen.SerializedStructInfo{Name: "ListUsersResponse", Fields: []codegen.SerializedFieldInfo{{Name: "Items", Type: "[]User"}}},
 		},
-		UpdateHandler: &SerializedHandlerInfo{
+		UpdateHandler: &codegen.SerializedHandlerInfo{
 			FuncName: "UpdateUser",
-			Request:  &SerializedStructInfo{Name: "UpdateUserRequest", Fields: []SerializedFieldInfo{{Name: "ID", JSONName: "id"}}},
-			Response: &SerializedStructInfo{Name: "UserResponse"},
+			Request:  &codegen.SerializedStructInfo{Name: "UpdateUserRequest", Fields: []codegen.SerializedFieldInfo{{Name: "ID", JSONName: "id"}}},
+			Response: &codegen.SerializedStructInfo{Name: "UserResponse"},
 		},
-		DeleteHandler: &SerializedHandlerInfo{
+		DeleteHandler: &codegen.SerializedHandlerInfo{
 			FuncName: "DeleteUser",
-			Request:  &SerializedStructInfo{Name: "DeleteUserRequest", Fields: []SerializedFieldInfo{{Name: "ID", JSONName: "id"}}},
+			Request:  &codegen.SerializedStructInfo{Name: "DeleteUserRequest", Fields: []codegen.SerializedFieldInfo{{Name: "ID", JSONName: "id"}}},
 		},
 	}
 
@@ -529,32 +531,32 @@ func createFullResourceInfo() ResourceInfo {
 		HasList:     true,
 		HasUpdate:   true,
 		HasDelete:   true,
-		CreateHandler: &SerializedHandlerInfo{
+		CreateHandler: &codegen.SerializedHandlerInfo{
 			FuncName: "CreateAccount",
-			Request:  &SerializedStructInfo{Name: "CreateAccountRequest"},
-			Response: &SerializedStructInfo{
+			Request:  &codegen.SerializedStructInfo{Name: "CreateAccountRequest"},
+			Response: &codegen.SerializedStructInfo{
 				Name:   "AccountResponse",
-				Fields: []SerializedFieldInfo{{Name: "PublicID", JSONName: "public_id"}},
+				Fields: []codegen.SerializedFieldInfo{{Name: "PublicID", JSONName: "public_id"}},
 			},
 		},
-		GetOneHandler: &SerializedHandlerInfo{
+		GetOneHandler: &codegen.SerializedHandlerInfo{
 			FuncName: "GetAccount",
-			Request:  &SerializedStructInfo{Name: "GetAccountRequest", Fields: []SerializedFieldInfo{{Name: "PublicID", JSONName: "public_id"}}},
-			Response: &SerializedStructInfo{Name: "AccountResponse", Fields: []SerializedFieldInfo{{Name: "PublicID", JSONName: "public_id"}}},
+			Request:  &codegen.SerializedStructInfo{Name: "GetAccountRequest", Fields: []codegen.SerializedFieldInfo{{Name: "PublicID", JSONName: "public_id"}}},
+			Response: &codegen.SerializedStructInfo{Name: "AccountResponse", Fields: []codegen.SerializedFieldInfo{{Name: "PublicID", JSONName: "public_id"}}},
 		},
-		ListHandler: &SerializedHandlerInfo{
+		ListHandler: &codegen.SerializedHandlerInfo{
 			FuncName: "ListAccounts",
-			Request:  &SerializedStructInfo{Name: "ListAccountsRequest"},
-			Response: &SerializedStructInfo{Name: "ListAccountsResponse", Fields: []SerializedFieldInfo{{Name: "Items", Type: "[]Account"}}},
+			Request:  &codegen.SerializedStructInfo{Name: "ListAccountsRequest"},
+			Response: &codegen.SerializedStructInfo{Name: "ListAccountsResponse", Fields: []codegen.SerializedFieldInfo{{Name: "Items", Type: "[]Account"}}},
 		},
-		UpdateHandler: &SerializedHandlerInfo{
+		UpdateHandler: &codegen.SerializedHandlerInfo{
 			FuncName: "UpdateAccount",
-			Request:  &SerializedStructInfo{Name: "UpdateAccountRequest", Fields: []SerializedFieldInfo{{Name: "PublicID", JSONName: "public_id"}}},
-			Response: &SerializedStructInfo{Name: "AccountResponse"},
+			Request:  &codegen.SerializedStructInfo{Name: "UpdateAccountRequest", Fields: []codegen.SerializedFieldInfo{{Name: "PublicID", JSONName: "public_id"}}},
+			Response: &codegen.SerializedStructInfo{Name: "AccountResponse"},
 		},
-		DeleteHandler: &SerializedHandlerInfo{
+		DeleteHandler: &codegen.SerializedHandlerInfo{
 			FuncName: "DeleteAccount",
-			Request:  &SerializedStructInfo{Name: "DeleteAccountRequest", Fields: []SerializedFieldInfo{{Name: "PublicID", JSONName: "public_id"}}},
+			Request:  &codegen.SerializedStructInfo{Name: "DeleteAccountRequest", Fields: []codegen.SerializedFieldInfo{{Name: "PublicID", JSONName: "public_id"}}},
 		},
 	}
 }

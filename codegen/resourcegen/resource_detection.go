@@ -1,9 +1,10 @@
-package codegen
+package resourcegen
 
 import (
 	"sort"
 	"strings"
 
+	"github.com/shipq/shipq/codegen"
 )
 
 // ResourceInfo holds information about a resource package and its CRUD operations.
@@ -19,11 +20,11 @@ type ResourceInfo struct {
 	HasDelete bool // DELETE with path param
 
 	// Handler references for each operation
-	CreateHandler *SerializedHandlerInfo
-	GetOneHandler *SerializedHandlerInfo
-	ListHandler   *SerializedHandlerInfo
-	UpdateHandler *SerializedHandlerInfo
-	DeleteHandler *SerializedHandlerInfo
+	CreateHandler *codegen.SerializedHandlerInfo
+	GetOneHandler *codegen.SerializedHandlerInfo
+	ListHandler   *codegen.SerializedHandlerInfo
+	UpdateHandler *codegen.SerializedHandlerInfo
+	DeleteHandler *codegen.SerializedHandlerInfo
 }
 
 // IsFullResource returns true if all 5 CRUD operations are present.
@@ -33,9 +34,9 @@ func (r ResourceInfo) IsFullResource() bool {
 
 // DetectFullResources analyzes handlers to detect which packages are "full resources"
 // (packages that implement all 5 CRUD operations: Create, GetOne, List, Update, Delete).
-func DetectFullResources(handlers []SerializedHandlerInfo) []ResourceInfo {
+func DetectFullResources(handlers []codegen.SerializedHandlerInfo) []ResourceInfo {
 	// Group handlers by package path
-	byPackage := make(map[string][]SerializedHandlerInfo)
+	byPackage := make(map[string][]codegen.SerializedHandlerInfo)
 	for _, h := range handlers {
 		if h.PackagePath != "" {
 			byPackage[h.PackagePath] = append(byPackage[h.PackagePath], h)
@@ -69,7 +70,7 @@ func FilterFullResources(resources []ResourceInfo) []ResourceInfo {
 }
 
 // analyzePackage determines which CRUD operations a package implements.
-func analyzePackage(pkgPath string, handlers []SerializedHandlerInfo) ResourceInfo {
+func analyzePackage(pkgPath string, handlers []codegen.SerializedHandlerInfo) ResourceInfo {
 	info := ResourceInfo{
 		PackagePath: pkgPath,
 		PackageName: extractPackageName(pkgPath),
@@ -118,7 +119,7 @@ const (
 //   - List: GET, no path params (or only query params)
 //   - Update: PUT or PATCH, has path param
 //   - Delete: DELETE, has path param
-func classifyCRUDOperation(h *SerializedHandlerInfo) crudOperation {
+func classifyCRUDOperation(h *codegen.SerializedHandlerInfo) crudOperation {
 	switch h.Method {
 	case "POST":
 		// Create: POST without path params for the resource itself
@@ -156,7 +157,7 @@ func classifyCRUDOperation(h *SerializedHandlerInfo) crudOperation {
 
 // hasResourceIDParam checks if the handler has a path parameter that looks like a resource ID.
 // Common patterns: :id, :public_id, :{resource}_id
-func hasResourceIDParam(h *SerializedHandlerInfo) bool {
+func hasResourceIDParam(h *codegen.SerializedHandlerInfo) bool {
 	if len(h.PathParams) == 0 {
 		return false
 	}

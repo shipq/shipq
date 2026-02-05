@@ -1,4 +1,4 @@
-package codegen
+package resourcegen
 
 import (
 	"bytes"
@@ -6,6 +6,7 @@ import (
 	"go/format"
 	"strings"
 
+	"github.com/shipq/shipq/codegen"
 	"github.com/shipq/shipq/dbstrings"
 )
 
@@ -346,7 +347,7 @@ func getSampleValue(goType, fieldName string) string {
 }
 
 // findResponseIDField finds the ID field name in a response struct.
-func findResponseIDField(response *SerializedStructInfo, idJSONName string) string {
+func findResponseIDField(response *codegen.SerializedStructInfo, idJSONName string) string {
 	if response == nil {
 		return ""
 	}
@@ -361,7 +362,7 @@ func findResponseIDField(response *SerializedStructInfo, idJSONName string) stri
 }
 
 // findMatchingResponseField finds a response field that matches a request field name.
-func findMatchingResponseField(response *SerializedStructInfo, fieldName string) string {
+func findMatchingResponseField(response *codegen.SerializedStructInfo, fieldName string) string {
 	if response == nil {
 		return ""
 	}
@@ -374,7 +375,7 @@ func findMatchingResponseField(response *SerializedStructInfo, fieldName string)
 }
 
 // findListFieldName finds the field name in a list response that contains the items.
-func findListFieldName(response *SerializedStructInfo) string {
+func findListFieldName(response *codegen.SerializedStructInfo) string {
 	if response == nil {
 		return ""
 	}
@@ -397,7 +398,7 @@ func findListFieldName(response *SerializedStructInfo) string {
 }
 
 // findListItemIDField finds the ID field name in list items.
-func findListItemIDField(response *SerializedStructInfo, listFieldName, idJSONName string) string {
+func findListItemIDField(response *codegen.SerializedStructInfo, listFieldName, idJSONName string) string {
 	// For simplicity, assume the list items have the same ID field as GetOne response
 	// In a more sophisticated implementation, we'd parse the slice element type
 	if response == nil {

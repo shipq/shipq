@@ -5,13 +5,14 @@ import (
 	"path/filepath"
 
 	"github.com/shipq/shipq/codegen"
+	"github.com/shipq/shipq/codegen/resourcegen"
 )
 
 // generateResourceTests generates tests for all full resources.
 func generateResourceTests(cfg CompileConfig) error {
 	// Detect full resources
-	resources := codegen.DetectFullResources(cfg.Handlers)
-	fullResources := codegen.FilterFullResources(resources)
+	resources := resourcegen.DetectFullResources(cfg.Handlers)
+	fullResources := resourcegen.FilterFullResources(resources)
 
 	if len(fullResources) == 0 {
 		if cfg.Verbose {
@@ -20,13 +21,13 @@ func generateResourceTests(cfg CompileConfig) error {
 		return nil
 	}
 
-	testCfg := codegen.ResourceTestGenConfig{
+	testCfg := resourcegen.ResourceTestGenConfig{
 		ModulePath: cfg.ModulePath,
 		OutputPkg:  cfg.OutputPkg,
 	}
 
 	for _, resource := range fullResources {
-		testCode, err := codegen.GenerateResourceTest(testCfg, resource)
+		testCode, err := resourcegen.GenerateResourceTest(testCfg, resource)
 		if err != nil {
 			return fmt.Errorf("failed to generate resource test for %s: %w", resource.PackageName, err)
 		}

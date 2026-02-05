@@ -5,17 +5,18 @@ import (
 	"path/filepath"
 
 	"github.com/shipq/shipq/codegen"
+	"github.com/shipq/shipq/codegen/httpserver/testclient"
 )
 
 // generateHTTPTestClient generates the HTTP test client code.
 func generateHTTPTestClient(cfg CompileConfig) error {
-	testClientCfg := codegen.HTTPTestClientGenConfig{
+	testClientCfg := testclient.HTTPTestClientGenConfig{
 		ModulePath: cfg.ModulePath,
 		Handlers:   cfg.Handlers,
 		OutputPkg:  cfg.OutputPkg,
 	}
 
-	testClientCode, err := codegen.GenerateHTTPTestClient(testClientCfg)
+	testClientCode, err := testclient.GenerateHTTPTestClient(testClientCfg)
 	if err != nil {
 		return fmt.Errorf("failed to generate HTTP test client: %w", err)
 	}

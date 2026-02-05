@@ -1,10 +1,12 @@
-package codegen
+package server
 
 import (
 	"go/parser"
 	"go/token"
 	"strings"
 	"testing"
+
+	"github.com/shipq/shipq/codegen"
 )
 
 func TestConvertPathSyntax(t *testing.T) {
@@ -23,7 +25,7 @@ func TestConvertPathSyntax(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.input, func(t *testing.T) {
-			got := ConvertPathSyntax(tt.input)
+			got := codegen.ConvertPathSyntax(tt.input)
 			if got != tt.expected {
 				t.Errorf("ConvertPathSyntax(%q) = %q; want %q", tt.input, got, tt.expected)
 			}
@@ -34,7 +36,7 @@ func TestConvertPathSyntax(t *testing.T) {
 func TestGenerateHTTPServer_EmptyRegistry(t *testing.T) {
 	cfg := HTTPServerGenConfig{
 		ModulePath: "example.com/app",
-		Handlers:   []SerializedHandlerInfo{},
+		Handlers:   []codegen.SerializedHandlerInfo{},
 		OutputPkg:  "api",
 	}
 
@@ -65,26 +67,26 @@ func TestGenerateHTTPServer_EmptyRegistry(t *testing.T) {
 func TestGenerateHTTPServer_SingleGetHandler(t *testing.T) {
 	cfg := HTTPServerGenConfig{
 		ModulePath: "example.com/app",
-		Handlers: []SerializedHandlerInfo{
+		Handlers: []codegen.SerializedHandlerInfo{
 			{
 				Method:      "GET",
 				Path:        "/users/:id",
 				FuncName:    "GetUser",
 				PackagePath: "example.com/app/users",
-				PathParams: []SerializedPathParam{
+				PathParams: []codegen.SerializedPathParam{
 					{Name: "id", Position: 1},
 				},
-				Request: &SerializedStructInfo{
+				Request: &codegen.SerializedStructInfo{
 					Name:    "GetUserRequest",
 					Package: "example.com/app/users",
-					Fields: []SerializedFieldInfo{
+					Fields: []codegen.SerializedFieldInfo{
 						{Name: "ID", Type: "string", JSONName: "id", Required: true},
 					},
 				},
-				Response: &SerializedStructInfo{
+				Response: &codegen.SerializedStructInfo{
 					Name:    "GetUserResponse",
 					Package: "example.com/app/users",
-					Fields: []SerializedFieldInfo{
+					Fields: []codegen.SerializedFieldInfo{
 						{Name: "ID", Type: "string", JSONName: "id", Required: true},
 						{Name: "Name", Type: "string", JSONName: "name", Required: true},
 					},
@@ -131,25 +133,25 @@ func TestGenerateHTTPServer_SingleGetHandler(t *testing.T) {
 func TestGenerateHTTPServer_PostHandler(t *testing.T) {
 	cfg := HTTPServerGenConfig{
 		ModulePath: "example.com/app",
-		Handlers: []SerializedHandlerInfo{
+		Handlers: []codegen.SerializedHandlerInfo{
 			{
 				Method:      "POST",
 				Path:        "/users",
 				FuncName:    "CreateUser",
 				PackagePath: "example.com/app/users",
-				PathParams:  []SerializedPathParam{},
-				Request: &SerializedStructInfo{
+				PathParams:  []codegen.SerializedPathParam{},
+				Request: &codegen.SerializedStructInfo{
 					Name:    "CreateUserRequest",
 					Package: "example.com/app/users",
-					Fields: []SerializedFieldInfo{
+					Fields: []codegen.SerializedFieldInfo{
 						{Name: "Name", Type: "string", JSONName: "name", Required: true},
 						{Name: "Email", Type: "string", JSONName: "email", Required: true},
 					},
 				},
-				Response: &SerializedStructInfo{
+				Response: &codegen.SerializedStructInfo{
 					Name:    "CreateUserResponse",
 					Package: "example.com/app/users",
-					Fields: []SerializedFieldInfo{
+					Fields: []codegen.SerializedFieldInfo{
 						{Name: "ID", Type: "string", JSONName: "id", Required: true},
 					},
 				},
@@ -185,26 +187,26 @@ func TestGenerateHTTPServer_PostHandler(t *testing.T) {
 func TestGenerateHTTPServer_IntPathParam(t *testing.T) {
 	cfg := HTTPServerGenConfig{
 		ModulePath: "example.com/app",
-		Handlers: []SerializedHandlerInfo{
+		Handlers: []codegen.SerializedHandlerInfo{
 			{
 				Method:      "GET",
 				Path:        "/users/:id",
 				FuncName:    "GetUser",
 				PackagePath: "example.com/app/users",
-				PathParams: []SerializedPathParam{
+				PathParams: []codegen.SerializedPathParam{
 					{Name: "id", Position: 1},
 				},
-				Request: &SerializedStructInfo{
+				Request: &codegen.SerializedStructInfo{
 					Name:    "GetUserRequest",
 					Package: "example.com/app/users",
-					Fields: []SerializedFieldInfo{
+					Fields: []codegen.SerializedFieldInfo{
 						{Name: "ID", Type: "int64", JSONName: "id", Required: true},
 					},
 				},
-				Response: &SerializedStructInfo{
+				Response: &codegen.SerializedStructInfo{
 					Name:    "GetUserResponse",
 					Package: "example.com/app/users",
-					Fields:  []SerializedFieldInfo{},
+					Fields:  []codegen.SerializedFieldInfo{},
 				},
 			},
 		},
@@ -238,26 +240,26 @@ func TestGenerateHTTPServer_IntPathParam(t *testing.T) {
 func TestGenerateHTTPServer_MultipleHandlers(t *testing.T) {
 	cfg := HTTPServerGenConfig{
 		ModulePath: "example.com/app",
-		Handlers: []SerializedHandlerInfo{
+		Handlers: []codegen.SerializedHandlerInfo{
 			{
 				Method:      "GET",
 				Path:        "/users/:id",
 				FuncName:    "GetUser",
 				PackagePath: "example.com/app/users",
-				PathParams: []SerializedPathParam{
+				PathParams: []codegen.SerializedPathParam{
 					{Name: "id", Position: 1},
 				},
-				Request: &SerializedStructInfo{
+				Request: &codegen.SerializedStructInfo{
 					Name:    "GetUserRequest",
 					Package: "example.com/app/users",
-					Fields: []SerializedFieldInfo{
+					Fields: []codegen.SerializedFieldInfo{
 						{Name: "ID", Type: "string", JSONName: "id", Required: true},
 					},
 				},
-				Response: &SerializedStructInfo{
+				Response: &codegen.SerializedStructInfo{
 					Name:    "GetUserResponse",
 					Package: "example.com/app/users",
-					Fields:  []SerializedFieldInfo{},
+					Fields:  []codegen.SerializedFieldInfo{},
 				},
 			},
 			{
@@ -265,18 +267,18 @@ func TestGenerateHTTPServer_MultipleHandlers(t *testing.T) {
 				Path:        "/users",
 				FuncName:    "CreateUser",
 				PackagePath: "example.com/app/users",
-				PathParams:  []SerializedPathParam{},
-				Request: &SerializedStructInfo{
+				PathParams:  []codegen.SerializedPathParam{},
+				Request: &codegen.SerializedStructInfo{
 					Name:    "CreateUserRequest",
 					Package: "example.com/app/users",
-					Fields: []SerializedFieldInfo{
+					Fields: []codegen.SerializedFieldInfo{
 						{Name: "Name", Type: "string", JSONName: "name", Required: true},
 					},
 				},
-				Response: &SerializedStructInfo{
+				Response: &codegen.SerializedStructInfo{
 					Name:    "CreateUserResponse",
 					Package: "example.com/app/users",
-					Fields:  []SerializedFieldInfo{},
+					Fields:  []codegen.SerializedFieldInfo{},
 				},
 			},
 			{
@@ -284,20 +286,20 @@ func TestGenerateHTTPServer_MultipleHandlers(t *testing.T) {
 				Path:        "/users/:id",
 				FuncName:    "DeleteUser",
 				PackagePath: "example.com/app/users",
-				PathParams: []SerializedPathParam{
+				PathParams: []codegen.SerializedPathParam{
 					{Name: "id", Position: 1},
 				},
-				Request: &SerializedStructInfo{
+				Request: &codegen.SerializedStructInfo{
 					Name:    "DeleteUserRequest",
 					Package: "example.com/app/users",
-					Fields: []SerializedFieldInfo{
+					Fields: []codegen.SerializedFieldInfo{
 						{Name: "ID", Type: "string", JSONName: "id", Required: true},
 					},
 				},
-				Response: &SerializedStructInfo{
+				Response: &codegen.SerializedStructInfo{
 					Name:    "DeleteUserResponse",
 					Package: "example.com/app/users",
-					Fields:  []SerializedFieldInfo{},
+					Fields:  []codegen.SerializedFieldInfo{},
 				},
 			},
 		},
@@ -349,26 +351,26 @@ func TestGenerateHTTPServer_MultipleHandlers(t *testing.T) {
 func TestGenerateHTTPServer_MultiplePackages(t *testing.T) {
 	cfg := HTTPServerGenConfig{
 		ModulePath: "example.com/app",
-		Handlers: []SerializedHandlerInfo{
+		Handlers: []codegen.SerializedHandlerInfo{
 			{
 				Method:      "GET",
 				Path:        "/users/:id",
 				FuncName:    "GetUser",
 				PackagePath: "example.com/app/users",
-				PathParams: []SerializedPathParam{
+				PathParams: []codegen.SerializedPathParam{
 					{Name: "id", Position: 1},
 				},
-				Request: &SerializedStructInfo{
+				Request: &codegen.SerializedStructInfo{
 					Name:    "GetUserRequest",
 					Package: "example.com/app/users",
-					Fields: []SerializedFieldInfo{
+					Fields: []codegen.SerializedFieldInfo{
 						{Name: "ID", Type: "string", JSONName: "id", Required: true},
 					},
 				},
-				Response: &SerializedStructInfo{
+				Response: &codegen.SerializedStructInfo{
 					Name:    "GetUserResponse",
 					Package: "example.com/app/users",
-					Fields:  []SerializedFieldInfo{},
+					Fields:  []codegen.SerializedFieldInfo{},
 				},
 			},
 			{
@@ -376,20 +378,20 @@ func TestGenerateHTTPServer_MultiplePackages(t *testing.T) {
 				Path:        "/posts/:id",
 				FuncName:    "GetPost",
 				PackagePath: "example.com/app/posts",
-				PathParams: []SerializedPathParam{
+				PathParams: []codegen.SerializedPathParam{
 					{Name: "id", Position: 1},
 				},
-				Request: &SerializedStructInfo{
+				Request: &codegen.SerializedStructInfo{
 					Name:    "GetPostRequest",
 					Package: "example.com/app/posts",
-					Fields: []SerializedFieldInfo{
+					Fields: []codegen.SerializedFieldInfo{
 						{Name: "ID", Type: "string", JSONName: "id", Required: true},
 					},
 				},
-				Response: &SerializedStructInfo{
+				Response: &codegen.SerializedStructInfo{
 					Name:    "GetPostResponse",
 					Package: "example.com/app/posts",
-					Fields:  []SerializedFieldInfo{},
+					Fields:  []codegen.SerializedFieldInfo{},
 				},
 			},
 		},
@@ -421,26 +423,26 @@ func TestGenerateHTTPServer_MultiplePackages(t *testing.T) {
 func TestGenerateHTTPServer_ConflictingPackageNames(t *testing.T) {
 	cfg := HTTPServerGenConfig{
 		ModulePath: "example.com/app",
-		Handlers: []SerializedHandlerInfo{
+		Handlers: []codegen.SerializedHandlerInfo{
 			{
 				Method:      "GET",
 				Path:        "/api/users/:id",
 				FuncName:    "GetUser",
 				PackagePath: "example.com/app/api/users",
-				PathParams: []SerializedPathParam{
+				PathParams: []codegen.SerializedPathParam{
 					{Name: "id", Position: 1},
 				},
-				Request: &SerializedStructInfo{
+				Request: &codegen.SerializedStructInfo{
 					Name:    "GetUserRequest",
 					Package: "example.com/app/api/users",
-					Fields: []SerializedFieldInfo{
+					Fields: []codegen.SerializedFieldInfo{
 						{Name: "ID", Type: "string", JSONName: "id", Required: true},
 					},
 				},
-				Response: &SerializedStructInfo{
+				Response: &codegen.SerializedStructInfo{
 					Name:    "GetUserResponse",
 					Package: "example.com/app/api/users",
-					Fields:  []SerializedFieldInfo{},
+					Fields:  []codegen.SerializedFieldInfo{},
 				},
 			},
 			{
@@ -448,20 +450,20 @@ func TestGenerateHTTPServer_ConflictingPackageNames(t *testing.T) {
 				Path:        "/admin/users/:id",
 				FuncName:    "GetAdminUser",
 				PackagePath: "example.com/app/admin/users",
-				PathParams: []SerializedPathParam{
+				PathParams: []codegen.SerializedPathParam{
 					{Name: "id", Position: 1},
 				},
-				Request: &SerializedStructInfo{
+				Request: &codegen.SerializedStructInfo{
 					Name:    "GetAdminUserRequest",
 					Package: "example.com/app/admin/users",
-					Fields: []SerializedFieldInfo{
+					Fields: []codegen.SerializedFieldInfo{
 						{Name: "ID", Type: "string", JSONName: "id", Required: true},
 					},
 				},
-				Response: &SerializedStructInfo{
+				Response: &codegen.SerializedStructInfo{
 					Name:    "GetAdminUserResponse",
 					Package: "example.com/app/admin/users",
-					Fields:  []SerializedFieldInfo{},
+					Fields:  []codegen.SerializedFieldInfo{},
 				},
 			},
 		},
@@ -490,7 +492,7 @@ func TestGenerateHTTPServer_ConflictingPackageNames(t *testing.T) {
 func TestGenerateHTTPServer_HelperFunctions(t *testing.T) {
 	cfg := HTTPServerGenConfig{
 		ModulePath: "example.com/app",
-		Handlers:   []SerializedHandlerInfo{},
+		Handlers:   []codegen.SerializedHandlerInfo{},
 		OutputPkg:  "api",
 	}
 
@@ -531,13 +533,13 @@ func TestGenerateHTTPServer_HelperFunctions(t *testing.T) {
 }
 
 func TestCollectHandlerPackages_Deduplication(t *testing.T) {
-	handlers := []SerializedHandlerInfo{
+	handlers := []codegen.SerializedHandlerInfo{
 		{PackagePath: "example.com/app/users"},
 		{PackagePath: "example.com/app/users"},
 		{PackagePath: "example.com/app/posts"},
 	}
 
-	pkgs := collectHandlerPackages(handlers)
+	pkgs := codegen.CollectHandlerPackages(handlers)
 
 	if len(pkgs) != 2 {
 		t.Errorf("collectHandlerPackages() returned %d packages; want 2", len(pkgs))
@@ -545,12 +547,12 @@ func TestCollectHandlerPackages_Deduplication(t *testing.T) {
 }
 
 func TestCollectHandlerPackages_UniqueAliases(t *testing.T) {
-	handlers := []SerializedHandlerInfo{
+	handlers := []codegen.SerializedHandlerInfo{
 		{PackagePath: "example.com/app/api/users"},
 		{PackagePath: "example.com/app/admin/users"},
 	}
 
-	pkgs := collectHandlerPackages(handlers)
+	pkgs := codegen.CollectHandlerPackages(handlers)
 
 	// Both have base name "users", so second should be aliased differently
 	aliases := make(map[string]bool)
@@ -565,21 +567,21 @@ func TestCollectHandlerPackages_UniqueAliases(t *testing.T) {
 func TestNeedsStrconv(t *testing.T) {
 	tests := []struct {
 		name     string
-		handlers []SerializedHandlerInfo
+		handlers []codegen.SerializedHandlerInfo
 		want     bool
 	}{
 		{
 			name:     "empty handlers",
-			handlers: []SerializedHandlerInfo{},
+			handlers: []codegen.SerializedHandlerInfo{},
 			want:     false,
 		},
 		{
 			name: "string path param",
-			handlers: []SerializedHandlerInfo{
+			handlers: []codegen.SerializedHandlerInfo{
 				{
-					PathParams: []SerializedPathParam{{Name: "id", Position: 1}},
-					Request: &SerializedStructInfo{
-						Fields: []SerializedFieldInfo{
+					PathParams: []codegen.SerializedPathParam{{Name: "id", Position: 1}},
+					Request: &codegen.SerializedStructInfo{
+						Fields: []codegen.SerializedFieldInfo{
 							{Name: "ID", Type: "string", JSONName: "id"},
 						},
 					},
@@ -589,11 +591,11 @@ func TestNeedsStrconv(t *testing.T) {
 		},
 		{
 			name: "int64 path param",
-			handlers: []SerializedHandlerInfo{
+			handlers: []codegen.SerializedHandlerInfo{
 				{
-					PathParams: []SerializedPathParam{{Name: "id", Position: 1}},
-					Request: &SerializedStructInfo{
-						Fields: []SerializedFieldInfo{
+					PathParams: []codegen.SerializedPathParam{{Name: "id", Position: 1}},
+					Request: &codegen.SerializedStructInfo{
+						Fields: []codegen.SerializedFieldInfo{
 							{Name: "ID", Type: "int64", JSONName: "id"},
 						},
 					},
@@ -603,11 +605,11 @@ func TestNeedsStrconv(t *testing.T) {
 		},
 		{
 			name: "int path param",
-			handlers: []SerializedHandlerInfo{
+			handlers: []codegen.SerializedHandlerInfo{
 				{
-					PathParams: []SerializedPathParam{{Name: "id", Position: 1}},
-					Request: &SerializedStructInfo{
-						Fields: []SerializedFieldInfo{
+					PathParams: []codegen.SerializedPathParam{{Name: "id", Position: 1}},
+					Request: &codegen.SerializedStructInfo{
+						Fields: []codegen.SerializedFieldInfo{
 							{Name: "ID", Type: "int", JSONName: "id"},
 						},
 					},

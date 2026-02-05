@@ -1,11 +1,15 @@
-package codegen
+package resourcegen
+
+import (
+	"github.com/shipq/shipq/codegen"
+)
 
 import (
 	"testing"
 )
 
 func TestDetectFullResources_EmptyHandlers(t *testing.T) {
-	handlers := []SerializedHandlerInfo{}
+	handlers := []codegen.SerializedHandlerInfo{}
 	resources := DetectFullResources(handlers)
 
 	if len(resources) != 0 {
@@ -14,17 +18,17 @@ func TestDetectFullResources_EmptyHandlers(t *testing.T) {
 }
 
 func TestDetectFullResources_SinglePackageFullCRUD(t *testing.T) {
-	handlers := []SerializedHandlerInfo{
+	handlers := []codegen.SerializedHandlerInfo{
 		{
 			Method:      "POST",
 			Path:        "/users",
 			FuncName:    "CreateUser",
 			PackagePath: "example.com/app/users",
-			PathParams:  []SerializedPathParam{},
-			Request: &SerializedStructInfo{
+			PathParams:  []codegen.SerializedPathParam{},
+			Request: &codegen.SerializedStructInfo{
 				Name: "CreateUserRequest",
 			},
-			Response: &SerializedStructInfo{
+			Response: &codegen.SerializedStructInfo{
 				Name: "UserResponse",
 			},
 		},
@@ -33,16 +37,16 @@ func TestDetectFullResources_SinglePackageFullCRUD(t *testing.T) {
 			Path:        "/users/:id",
 			FuncName:    "GetUser",
 			PackagePath: "example.com/app/users",
-			PathParams: []SerializedPathParam{
+			PathParams: []codegen.SerializedPathParam{
 				{Name: "id", Position: 1},
 			},
-			Request: &SerializedStructInfo{
+			Request: &codegen.SerializedStructInfo{
 				Name:   "GetUserRequest",
-				Fields: []SerializedFieldInfo{{Name: "ID", JSONName: "id"}},
+				Fields: []codegen.SerializedFieldInfo{{Name: "ID", JSONName: "id"}},
 			},
-			Response: &SerializedStructInfo{
+			Response: &codegen.SerializedStructInfo{
 				Name:   "UserResponse",
-				Fields: []SerializedFieldInfo{{Name: "ID", JSONName: "id"}},
+				Fields: []codegen.SerializedFieldInfo{{Name: "ID", JSONName: "id"}},
 			},
 		},
 		{
@@ -50,11 +54,11 @@ func TestDetectFullResources_SinglePackageFullCRUD(t *testing.T) {
 			Path:        "/users",
 			FuncName:    "ListUsers",
 			PackagePath: "example.com/app/users",
-			PathParams:  []SerializedPathParam{},
-			Request: &SerializedStructInfo{
+			PathParams:  []codegen.SerializedPathParam{},
+			Request: &codegen.SerializedStructInfo{
 				Name: "ListUsersRequest",
 			},
-			Response: &SerializedStructInfo{
+			Response: &codegen.SerializedStructInfo{
 				Name: "ListUsersResponse",
 			},
 		},
@@ -63,13 +67,13 @@ func TestDetectFullResources_SinglePackageFullCRUD(t *testing.T) {
 			Path:        "/users/:id",
 			FuncName:    "UpdateUser",
 			PackagePath: "example.com/app/users",
-			PathParams: []SerializedPathParam{
+			PathParams: []codegen.SerializedPathParam{
 				{Name: "id", Position: 1},
 			},
-			Request: &SerializedStructInfo{
+			Request: &codegen.SerializedStructInfo{
 				Name: "UpdateUserRequest",
 			},
-			Response: &SerializedStructInfo{
+			Response: &codegen.SerializedStructInfo{
 				Name: "UserResponse",
 			},
 		},
@@ -78,10 +82,10 @@ func TestDetectFullResources_SinglePackageFullCRUD(t *testing.T) {
 			Path:        "/users/:id",
 			FuncName:    "DeleteUser",
 			PackagePath: "example.com/app/users",
-			PathParams: []SerializedPathParam{
+			PathParams: []codegen.SerializedPathParam{
 				{Name: "id", Position: 1},
 			},
-			Request: &SerializedStructInfo{
+			Request: &codegen.SerializedStructInfo{
 				Name: "DeleteUserRequest",
 			},
 		},
@@ -121,13 +125,13 @@ func TestDetectFullResources_SinglePackageFullCRUD(t *testing.T) {
 }
 
 func TestDetectFullResources_PartialCRUD(t *testing.T) {
-	handlers := []SerializedHandlerInfo{
+	handlers := []codegen.SerializedHandlerInfo{
 		{
 			Method:      "GET",
 			Path:        "/posts/:id",
 			FuncName:    "GetPost",
 			PackagePath: "example.com/app/posts",
-			PathParams: []SerializedPathParam{
+			PathParams: []codegen.SerializedPathParam{
 				{Name: "id", Position: 1},
 			},
 		},
@@ -136,7 +140,7 @@ func TestDetectFullResources_PartialCRUD(t *testing.T) {
 			Path:        "/posts",
 			FuncName:    "ListPosts",
 			PackagePath: "example.com/app/posts",
-			PathParams:  []SerializedPathParam{},
+			PathParams:  []codegen.SerializedPathParam{},
 		},
 	}
 
@@ -168,20 +172,20 @@ func TestDetectFullResources_PartialCRUD(t *testing.T) {
 }
 
 func TestDetectFullResources_MultiplePackages(t *testing.T) {
-	handlers := []SerializedHandlerInfo{
+	handlers := []codegen.SerializedHandlerInfo{
 		{
 			Method:      "GET",
 			Path:        "/users",
 			FuncName:    "ListUsers",
 			PackagePath: "example.com/app/users",
-			PathParams:  []SerializedPathParam{},
+			PathParams:  []codegen.SerializedPathParam{},
 		},
 		{
 			Method:      "GET",
 			Path:        "/posts",
 			FuncName:    "ListPosts",
 			PackagePath: "example.com/app/posts",
-			PathParams:  []SerializedPathParam{},
+			PathParams:  []codegen.SerializedPathParam{},
 		},
 	}
 
@@ -341,10 +345,10 @@ func TestResourceInfo_IsFullResource(t *testing.T) {
 
 func TestClassifyCRUDOperation_POST(t *testing.T) {
 	// POST without path params = Create
-	h := &SerializedHandlerInfo{
+	h := &codegen.SerializedHandlerInfo{
 		Method:     "POST",
 		Path:       "/users",
-		PathParams: []SerializedPathParam{},
+			PathParams: []codegen.SerializedPathParam{},
 	}
 	if got := classifyCRUDOperation(h); got != crudCreate {
 		t.Errorf("expected crudCreate, got %v", got)
@@ -353,20 +357,20 @@ func TestClassifyCRUDOperation_POST(t *testing.T) {
 
 func TestClassifyCRUDOperation_GET(t *testing.T) {
 	// GET without path params = List
-	listHandler := &SerializedHandlerInfo{
+	listHandler := &codegen.SerializedHandlerInfo{
 		Method:     "GET",
 		Path:       "/users",
-		PathParams: []SerializedPathParam{},
+			PathParams: []codegen.SerializedPathParam{},
 	}
 	if got := classifyCRUDOperation(listHandler); got != crudList {
 		t.Errorf("expected crudList, got %v", got)
 	}
 
 	// GET with path params = GetOne
-	getOneHandler := &SerializedHandlerInfo{
+	getOneHandler := &codegen.SerializedHandlerInfo{
 		Method: "GET",
 		Path:   "/users/:id",
-		PathParams: []SerializedPathParam{
+			PathParams: []codegen.SerializedPathParam{
 			{Name: "id", Position: 1},
 		},
 	}
@@ -377,10 +381,10 @@ func TestClassifyCRUDOperation_GET(t *testing.T) {
 
 func TestClassifyCRUDOperation_PUT_PATCH(t *testing.T) {
 	// PUT with path params = Update
-	putHandler := &SerializedHandlerInfo{
+	putHandler := &codegen.SerializedHandlerInfo{
 		Method: "PUT",
 		Path:   "/users/:id",
-		PathParams: []SerializedPathParam{
+			PathParams: []codegen.SerializedPathParam{
 			{Name: "id", Position: 1},
 		},
 	}
@@ -389,10 +393,10 @@ func TestClassifyCRUDOperation_PUT_PATCH(t *testing.T) {
 	}
 
 	// PATCH with path params = Update
-	patchHandler := &SerializedHandlerInfo{
+	patchHandler := &codegen.SerializedHandlerInfo{
 		Method: "PATCH",
 		Path:   "/users/:id",
-		PathParams: []SerializedPathParam{
+			PathParams: []codegen.SerializedPathParam{
 			{Name: "id", Position: 1},
 		},
 	}
@@ -403,10 +407,10 @@ func TestClassifyCRUDOperation_PUT_PATCH(t *testing.T) {
 
 func TestClassifyCRUDOperation_DELETE(t *testing.T) {
 	// DELETE with path params = Delete
-	h := &SerializedHandlerInfo{
+	h := &codegen.SerializedHandlerInfo{
 		Method: "DELETE",
 		Path:   "/users/:id",
-		PathParams: []SerializedPathParam{
+			PathParams: []codegen.SerializedPathParam{
 			{Name: "id", Position: 1},
 		},
 	}
@@ -418,41 +422,41 @@ func TestClassifyCRUDOperation_DELETE(t *testing.T) {
 func TestHasResourceIDParam(t *testing.T) {
 	tests := []struct {
 		name string
-		h    *SerializedHandlerInfo
+		h    *codegen.SerializedHandlerInfo
 		want bool
 	}{
 		{
 			name: "id param",
-			h: &SerializedHandlerInfo{
-				PathParams: []SerializedPathParam{{Name: "id"}},
+			h: &codegen.SerializedHandlerInfo{
+				PathParams: []codegen.SerializedPathParam{{Name: "id"}},
 			},
 			want: true,
 		},
 		{
 			name: "public_id param",
-			h: &SerializedHandlerInfo{
-				PathParams: []SerializedPathParam{{Name: "public_id"}},
+			h: &codegen.SerializedHandlerInfo{
+				PathParams: []codegen.SerializedPathParam{{Name: "public_id"}},
 			},
 			want: true,
 		},
 		{
 			name: "user_id param",
-			h: &SerializedHandlerInfo{
-				PathParams: []SerializedPathParam{{Name: "user_id"}},
+			h: &codegen.SerializedHandlerInfo{
+				PathParams: []codegen.SerializedPathParam{{Name: "user_id"}},
 			},
 			want: true,
 		},
 		{
 			name: "no params",
-			h: &SerializedHandlerInfo{
-				PathParams: []SerializedPathParam{},
+			h: &codegen.SerializedHandlerInfo{
+				PathParams: []codegen.SerializedPathParam{},
 			},
 			want: false,
 		},
 		{
 			name: "slug param (still considered ID-like)",
-			h: &SerializedHandlerInfo{
-				PathParams: []SerializedPathParam{{Name: "slug"}},
+			h: &codegen.SerializedHandlerInfo{
+				PathParams: []codegen.SerializedPathParam{{Name: "slug"}},
 			},
 			want: true, // Any path param is considered resource identifier
 		},
@@ -496,21 +500,21 @@ func TestGetResourceBasePath(t *testing.T) {
 		{
 			name: "from list handler",
 			info: ResourceInfo{
-				ListHandler: &SerializedHandlerInfo{Path: "/users"},
+				ListHandler: &codegen.SerializedHandlerInfo{Path: "/users"},
 			},
 			want: "/users",
 		},
 		{
 			name: "from create handler when no list",
 			info: ResourceInfo{
-				CreateHandler: &SerializedHandlerInfo{Path: "/users"},
+				CreateHandler: &codegen.SerializedHandlerInfo{Path: "/users"},
 			},
 			want: "/users",
 		},
 		{
 			name: "from get one handler",
 			info: ResourceInfo{
-				GetOneHandler: &SerializedHandlerInfo{Path: "/users/:id"},
+				GetOneHandler: &codegen.SerializedHandlerInfo{Path: "/users/:id"},
 			},
 			want: "/users",
 		},
@@ -539,9 +543,9 @@ func TestGetResourceIDField(t *testing.T) {
 		{
 			name: "id field",
 			info: ResourceInfo{
-				GetOneHandler: &SerializedHandlerInfo{
-					Request: &SerializedStructInfo{
-						Fields: []SerializedFieldInfo{
+				GetOneHandler: &codegen.SerializedHandlerInfo{
+					Request: &codegen.SerializedStructInfo{
+						Fields: []codegen.SerializedFieldInfo{
 							{Name: "ID", JSONName: "id"},
 						},
 					},
@@ -552,9 +556,9 @@ func TestGetResourceIDField(t *testing.T) {
 		{
 			name: "public_id field",
 			info: ResourceInfo{
-				GetOneHandler: &SerializedHandlerInfo{
-					Request: &SerializedStructInfo{
-						Fields: []SerializedFieldInfo{
+				GetOneHandler: &codegen.SerializedHandlerInfo{
+					Request: &codegen.SerializedStructInfo{
+						Fields: []codegen.SerializedFieldInfo{
 							{Name: "PublicID", JSONName: "public_id"},
 						},
 					},
@@ -587,9 +591,9 @@ func TestGetResourceIDJSONName(t *testing.T) {
 		{
 			name: "id json name",
 			info: ResourceInfo{
-				GetOneHandler: &SerializedHandlerInfo{
-					Response: &SerializedStructInfo{
-						Fields: []SerializedFieldInfo{
+				GetOneHandler: &codegen.SerializedHandlerInfo{
+					Response: &codegen.SerializedStructInfo{
+						Fields: []codegen.SerializedFieldInfo{
 							{Name: "ID", JSONName: "id"},
 						},
 					},
@@ -600,9 +604,9 @@ func TestGetResourceIDJSONName(t *testing.T) {
 		{
 			name: "public_id json name",
 			info: ResourceInfo{
-				GetOneHandler: &SerializedHandlerInfo{
-					Response: &SerializedStructInfo{
-						Fields: []SerializedFieldInfo{
+				GetOneHandler: &codegen.SerializedHandlerInfo{
+					Response: &codegen.SerializedStructInfo{
+						Fields: []codegen.SerializedFieldInfo{
 							{Name: "PublicID", JSONName: "public_id"},
 						},
 					},
@@ -627,43 +631,43 @@ func TestGetResourceIDJSONName(t *testing.T) {
 }
 
 func TestDetectFullResources_HandlerReferences(t *testing.T) {
-	createHandler := SerializedHandlerInfo{
+	createHandler := codegen.SerializedHandlerInfo{
 		Method:      "POST",
 		Path:        "/accounts",
 		FuncName:    "CreateAccount",
 		PackagePath: "example.com/app/accounts",
-		PathParams:  []SerializedPathParam{},
+		PathParams:  []codegen.SerializedPathParam{},
 	}
-	getOneHandler := SerializedHandlerInfo{
+	getOneHandler := codegen.SerializedHandlerInfo{
 		Method:      "GET",
 		Path:        "/accounts/:public_id",
 		FuncName:    "GetAccount",
 		PackagePath: "example.com/app/accounts",
-		PathParams:  []SerializedPathParam{{Name: "public_id", Position: 1}},
+		PathParams:  []codegen.SerializedPathParam{{Name: "public_id", Position: 1}},
 	}
-	listHandler := SerializedHandlerInfo{
+	listHandler := codegen.SerializedHandlerInfo{
 		Method:      "GET",
 		Path:        "/accounts",
 		FuncName:    "ListAccounts",
 		PackagePath: "example.com/app/accounts",
-		PathParams:  []SerializedPathParam{},
+		PathParams:  []codegen.SerializedPathParam{},
 	}
-	updateHandler := SerializedHandlerInfo{
+	updateHandler := codegen.SerializedHandlerInfo{
 		Method:      "PUT",
 		Path:        "/accounts/:public_id",
 		FuncName:    "UpdateAccount",
 		PackagePath: "example.com/app/accounts",
-		PathParams:  []SerializedPathParam{{Name: "public_id", Position: 1}},
+		PathParams:  []codegen.SerializedPathParam{{Name: "public_id", Position: 1}},
 	}
-	deleteHandler := SerializedHandlerInfo{
+	deleteHandler := codegen.SerializedHandlerInfo{
 		Method:      "DELETE",
 		Path:        "/accounts/:public_id",
 		FuncName:    "DeleteAccount",
 		PackagePath: "example.com/app/accounts",
-		PathParams:  []SerializedPathParam{{Name: "public_id", Position: 1}},
+		PathParams:  []codegen.SerializedPathParam{{Name: "public_id", Position: 1}},
 	}
 
-	handlers := []SerializedHandlerInfo{
+	handlers := []codegen.SerializedHandlerInfo{
 		createHandler,
 		getOneHandler,
 		listHandler,

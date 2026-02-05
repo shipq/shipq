@@ -5,18 +5,19 @@ import (
 	"path/filepath"
 
 	"github.com/shipq/shipq/codegen"
+	"github.com/shipq/shipq/codegen/httpserver/server"
 )
 
 // generateHTTPMain generates the main.go entrypoint file for the HTTP server.
 func generateHTTPMain(cfg CompileConfig) error {
-	mainCfg := codegen.HTTPMainGenConfig{
+	mainCfg := server.HTTPMainGenConfig{
 		ModulePath: cfg.ModulePath,
 		OutputPkg:  cfg.OutputPkg,
 		DBDialect:  cfg.DBDialect,
 		Port:       cfg.Port,
 	}
 
-	mainCode, err := codegen.GenerateHTTPMain(mainCfg)
+	mainCode, err := server.GenerateHTTPMain(mainCfg)
 	if err != nil {
 		return fmt.Errorf("failed to generate main.go: %w", err)
 	}

@@ -2,8 +2,11 @@ package codegen
 
 import (
 	"fmt"
+	"go/token"
 	"os"
 	"path/filepath"
+	"regexp"
+	"sort"
 	"strings"
 )
 
@@ -126,4 +129,75 @@ func WriteFileIfChanged(path string, content []byte) (bool, error) {
 		return false, err
 	}
 	return true, nil
+}
+
+// ConvertPathSyntax converts :param syntax to {param} syntax for Go 1.22 ServeMux.
+func ConvertPathSyntax(path string) string {
+	// Match :paramName pattern
+	re := regexp.MustCompile(`:([a-zA-Z_][a-zA-Z0-9_]*)`)
+	return re.ReplaceAllString(path, "{$1}")
+}
+
+// PackageAlias holds information about an imported package.
+type PackageAlias struct {
+	Path  string
+	Alias string
+}
+
+// CollectHandlerPackages extracts unique package paths from handlers and assigns aliases.
+func CollectHandlerPackages(handlers []SerializedHandlerInfo) map[string]PackageAlias {
+	pkgPaths := make(map[string]bool)
+	for _, h := range handlers {
+		if h.PackagePath != "" {
+			pkgPaths[h.PackagePath] = true
+		}
+	}
+
+	// Sort for deterministic output
+	var paths []string
+	for path := range pkgPaths {
+		paths = append(paths, path)
+	}
+	sort.Strings(paths)
+
+	// Assign unique aliases
+	result := make(map[string]PackageAlias)
+	usedAliases := make(map[string]int)
+
+	for _, path := range paths {
+		// Extract base name from path
+		parts := strings.Split(path, "/")
+		baseName := parts[len(parts)-1]
+
+		// If base name is a Go keyword, prefix it
+		if token.Lookup(baseName).IsKeyword() {
+			baseName = "pkg_" + baseName
+		}
+
+		// Make alias unique if needed
+		alias := baseName
+		if count, exists := usedAliases[baseName]; exists {
+			alias = fmt.Sprintf("%s%d", baseName, count+1)
+			usedAliases[baseName] = count + 1
+		} else {
+			usedAliases[baseName] = 1
+		}
+
+		result[path] = PackageAlias{
+			Path:  path,
+			Alias: alias,
+		}
+	}
+
+	return result
+}
+
+// MethodHasBody returns true if the HTTP method typically has a request body.
+func MethodHasBody(method string) bool {
+	switch method {
+	case "POST", "PUT", "PATCH":
+		return true
+	default:
+		return false
+	}
 }

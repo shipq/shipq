@@ -1,16 +1,18 @@
-package codegen
+package testclient
 
 import (
 	"go/parser"
 	"go/token"
 	"strings"
 	"testing"
+
+	"github.com/shipq/shipq/codegen"
 )
 
 func TestGenerateHTTPTestClient_EmptyRegistry(t *testing.T) {
 	cfg := HTTPTestClientGenConfig{
 		ModulePath: "example.com/app",
-		Handlers:   []SerializedHandlerInfo{},
+		Handlers:   []codegen.SerializedHandlerInfo{},
 		OutputPkg:  "api",
 	}
 
@@ -46,26 +48,26 @@ func TestGenerateHTTPTestClient_EmptyRegistry(t *testing.T) {
 func TestGenerateHTTPTestClient_SingleGetHandler(t *testing.T) {
 	cfg := HTTPTestClientGenConfig{
 		ModulePath: "example.com/app",
-		Handlers: []SerializedHandlerInfo{
+		Handlers: []codegen.SerializedHandlerInfo{
 			{
 				Method:      "GET",
 				Path:        "/users/:id",
 				FuncName:    "GetUser",
 				PackagePath: "example.com/app/users",
-				PathParams: []SerializedPathParam{
+				PathParams: []codegen.SerializedPathParam{
 					{Name: "id", Position: 1},
 				},
-				Request: &SerializedStructInfo{
+				Request: &codegen.SerializedStructInfo{
 					Name:    "GetUserRequest",
 					Package: "example.com/app/users",
-					Fields: []SerializedFieldInfo{
+					Fields: []codegen.SerializedFieldInfo{
 						{Name: "ID", Type: "string", JSONName: "id", Required: true},
 					},
 				},
-				Response: &SerializedStructInfo{
+				Response: &codegen.SerializedStructInfo{
 					Name:    "GetUserResponse",
 					Package: "example.com/app/users",
-					Fields: []SerializedFieldInfo{
+					Fields: []codegen.SerializedFieldInfo{
 						{Name: "ID", Type: "string", JSONName: "id", Required: true},
 						{Name: "Name", Type: "string", JSONName: "name", Required: true},
 					},
@@ -115,25 +117,25 @@ func TestGenerateHTTPTestClient_SingleGetHandler(t *testing.T) {
 func TestGenerateHTTPTestClient_PostHandler(t *testing.T) {
 	cfg := HTTPTestClientGenConfig{
 		ModulePath: "example.com/app",
-		Handlers: []SerializedHandlerInfo{
+		Handlers: []codegen.SerializedHandlerInfo{
 			{
 				Method:      "POST",
 				Path:        "/users",
 				FuncName:    "CreateUser",
 				PackagePath: "example.com/app/users",
-				PathParams:  []SerializedPathParam{},
-				Request: &SerializedStructInfo{
+				PathParams:  []codegen.SerializedPathParam{},
+				Request: &codegen.SerializedStructInfo{
 					Name:    "CreateUserRequest",
 					Package: "example.com/app/users",
-					Fields: []SerializedFieldInfo{
+					Fields: []codegen.SerializedFieldInfo{
 						{Name: "Name", Type: "string", JSONName: "name", Required: true},
 						{Name: "Email", Type: "string", JSONName: "email", Required: true},
 					},
 				},
-				Response: &SerializedStructInfo{
+				Response: &codegen.SerializedStructInfo{
 					Name:    "CreateUserResponse",
 					Package: "example.com/app/users",
-					Fields: []SerializedFieldInfo{
+					Fields: []codegen.SerializedFieldInfo{
 						{Name: "ID", Type: "string", JSONName: "id", Required: true},
 					},
 				},
@@ -174,19 +176,19 @@ func TestGenerateHTTPTestClient_PostHandler(t *testing.T) {
 func TestGenerateHTTPTestClient_DeleteHandler_NoBody(t *testing.T) {
 	cfg := HTTPTestClientGenConfig{
 		ModulePath: "example.com/app",
-		Handlers: []SerializedHandlerInfo{
+		Handlers: []codegen.SerializedHandlerInfo{
 			{
 				Method:      "DELETE",
 				Path:        "/users/:id",
 				FuncName:    "DeleteUser",
 				PackagePath: "example.com/app/users",
-				PathParams: []SerializedPathParam{
+				PathParams: []codegen.SerializedPathParam{
 					{Name: "id", Position: 1},
 				},
-				Request: &SerializedStructInfo{
+				Request: &codegen.SerializedStructInfo{
 					Name:    "DeleteUserRequest",
 					Package: "example.com/app/users",
-					Fields: []SerializedFieldInfo{
+					Fields: []codegen.SerializedFieldInfo{
 						{Name: "ID", Type: "string", JSONName: "id", Required: true},
 					},
 				},
@@ -218,23 +220,23 @@ func TestGenerateHTTPTestClient_DeleteHandler_NoBody(t *testing.T) {
 func TestGenerateHTTPTestClient_MultipleHandlers(t *testing.T) {
 	cfg := HTTPTestClientGenConfig{
 		ModulePath: "example.com/app",
-		Handlers: []SerializedHandlerInfo{
+		Handlers: []codegen.SerializedHandlerInfo{
 			{
 				Method:      "POST",
 				Path:        "/users",
 				FuncName:    "CreateUser",
 				PackagePath: "example.com/app/users",
-				Request: &SerializedStructInfo{
+				Request: &codegen.SerializedStructInfo{
 					Name:    "CreateUserRequest",
 					Package: "example.com/app/users",
-					Fields: []SerializedFieldInfo{
+					Fields: []codegen.SerializedFieldInfo{
 						{Name: "Name", Type: "string", JSONName: "name", Required: true},
 					},
 				},
-				Response: &SerializedStructInfo{
+				Response: &codegen.SerializedStructInfo{
 					Name:    "UserResponse",
 					Package: "example.com/app/users",
-					Fields: []SerializedFieldInfo{
+					Fields: []codegen.SerializedFieldInfo{
 						{Name: "ID", Type: "string", JSONName: "id", Required: true},
 					},
 				},
@@ -244,20 +246,20 @@ func TestGenerateHTTPTestClient_MultipleHandlers(t *testing.T) {
 				Path:        "/users/:id",
 				FuncName:    "GetUser",
 				PackagePath: "example.com/app/users",
-				PathParams: []SerializedPathParam{
+				PathParams: []codegen.SerializedPathParam{
 					{Name: "id", Position: 1},
 				},
-				Request: &SerializedStructInfo{
+				Request: &codegen.SerializedStructInfo{
 					Name:    "GetUserRequest",
 					Package: "example.com/app/users",
-					Fields: []SerializedFieldInfo{
+					Fields: []codegen.SerializedFieldInfo{
 						{Name: "ID", Type: "string", JSONName: "id", Required: true},
 					},
 				},
-				Response: &SerializedStructInfo{
+				Response: &codegen.SerializedStructInfo{
 					Name:    "UserResponse",
 					Package: "example.com/app/users",
-					Fields: []SerializedFieldInfo{
+					Fields: []codegen.SerializedFieldInfo{
 						{Name: "ID", Type: "string", JSONName: "id", Required: true},
 					},
 				},
@@ -267,15 +269,15 @@ func TestGenerateHTTPTestClient_MultipleHandlers(t *testing.T) {
 				Path:        "/users",
 				FuncName:    "ListUsers",
 				PackagePath: "example.com/app/users",
-				Request: &SerializedStructInfo{
+				Request: &codegen.SerializedStructInfo{
 					Name:    "ListUsersRequest",
 					Package: "example.com/app/users",
-					Fields:  []SerializedFieldInfo{},
+					Fields:  []codegen.SerializedFieldInfo{},
 				},
-				Response: &SerializedStructInfo{
+				Response: &codegen.SerializedStructInfo{
 					Name:    "ListUsersResponse",
 					Package: "example.com/app/users",
-					Fields: []SerializedFieldInfo{
+					Fields: []codegen.SerializedFieldInfo{
 						{Name: "Users", Type: "[]UserResponse", JSONName: "users", Required: true},
 					},
 				},
@@ -312,26 +314,26 @@ func TestGenerateHTTPTestClient_MultipleHandlers(t *testing.T) {
 func TestGenerateHTTPTestClient_MultiplePackages(t *testing.T) {
 	cfg := HTTPTestClientGenConfig{
 		ModulePath: "example.com/app",
-		Handlers: []SerializedHandlerInfo{
+		Handlers: []codegen.SerializedHandlerInfo{
 			{
 				Method:      "GET",
 				Path:        "/users/:id",
 				FuncName:    "GetUser",
 				PackagePath: "example.com/app/users",
-				PathParams: []SerializedPathParam{
+				PathParams: []codegen.SerializedPathParam{
 					{Name: "id", Position: 1},
 				},
-				Request: &SerializedStructInfo{
+				Request: &codegen.SerializedStructInfo{
 					Name:    "GetUserRequest",
 					Package: "example.com/app/users",
-					Fields: []SerializedFieldInfo{
+					Fields: []codegen.SerializedFieldInfo{
 						{Name: "ID", Type: "string", JSONName: "id", Required: true},
 					},
 				},
-				Response: &SerializedStructInfo{
+				Response: &codegen.SerializedStructInfo{
 					Name:    "UserResponse",
 					Package: "example.com/app/users",
-					Fields:  []SerializedFieldInfo{},
+					Fields:  []codegen.SerializedFieldInfo{},
 				},
 			},
 			{
@@ -339,20 +341,20 @@ func TestGenerateHTTPTestClient_MultiplePackages(t *testing.T) {
 				Path:        "/posts/:id",
 				FuncName:    "GetPost",
 				PackagePath: "example.com/app/posts",
-				PathParams: []SerializedPathParam{
+				PathParams: []codegen.SerializedPathParam{
 					{Name: "id", Position: 1},
 				},
-				Request: &SerializedStructInfo{
+				Request: &codegen.SerializedStructInfo{
 					Name:    "GetPostRequest",
 					Package: "example.com/app/posts",
-					Fields: []SerializedFieldInfo{
+					Fields: []codegen.SerializedFieldInfo{
 						{Name: "ID", Type: "string", JSONName: "id", Required: true},
 					},
 				},
-				Response: &SerializedStructInfo{
+				Response: &codegen.SerializedStructInfo{
 					Name:    "PostResponse",
 					Package: "example.com/app/posts",
-					Fields:  []SerializedFieldInfo{},
+					Fields:  []codegen.SerializedFieldInfo{},
 				},
 			},
 		},
@@ -390,9 +392,9 @@ func TestGenerateHTTPTestClient_MultiplePackages(t *testing.T) {
 }
 
 func TestFindRequestFieldForParam(t *testing.T) {
-	h := SerializedHandlerInfo{
-		Request: &SerializedStructInfo{
-			Fields: []SerializedFieldInfo{
+	h := codegen.SerializedHandlerInfo{
+		Request: &codegen.SerializedStructInfo{
+			Fields: []codegen.SerializedFieldInfo{
 				{Name: "PublicID", Type: "string", JSONName: "public_id"},
 				{Name: "Name", Type: "string", JSONName: "name"},
 			},
@@ -442,26 +444,26 @@ func TestParsePathForReplacement(t *testing.T) {
 func TestGenerateHTTPTestClient_ErrorHandling(t *testing.T) {
 	cfg := HTTPTestClientGenConfig{
 		ModulePath: "example.com/app",
-		Handlers: []SerializedHandlerInfo{
+		Handlers: []codegen.SerializedHandlerInfo{
 			{
 				Method:      "GET",
 				Path:        "/users/:id",
 				FuncName:    "GetUser",
 				PackagePath: "example.com/app/users",
-				PathParams: []SerializedPathParam{
+				PathParams: []codegen.SerializedPathParam{
 					{Name: "id", Position: 1},
 				},
-				Request: &SerializedStructInfo{
+				Request: &codegen.SerializedStructInfo{
 					Name:    "GetUserRequest",
 					Package: "example.com/app/users",
-					Fields: []SerializedFieldInfo{
+					Fields: []codegen.SerializedFieldInfo{
 						{Name: "ID", Type: "string", JSONName: "id", Required: true},
 					},
 				},
-				Response: &SerializedStructInfo{
+				Response: &codegen.SerializedStructInfo{
 					Name:    "UserResponse",
 					Package: "example.com/app/users",
-					Fields:  []SerializedFieldInfo{},
+					Fields:  []codegen.SerializedFieldInfo{},
 				},
 			},
 		},
@@ -495,22 +497,22 @@ func TestGenerateHTTPTestClient_ErrorHandling(t *testing.T) {
 func TestGenerateHTTPTestClient_SimplePathWithNoParams(t *testing.T) {
 	cfg := HTTPTestClientGenConfig{
 		ModulePath: "example.com/app",
-		Handlers: []SerializedHandlerInfo{
+		Handlers: []codegen.SerializedHandlerInfo{
 			{
 				Method:      "GET",
 				Path:        "/health",
 				FuncName:    "HealthCheck",
 				PackagePath: "example.com/app/health",
-				PathParams:  []SerializedPathParam{},
-				Request: &SerializedStructInfo{
+				PathParams:  []codegen.SerializedPathParam{},
+				Request: &codegen.SerializedStructInfo{
 					Name:    "HealthCheckRequest",
 					Package: "example.com/app/health",
-					Fields:  []SerializedFieldInfo{},
+					Fields:  []codegen.SerializedFieldInfo{},
 				},
-				Response: &SerializedStructInfo{
+				Response: &codegen.SerializedStructInfo{
 					Name:    "HealthCheckResponse",
 					Package: "example.com/app/health",
-					Fields: []SerializedFieldInfo{
+					Fields: []codegen.SerializedFieldInfo{
 						{Name: "Status", Type: "string", JSONName: "status", Required: true},
 					},
 				},

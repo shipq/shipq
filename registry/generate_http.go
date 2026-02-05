@@ -5,18 +5,19 @@ import (
 	"path/filepath"
 
 	"github.com/shipq/shipq/codegen"
+	"github.com/shipq/shipq/codegen/httpserver/server"
 )
 
 // generateHTTPServer generates the HTTP server code and writes it to the output directory.
 func generateHTTPServer(cfg CompileConfig) error {
 	// Generate HTTP server
-	httpCfg := codegen.HTTPServerGenConfig{
+	httpCfg := server.HTTPServerGenConfig{
 		ModulePath: cfg.ModulePath,
 		Handlers:   cfg.Handlers,
 		OutputPkg:  cfg.OutputPkg,
 	}
 
-	httpCode, err := codegen.GenerateHTTPServer(httpCfg)
+	httpCode, err := server.GenerateHTTPServer(httpCfg)
 	if err != nil {
 		return fmt.Errorf("failed to generate HTTP server: %w", err)
 	}

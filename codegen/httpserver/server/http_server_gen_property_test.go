@@ -1,4 +1,4 @@
-package codegen
+package server
 
 import (
 	"go/parser"
@@ -6,13 +6,14 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/shipq/shipq/codegen"
 	"github.com/shipq/shipq/proptest"
 )
 
 // generateRandomHandlers generates random handler definitions for property testing.
-func generateRandomHandlers(g *proptest.Generator) []SerializedHandlerInfo {
+func generateRandomHandlers(g *proptest.Generator) []codegen.SerializedHandlerInfo {
 	numHandlers := g.IntRange(0, 10)
-	handlers := make([]SerializedHandlerInfo, numHandlers)
+	handlers := make([]codegen.SerializedHandlerInfo, numHandlers)
 
 	methods := []string{"GET", "POST", "PUT", "PATCH", "DELETE"}
 
@@ -22,7 +23,7 @@ func generateRandomHandlers(g *proptest.Generator) []SerializedHandlerInfo {
 		funcName := g.Identifier(20)
 		pkgName := g.IdentifierLower(10)
 
-		handlers[i] = SerializedHandlerInfo{
+		handlers[i] = codegen.SerializedHandlerInfo{
 			Method:      method,
 			Path:        path,
 			FuncName:    funcName,
@@ -55,12 +56,12 @@ func generateRandomPath(g *proptest.Generator) string {
 }
 
 // extractTestPathParams extracts path parameters from a path (for test purposes).
-func extractTestPathParams(path string) []SerializedPathParam {
-	var params []SerializedPathParam
+func extractTestPathParams(path string) []codegen.SerializedPathParam {
+	var params []codegen.SerializedPathParam
 	parts := strings.Split(path, "/")
 	for i, part := range parts {
 		if strings.HasPrefix(part, ":") {
-			params = append(params, SerializedPathParam{
+			params = append(params, codegen.SerializedPathParam{
 				Name:     strings.TrimPrefix(part, ":"),
 				Position: i,
 			})
@@ -70,19 +71,19 @@ func extractTestPathParams(path string) []SerializedPathParam {
 }
 
 // generateRandomStructInfo generates a random struct definition for testing.
-func generateRandomStructInfo(g *proptest.Generator, name string) *SerializedStructInfo {
+func generateRandomStructInfo(g *proptest.Generator, name string) *codegen.SerializedStructInfo {
 	if g.BoolWithProb(0.1) {
 		return nil // Some handlers have no request/response
 	}
 
 	numFields := g.IntRange(1, 5)
-	fields := make([]SerializedFieldInfo, numFields)
+	fields := make([]codegen.SerializedFieldInfo, numFields)
 
 	types := []string{"string", "int64", "bool"}
 
 	for i := 0; i < numFields; i++ {
 		fieldName := g.Identifier(15)
-		fields[i] = SerializedFieldInfo{
+		fields[i] = codegen.SerializedFieldInfo{
 			Name:     fieldName,
 			Type:     types[g.Intn(len(types))],
 			JSONName: strings.ToLower(fieldName),
@@ -90,7 +91,7 @@ func generateRandomStructInfo(g *proptest.Generator, name string) *SerializedStr
 		}
 	}
 
-	return &SerializedStructInfo{
+	return &codegen.SerializedStructInfo{
 		Name:    name,
 		Package: "example.com/app/handlers",
 		Fields:  fields,
@@ -154,7 +155,7 @@ func TestProperty_GenerateHTTPServer_AllHandlersRouted(t *testing.T) {
 
 		// Every handler should have a mux.Handle line
 		for _, h := range handlers {
-			expectedPath := ConvertPathSyntax(h.Path)
+			expectedPath := codegen.ConvertPathSyntax(h.Path)
 			expectedRoute := h.Method + " " + expectedPath
 			if !strings.Contains(codeStr, expectedRoute) {
 				return false
@@ -186,7 +187,7 @@ func TestProperty_ConvertPathSyntax_Roundtrip(t *testing.T) {
 		}
 
 		originalPath := "/" + strings.Join(segments, "/")
-		convertedPath := ConvertPathSyntax(originalPath)
+		convertedPath := codegen.ConvertPathSyntax(originalPath)
 
 		// Verify all param names are present in {param} format
 		for _, name := range paramNames {
@@ -249,31 +250,31 @@ func TestProperty_GenerateHTTPServer_NoDuplicateImports(t *testing.T) {
 func TestProperty_GenerateHTTPServer_TypeConversions(t *testing.T) {
 	proptest.Check(t, "type conversions generated", proptest.Config{NumTrials: 50}, func(g *proptest.Generator) bool {
 		// Generate a handler with int64 path param
-		handler := SerializedHandlerInfo{
+		handler := codegen.SerializedHandlerInfo{
 			Method:      "GET",
 			Path:        "/users/:id",
 			FuncName:    "GetUser",
 			PackagePath: "example.com/app/users",
-			PathParams: []SerializedPathParam{
+			PathParams: []codegen.SerializedPathParam{
 				{Name: "id", Position: 1},
 			},
-			Request: &SerializedStructInfo{
+			Request: &codegen.SerializedStructInfo{
 				Name:    "GetUserRequest",
 				Package: "example.com/app/users",
-				Fields: []SerializedFieldInfo{
+				Fields: []codegen.SerializedFieldInfo{
 					{Name: "ID", Type: "int64", JSONName: "id"},
 				},
 			},
-			Response: &SerializedStructInfo{
+			Response: &codegen.SerializedStructInfo{
 				Name:    "GetUserResponse",
 				Package: "example.com/app/users",
-				Fields:  []SerializedFieldInfo{},
+				Fields:  []codegen.SerializedFieldInfo{},
 			},
 		}
 
 		cfg := HTTPServerGenConfig{
 			ModulePath: "example.com/app",
-			Handlers:   []SerializedHandlerInfo{handler},
+			Handlers:   []codegen.SerializedHandlerInfo{handler},
 			OutputPkg:  "api",
 		}
 
@@ -299,7 +300,7 @@ func TestProperty_GenerateHTTPServer_EmptyRegistry(t *testing.T) {
 	proptest.Check(t, "empty registry works", proptest.Config{NumTrials: 1}, func(g *proptest.Generator) bool {
 		cfg := HTTPServerGenConfig{
 			ModulePath: "example.com/app",
-			Handlers:   []SerializedHandlerInfo{},
+			Handlers:   []codegen.SerializedHandlerInfo{},
 			OutputPkg:  "api",
 		}
 
@@ -362,29 +363,29 @@ func TestProperty_GenerateHTTPServer_JSONBodyForMutatingMethods(t *testing.T) {
 		methods := []string{"POST", "PUT", "PATCH"}
 		method := methods[g.Intn(len(methods))]
 
-		handler := SerializedHandlerInfo{
+		handler := codegen.SerializedHandlerInfo{
 			Method:      method,
 			Path:        "/users",
 			FuncName:    "MutateUser",
 			PackagePath: "example.com/app/users",
-			PathParams:  []SerializedPathParam{},
-			Request: &SerializedStructInfo{
+			PathParams:  []codegen.SerializedPathParam{},
+			Request: &codegen.SerializedStructInfo{
 				Name:    "MutateUserRequest",
 				Package: "example.com/app/users",
-				Fields: []SerializedFieldInfo{
+				Fields: []codegen.SerializedFieldInfo{
 					{Name: "Name", Type: "string", JSONName: "name"},
 				},
 			},
-			Response: &SerializedStructInfo{
+			Response: &codegen.SerializedStructInfo{
 				Name:    "MutateUserResponse",
 				Package: "example.com/app/users",
-				Fields:  []SerializedFieldInfo{},
+				Fields:  []codegen.SerializedFieldInfo{},
 			},
 		}
 
 		cfg := HTTPServerGenConfig{
 			ModulePath: "example.com/app",
-			Handlers:   []SerializedHandlerInfo{handler},
+			Handlers:   []codegen.SerializedHandlerInfo{handler},
 			OutputPkg:  "api",
 		}
 
@@ -409,27 +410,27 @@ func TestProperty_GenerateHTTPServer_JSONBodyForMutatingMethods(t *testing.T) {
 func TestProperty_GenerateHTTPServer_StatusCodes(t *testing.T) {
 	proptest.Check(t, "correct status codes", proptest.Config{NumTrials: 20}, func(g *proptest.Generator) bool {
 		// POST should use StatusCreated
-		postHandler := SerializedHandlerInfo{
+		postHandler := codegen.SerializedHandlerInfo{
 			Method:      "POST",
 			Path:        "/users",
 			FuncName:    "CreateUser",
 			PackagePath: "example.com/app/users",
-			PathParams:  []SerializedPathParam{},
-			Request: &SerializedStructInfo{
+			PathParams:  []codegen.SerializedPathParam{},
+			Request: &codegen.SerializedStructInfo{
 				Name:    "CreateUserRequest",
 				Package: "example.com/app/users",
-				Fields:  []SerializedFieldInfo{},
+				Fields:  []codegen.SerializedFieldInfo{},
 			},
-			Response: &SerializedStructInfo{
+			Response: &codegen.SerializedStructInfo{
 				Name:    "CreateUserResponse",
 				Package: "example.com/app/users",
-				Fields:  []SerializedFieldInfo{},
+				Fields:  []codegen.SerializedFieldInfo{},
 			},
 		}
 
 		cfg := HTTPServerGenConfig{
 			ModulePath: "example.com/app",
-			Handlers:   []SerializedHandlerInfo{postHandler},
+			Handlers:   []codegen.SerializedHandlerInfo{postHandler},
 			OutputPkg:  "api",
 		}
 

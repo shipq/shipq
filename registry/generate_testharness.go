@@ -5,17 +5,18 @@ import (
 	"path/filepath"
 
 	"github.com/shipq/shipq/codegen"
+	"github.com/shipq/shipq/codegen/httpserver/testclient"
 )
 
 // generateHTTPTestHarness generates the HTTP test harness code.
 func generateHTTPTestHarness(cfg CompileConfig) error {
-	testHarnessCfg := codegen.HTTPTestHarnessGenConfig{
+	testHarnessCfg := testclient.HTTPTestHarnessGenConfig{
 		ModulePath: cfg.ModulePath,
 		OutputPkg:  cfg.OutputPkg,
 		DBDialect:  cfg.DBDialect,
 	}
 
-	testHarnessCode, err := codegen.GenerateHTTPTestHarness(testHarnessCfg)
+	testHarnessCode, err := testclient.GenerateHTTPTestHarness(testHarnessCfg)
 	if err != nil {
 		return fmt.Errorf("failed to generate HTTP test harness: %w", err)
 	}

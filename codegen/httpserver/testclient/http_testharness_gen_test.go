@@ -1,4 +1,4 @@
-package codegen
+package testclient
 
 import (
 	"go/parser"

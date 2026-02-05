@@ -1,4 +1,4 @@
-package codegen
+package server
 
 import (
 	"go/parser"
