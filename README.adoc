@@ -1,0 +1,381 @@
+= ShipQ
+
+ShipQ is a Go-first backend framework/CLI that generates a production-oriented API stack from your schema and your API surface.
+
+At a high level:
+
+- You declare schema changes as *Go migrations*.
+- ShipQ compiles migrations into a canonical schema plan (`schema.json`) and generates typed schema bindings.
+- You write queries in Go using a typed SQL DSL (PortSQL) against those bindings.
+- ShipQ compiles queries into a type-safe query runner (SQL + params/result types) for Postgres/MySQL/SQLite.
+- You write handlers (or generate them) and ShipQ compiles the handler registry into a runnable server, OpenAPI docs, a dev admin UI, TypeScript clients, and test tooling.
+
+ShipQ is not an ORM. It’s a compiler toolchain for backend code.
+
+== Quickstart (E2E-tested)
+
+This flow mirrors the repo’s end-to-end tests.
+
+[source,bash]
+----
+# Build shipq from this repo
+go build -o shipq ./cmd/shipq
+
+# Create a project
+mkdir myapp && cd myapp
+../shipq init
+
+# Provision dev + test databases, and write shipq.ini [db] database_url
+#
+# - If DATABASE_URL is not set, shipq will auto-detect:
+#   * MySQL if `mysqld` is on PATH
+#   * Postgres if `postgres` is on PATH
+#   * otherwise SQLite (stored under .shipq/data/)
+#
+# - For Postgres/MySQL, DATABASE_URL must point to localhost for safety.
+../shipq db setup
+
+# Generate auth (optional, but most apps want it)
+../shipq auth
+../shipq signup
+
+# Create a schema migration, apply it (generates schema bindings)
+../shipq migrate new pets name:string species:string age:int
+../shipq migrate up
+
+# Generate CRUD endpoints + tests
+../shipq resource pets all
+
+# Compile handler registry to generate server wiring + OpenAPI/docs/admin + TS clients
+../shipq handler compile
+
+# Run tests and start the generated server
+go test ./... -v
+go run ./cmd/server
+# or: ../shipq start server
+----
+
+== Core concepts
+
+ShipQ treats schema, queries, and handler registration as *build targets*. When you change any of those inputs, re-run the relevant compile step.
+
+=== What gets generated for clients
+
+After `shipq handler compile`, ShipQ generates (among other things):
+
+- OpenAPI spec endpoint: `GET /openapi` (dev/test only)
+- Docs UI: `GET /docs` (dev/test only)
+- Admin UI (generated from OpenAPI; useful for manual testing)
+- TypeScript HTTP client codegen (and optional framework helpers based on `[typescript] framework`)
+
+== Prerequisites and safety defaults
+
+=== Go + builds
+
+You’ll be building and running Go code locally:
+
+- build the CLI: `go build -o shipq ./cmd/shipq`
+- run the generated server: `go run ./cmd/server` (or `shipq start server`)
+- run tests: `go test ./...`
+
+=== Local-only database URLs
+
+ShipQ’s DB bootstrap is intentionally conservative:
+
+- `shipq db setup` uses `DATABASE_URL` from your environment if provided, otherwise it auto-detects a local engine.
+- For Postgres/MySQL, `DATABASE_URL` *must point to localhost* (safety guard).
+- SQLite is always local and stored under `.shipq/data/`.
+
+=== `shipq.ini` is the control plane
+
+`shipq.ini` lives at your ShipQ project root and is where ShipQ reads/writes settings such as:
+
+- `[db] database_url = ...`
+- `[db] scope = organization_id` (optional multi-tenant scope injection)
+- `[auth] ...` for auth settings
+- `[files] ...` for managed uploads
+- `[workers] ...` for workers/realtime (Redis/Centrifugo)
+- `[typescript] framework = react` (default created by `shipq init`)
+- `[env] ...` optional: declare additional env vars to validate in production config
+
+== Recommended workflow
+
+[source,bash]
+----
+# 0) Create a new repo/app directory
+mkdir myapp && cd myapp
+
+# 1) Initialize ShipQ project (creates shipq.ini; go.mod if needed; updates .gitignore for .shipq/)
+../shipq init
+
+# 2) Create dev + test databases and write [db] database_url into shipq.ini
+#    If you want Postgres/MySQL, set DATABASE_URL first; otherwise ShipQ may pick SQLite.
+../shipq db setup
+
+# 3) Optional: add auth + signup
+../shipq auth
+../shipq signup
+
+# 4) Model your schema
+../shipq migrate new pets name:string species:string
+../shipq migrate up
+
+# 5) Generate CRUD endpoints as a starting point (you can customize later)
+../shipq resource pets all
+
+# 6) Compile handlers to generate server wiring, OpenAPI/docs/admin + TS client codegen
+../shipq handler compile
+
+# 7) Iterate:
+#    - migrations changed? run "shipq migrate up"
+#    - querydefs changed/added? run "shipq db compile"
+#    - handlers/routes changed? run "shipq handler compile"
+----
+
+== Why ShipQ
+
+ShipQ is for teams that want Rails-like speed with Go-like explicitness.
+
+Compared to runtime-heavy frameworks, ShipQ makes different tradeoffs:
+
+- *Compile-time over runtime*: schema, queries, and handler registry are build targets.
+- *SQL-shaped data access*: you write SQL-shaped query code (not ActiveRecord-like object graphs).
+- *Explicit boundaries*: request/response types and DB query boundaries are visible and testable.
+- *Multi-database by construction*: the same query DSL compiles to Postgres/MySQL/SQLite (quoting, placeholders, JSON aggregation, ILIKE translation, etc.).
+- *Self-contained generated projects*: ShipQ embeds its runtime libraries into your repo under `shipq/lib/...` and rewrites imports so the generated project doesn’t depend on a published ShipQ module.
+
+== The compiler chain
+
+ShipQ is best understood as three compilers that feed each other:
+
+1. *Schema compiler*: migrations → `schema.json` → typed schema Go code
+2. *Query compiler*: querydefs (Go DSL) → serialized AST → typed query runner Go code
+3. *Handler compiler*: API packages → serialized handler registry → server/OpenAPI/tests Go code
+
+=== Big picture diagram
+
+[source,text]
+----
+┌────────────────────────────────────────────────────────────────────────────┐
+│                                Your project                                │
+└────────────────────────────────────────────────────────────────────────────┘
+        │
+        │ (A) Migrations (Go)
+        ▼
+┌──────────────────────┐        shipq migrate up (Schema compiler)
+│ migrations/*.go       │  ────────────────────────────────────────────────┐
+└──────────────────────┘                                                   │
+        │                                                                  │
+        │ (generated TEMP runner executes migration funcs)                 │
+        ▼                                                                  │
+┌──────────────────────────────┐    ┌──────────────────────────────────┐   │
+│ shipq/db/migrate/schema.json  │    │ shipq/db/schema/schema.go         │   │
+│ shipq/db/migrate/runner.go    │    │ (typed tables + typed columns)    │   │
+└──────────────────────────────┘    └──────────────────────────────────┘   │
+        │                                │                                   │
+        │                                │ (typed columns used by query DSL) │
+        │                                ▼                                   │
+        │ (B) Query definitions (Go DSL)                                     │
+        ▼                                                                    │
+┌───────────────────────────────┐     shipq db compile (Query compiler)      │
+│ querydefs/**/queries.go        │  ─────────────────────────────────────────┤
+└───────────────────────────────┘                                            │
+        │                                                                    │
+        │ (generated extractor imports querydefs, serializes query registry) │
+        ▼                                                                    │
+┌───────────────────────────────┐    ┌──────────────────────────────────┐    │
+│ .shipq/compile/main.go         │    │ shipq/queries/                    │    │
+│ .shipq/compile/compile (bin)   │───►│   types.go                        │    │
+└───────────────────────────────┘    │   <dialect>/runner.go              │    │
+                                     └──────────────────────────────────┘    │
+                                                     │                        │
+                                                     │ (C) API handlers       │
+                                                     ▼                        │
+                                   shipq handler compile (Handler compiler)  │
+                                                     │                        │
+                                                     ▼                        │
+                                     ┌──────────────────────────────────┐    │
+                                     │ cmd/server/main.go                │    │
+                                     │ api/ server wiring                │    │
+                                     │ OpenAPI spec + docs (dev)         │    │
+                                     │ HTTP test client + harness        │    │
+                                     │ integration tests (rbac/tenancy)  │    │
+                                     └──────────────────────────────────┘    │
+----
+
+== Core commands
+
+[source,text]
+----
+shipq init
+shipq auth
+shipq signup
+shipq seed
+shipq files
+shipq workers
+shipq workers compile
+
+shipq start <postgres|mysql|sqlite|redis|minio|centrifugo|server|worker>
+
+shipq db setup
+shipq db compile
+shipq db reset
+
+shipq migrate new <name> [columns...] [--global]
+shipq migrate up
+shipq migrate reset
+
+shipq resource <table> <create|get_one|list|update|delete|all> [--public]
+shipq handler generate <table>
+shipq handler compile
+----
+
+== Schema: migrations and the schema compiler
+
+Migrations are Go functions that mutate a `MigrationPlan` by adding/updating tables using a typed DDL builder.
+
+When you run `shipq migrate new ...`, ShipQ generates migration code that imports the embedded migration/DDL libraries:
+
+- `<your module>/shipq/lib/db/portsql/migrate`
+- `<your module>/shipq/lib/db/portsql/ddl`
+
+This matters because ShipQ makes generated projects *self-contained*.
+
+=== `shipq migrate new`: column grammar
+
+[source,text]
+----
+shipq migrate new <table> [columns...] [--global]
+
+columns:
+  name:string
+  bio:text
+  age:int
+  total:decimal
+  created_at:datetime
+  author_id:references:authors
+----
+
+=== Scope / tenancy injection
+
+If you set a global scope column in `shipq.ini`:
+
+[source,ini]
+----
+[db]
+scope = organization_id
+----
+
+then `shipq migrate new` will auto-inject `organization_id:references:organizations` into new tables unless you pass `--global`.
+
+=== What `shipq migrate up` does
+
+`shipq migrate up` runs a compilation pipeline:
+
+- Embeds ShipQ runtime libraries into `shipq/lib/...` and rewrites imports so your project is self-contained.
+- Discovers `migrations/*.go`.
+- Generates a TEMP Go program which:
+  * imports your migrations package
+  * sets the migration name from the filename (stable)
+  * executes all migration functions in order to build a canonical `MigrationPlan`
+  * prints the plan JSON to stdout
+- Writes the canonical plan to `shipq/db/migrate/schema.json`.
+- Generates typed schema bindings in `shipq/db/schema/schema.go`.
+- Applies the plan against both dev and test databases.
+
+Artifacts you should know about:
+
+- `shipq/db/migrate/schema.json`: canonical schema + per-dialect SQL instructions.
+- `shipq/db/schema/schema.go`: typed tables + typed columns used by the query DSL.
+- `shipq/lib/...`: embedded runtime libraries (query DSL, migrator, http helpers, etc.).
+
+== Queries: PortSQL and the query compiler
+
+PortSQL is ShipQ’s typed SQL DSL.
+
+It is composed of:
+
+- `shipq/lib/db/portsql/query`: the query builder + AST + registration registry
+- `shipq/lib/db/portsql/query/compile`: AST → SQL compiler for Postgres/MySQL/SQLite
+
+You write query definitions under `querydefs/`.
+
+=== Register queries at init-time, compile later
+
+Querydefs are Go packages whose `init()` registers queries in a global registry.
+
+You register queries with:
+
+- `query.MustDefineOne(name, ast)` — returns 0 or 1 row
+- `query.MustDefineMany(name, ast)` — returns 0..N rows
+- `query.MustDefineExec(name, ast)` — executes without returning rows
+- `query.MustDefinePaginated(name, ast, cursorCols...)` — cursor/keyset pagination
+
+These functions panic on invalid definitions or duplicate names by design. Query registration happens at init time; failures should be immediate and obvious.
+
+== Handlers: handler compilation and generated server surface
+
+ShipQ’s API layer is intentionally simple: handlers register themselves, then the registry compiler generates everything around them.
+
+After `shipq handler compile`, in addition to server wiring (`cmd/server/main.go`), ShipQ can generate:
+
+- OpenAPI 3.1 JSON spec embedded into the server (`GET /openapi` in dev/test)
+- API docs UI (`GET /docs` in dev/test)
+- Admin UI (OpenAPI-driven)
+- HTTP test client + harness used by generated specs and integration tests
+- TypeScript HTTP client codegen (and optional framework helpers)
+
+== Optional subsystems
+
+=== Files / S3-compatible uploads
+
+`shipq files` generates a managed file upload subsystem:
+
+- migrations: `managed_files`, `file_access`
+- handlers in `api/managed_files`
+- querydefs for file operations
+- TypeScript helpers: `shipq-files.ts`
+- tests for file endpoints
+
+Expected environment variables include:
+
+- `S3_BUCKET`
+- `S3_REGION`
+- `S3_ENDPOINT` (empty for AWS; set for MinIO/GCS/R2)
+- `AWS_ACCESS_KEY_ID`
+- `AWS_SECRET_ACCESS_KEY`
+
+=== Workers + channels (background jobs and realtime)
+
+ShipQ includes a workers/channels system backed by:
+
+- Redis (queue/state)
+- Centrifugo (WebSocket hub)
+- generated Go worker binary (`cmd/worker/main.go`)
+- generated TypeScript channel client (`shipq-channels.ts`) + framework helpers
+
+Bootstrap:
+
+- `shipq workers` performs the full bootstrap:
+  * requires `[auth]` (run `shipq auth` first)
+  * requires `redis-server` and `centrifugo` available on PATH
+  * writes a `[workers]` section into `shipq.ini` (defaults are local)
+  * generates & applies a `job_results` migration (runs `shipq migrate up`)
+  * compiles querydefs / handler registry / channel registry
+  * generates typed channel Go code, worker main, `centrifugo.json`, TS clients, and tests
+
+Fast iteration loop after initial setup:
+
+- `shipq workers compile` re-runs only the codegen/compile steps (no migrations, no embedding, no go mod tidy).
+
+Running services (each in its own terminal):
+
+[source,bash]
+----
+shipq start redis
+shipq start centrifugo
+shipq start worker
+shipq start server
+----
+
+File ownership: never hand-edit files that start with `// Code generated by shipq. DO NOT EDIT.` or have the `zz_generated_` prefix. Those are overwritten on every compile.

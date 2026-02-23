@@ -1,0 +1,33 @@
+{
+  "name": "@shipq/root",
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "admin:build": "esbuild admin/src/index.ts --bundle --minify --outfile=assets/admin.min.js --format=iife --target=es2022",
+    "admin:build:dev": "esbuild admin/src/index.ts --bundle --outfile=assets/admin.min.js --format=iife --target=es2022 --sourcemap",
+    "admin:test": "vitest run --config admin/vitest.config.ts",
+    "admin:test:watch": "vitest --config admin/vitest.config.ts",
+    "admin:e2e": "playwright test --config admin/playwright.config.ts",
+    "admin:watch": "esbuild admin/src/index.ts --bundle --outfile=assets/admin.min.js --format=iife --target=es2022 --sourcemap --watch",
+    "admin:mock": "tsx --watch admin/mock-server.ts",
+    "admin:dev": "npm run admin:build:dev && concurrently -n watch,server -c blue,green \"npm:admin:watch\" \"npm:admin:mock\""
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/shipq/shipq.git"
+  },
+  "author": "Joshua Hoeflich",
+  "license": "MIT",
+  "bugs": {
+    "url": "https://github.com/shipq/shipq/issues"
+  },
+  "homepage": "https://github.com/shipq/shipq#readme",
+  "devDependencies": {
+    "@playwright/test": "^1.58.2",
+    "concurrently": "^9.2.1",
+    "esbuild": "^0.27.3",
+    "happy-dom": "^20.6.1",
+    "tsx": "^4.21.0",
+    "typescript": "^5.9.3",
+    "vitest": "^4.0.18"
+  }
+}

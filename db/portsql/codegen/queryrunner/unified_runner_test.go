@@ -1,0 +1,1110 @@
+package queryrunner
+
+import (
+	"go/format"
+	"regexp"
+	"strings"
+	"testing"
+
+	"github.com/shipq/shipq/db/portsql/ddl"
+	"github.com/shipq/shipq/db/portsql/migrate"
+	"github.com/shipq/shipq/db/portsql/query"
+	"github.com/shipq/shipq/dburl"
+	"github.com/shipq/shipq/proptest"
+)
+
+func TestGenerateUnifiedRunner_Empty(t *testing.T) {
+	cfg := UnifiedRunnerConfig{
+		ModulePath:  "example.com/myapp",
+		Dialect:     dburl.DialectPostgres,
+		UserQueries: nil,
+	}
+
+	code, err := GenerateUnifiedRunner(cfg)
+	if err != nil {
+		t.Fatalf("GenerateUnifiedRunner failed: %v", err)
+	}
+
+	codeStr := string(code)
+
+	// Should have package declaration
+	if !strings.Contains(codeStr, "package postgres") {
+		t.Error("expected 'package postgres' in generated code")
+	}
+
+	// Should have Querier interface
+	if !strings.Contains(codeStr, "type Querier interface") {
+		t.Error("expected Querier interface in generated code")
+	}
+
+	// Should have QueryRunner struct
+	if !strings.Contains(codeStr, "type QueryRunner struct") {
+		t.Error("expected QueryRunner struct in generated code")
+	}
+
+	// Should have NewQueryRunner function
+	if !strings.Contains(codeStr, "func NewQueryRunner(db Querier) *QueryRunner") {
+		t.Error("expected NewQueryRunner function in generated code")
+	}
+
+	// Should have WithTx method
+	if !strings.Contains(codeStr, "func (r *QueryRunner) WithTx(tx *sql.Tx) *QueryRunner") {
+		t.Error("expected WithTx method in generated code")
+	}
+
+	// Should have WithDB method
+	if !strings.Contains(codeStr, "func (r *QueryRunner) WithDB(db Querier) *QueryRunner") {
+		t.Error("expected WithDB method in generated code")
+	}
+	if strings.Contains(codeStr, "func parseSQLiteTime(") {
+		t.Error("postgres runner should not include sqlite scan helpers")
+	}
+}
+
+func TestGenerateUnifiedRunner_WithUserQueries(t *testing.T) {
+	cfg := UnifiedRunnerConfig{
+		ModulePath: "example.com/myapp",
+		Dialect:    dburl.DialectPostgres,
+		UserQueries: []query.SerializedQuery{
+			{
+				Name:       "GetUserByEmail",
+				ReturnType: query.ReturnOne,
+				AST: &query.SerializedAST{
+					Kind: "select",
+					FromTable: query.SerializedTableRef{
+						Name: "users",
+					},
+					SelectCols: []query.SerializedSelectExpr{
+						{
+							Expr: query.SerializedExpr{
+								Type: "column",
+								Column: &query.SerializedColumn{
+									Table:  "users",
+									Name:   "id",
+									GoType: "int64",
+								},
+							},
+						},
+						{
+							Expr: query.SerializedExpr{
+								Type: "column",
+								Column: &query.SerializedColumn{
+									Table:  "users",
+									Name:   "email",
+									GoType: "string",
+								},
+							},
+						},
+					},
+					Where: &query.SerializedExpr{
+						Type: "binary",
+						Binary: &query.SerializedBinary{
+							Left: query.SerializedExpr{
+								Type: "column",
+								Column: &query.SerializedColumn{
+									Table:  "users",
+									Name:   "email",
+									GoType: "string",
+								},
+							},
+							Op: "=",
+							Right: query.SerializedExpr{
+								Type: "param",
+								Param: &query.SerializedParam{
+									Name:   "email",
+									GoType: "string",
+								},
+							},
+						},
+					},
+					Params: []query.SerializedParamInfo{
+						{Name: "email", GoType: "string"},
+					},
+				},
+			},
+		},
+	}
+
+	code, err := GenerateUnifiedRunner(cfg)
+	if err != nil {
+		t.Fatalf("GenerateUnifiedRunner failed: %v", err)
+	}
+
+	codeStr := string(code)
+
+	// Should have SQL field for the query
+	if !strings.Contains(codeStr, "getUserByEmailSQL string") {
+		t.Error("expected getUserByEmailSQL field in QueryRunner struct")
+	}
+
+	// Should have method for the query
+	if !strings.Contains(codeStr, "func (r *QueryRunner) GetUserByEmail(ctx context.Context") {
+		t.Error("expected GetUserByEmail method in generated code")
+	}
+
+	// Should use queries package for types
+	if !strings.Contains(codeStr, "queries.GetUserByEmailParams") {
+		t.Error("expected queries.GetUserByEmailParams in generated code")
+	}
+
+	if !strings.Contains(codeStr, "queries.GetUserByEmailResult") {
+		t.Error("expected queries.GetUserByEmailResult in generated code")
+	}
+}
+
+
+// TestGenerateUnifiedRunner_PostgresMySQLDontImportTimeWithUserQueries verifies
+// that for postgres and mysql, the runner does NOT import "time" even when user
+// queries have time.Time result columns. The runner references result types via
+// the shared queries package.
+func TestGenerateUnifiedRunner_PostgresMySQLDontImportTimeWithUserQueries(t *testing.T) {
+	for _, dialect := range []string{dburl.DialectPostgres, dburl.DialectMySQL} {
+		t.Run(dialect, func(t *testing.T) {
+			cfg := UnifiedRunnerConfig{
+				ModulePath: "example.com/myapp",
+				Dialect:    dialect,
+				UserQueries: []query.SerializedQuery{
+					{
+						Name:       "FindActiveSession",
+						ReturnType: query.ReturnOne,
+						AST: &query.SerializedAST{
+							Kind: "select",
+							FromTable: query.SerializedTableRef{
+								Name: "sessions",
+							},
+							SelectCols: []query.SerializedSelectExpr{
+								{
+									Expr: query.SerializedExpr{
+										Type: "column",
+										Column: &query.SerializedColumn{
+											Table:  "sessions",
+											Name:   "Id",
+											GoType: "int64",
+										},
+									},
+								},
+								{
+									Expr: query.SerializedExpr{
+										Type: "func",
+										Func: &query.SerializedFunc{
+											Name: "NOW",
+											Args: nil,
+										},
+									},
+									Alias: "ExpiresAt",
+								},
+							},
+							Where: &query.SerializedExpr{
+								Type: "binary",
+								Binary: &query.SerializedBinary{
+									Left: query.SerializedExpr{
+										Type: "column",
+										Column: &query.SerializedColumn{
+											Table:  "sessions",
+											Name:   "Id",
+											GoType: "int64",
+										},
+									},
+									Op: "=",
+									Right: query.SerializedExpr{
+										Type: "param",
+										Param: &query.SerializedParam{
+											Name:   "id",
+											GoType: "int64",
+										},
+									},
+								},
+							},
+							Params: []query.SerializedParamInfo{
+								{Name: "id", GoType: "int64"},
+							},
+						},
+					},
+				},
+				}
+
+			code, err := GenerateUnifiedRunner(cfg)
+			if err != nil {
+				t.Fatalf("GenerateUnifiedRunner failed: %v", err)
+			}
+
+			codeStr := string(code)
+
+			// Even though the query result includes time.Time (via NOW()),
+			// the runner references it through the queries package, so
+			// "time" should NOT be imported in the runner.
+			if strings.Contains(codeStr, `"time"`) {
+				t.Errorf("%q runner should NOT import \"time\" when user queries have time.Time results", dialect)
+			}
+		})
+	}
+}
+
+func TestGenerateSharedTypes_Empty(t *testing.T) {
+	cfg := UnifiedRunnerConfig{
+		ModulePath:  "example.com/myapp",
+		Dialect:     dburl.DialectPostgres,
+		UserQueries: nil,
+	}
+
+	code, err := GenerateSharedTypes(cfg)
+	if err != nil {
+		t.Fatalf("GenerateSharedTypes failed: %v", err)
+	}
+
+	codeStr := string(code)
+
+	// Should have package declaration
+	if !strings.Contains(codeStr, "package queries") {
+		t.Error("expected 'package queries' in generated code")
+	}
+}
+
+func TestGenerateSharedTypes_WithUserQueries(t *testing.T) {
+	cfg := UnifiedRunnerConfig{
+		ModulePath: "example.com/myapp",
+		Dialect:    dburl.DialectPostgres,
+		UserQueries: []query.SerializedQuery{
+			{
+				Name:       "GetUserByEmail",
+				ReturnType: query.ReturnOne,
+				AST: &query.SerializedAST{
+					Kind: "select",
+					FromTable: query.SerializedTableRef{
+						Name: "users",
+					},
+					SelectCols: []query.SerializedSelectExpr{
+						{
+							Expr: query.SerializedExpr{
+								Type: "column",
+								Column: &query.SerializedColumn{
+									Table:  "users",
+									Name:   "id",
+									GoType: "int64",
+								},
+							},
+						},
+						{
+							Expr: query.SerializedExpr{
+								Type: "column",
+								Column: &query.SerializedColumn{
+									Table:  "users",
+									Name:   "email",
+									GoType: "string",
+								},
+							},
+						},
+					},
+					Params: []query.SerializedParamInfo{
+						{Name: "email", GoType: "string"},
+					},
+				},
+			},
+		},
+	}
+
+	code, err := GenerateSharedTypes(cfg)
+	if err != nil {
+		t.Fatalf("GenerateSharedTypes failed: %v", err)
+	}
+
+	codeStr := string(code)
+
+	// Should have params struct
+	if !strings.Contains(codeStr, "type GetUserByEmailParams struct") {
+		t.Error("expected GetUserByEmailParams struct")
+	}
+
+	// Should have result struct
+	if !strings.Contains(codeStr, "type GetUserByEmailResult struct") {
+		t.Error("expected GetUserByEmailResult struct")
+	}
+
+	// Should have Email field in params (go fmt uses tabs between field name and type)
+	if !strings.Contains(codeStr, "Email") || !strings.Contains(codeStr, "string") {
+		t.Error("expected Email field in params struct")
+	}
+
+	// Should have Id field in result (go fmt uses tabs between field name and type)
+	if !strings.Contains(codeStr, "Id") || !strings.Contains(codeStr, "int64") {
+		t.Error("expected Id field in result struct")
+	}
+}
+
+func TestGenerateUnifiedRunner_MySQLDialect(t *testing.T) {
+	cfg := UnifiedRunnerConfig{
+		ModulePath:  "example.com/myapp",
+		Dialect:     dburl.DialectMySQL,
+		UserQueries: nil,
+	}
+
+	code, err := GenerateUnifiedRunner(cfg)
+	if err != nil {
+		t.Fatalf("GenerateUnifiedRunner failed: %v", err)
+	}
+
+	codeStr := string(code)
+
+	// Should have mysql package
+	if !strings.Contains(codeStr, "package mysql") {
+		t.Error("expected 'package mysql' in generated code")
+	}
+	if strings.Contains(codeStr, "func parseSQLiteTime(") {
+		t.Error("mysql runner should not include sqlite scan helpers")
+	}
+}
+
+func TestGenerateUnifiedRunner_SQLiteDialect(t *testing.T) {
+	cfg := UnifiedRunnerConfig{
+		ModulePath:  "example.com/myapp",
+		Dialect:     dburl.DialectSQLite,
+		UserQueries: nil,
+	}
+
+	code, err := GenerateUnifiedRunner(cfg)
+	if err != nil {
+		t.Fatalf("GenerateUnifiedRunner failed: %v", err)
+	}
+
+	codeStr := string(code)
+
+	// Should have sqlite package
+	if !strings.Contains(codeStr, "package sqlite") {
+		t.Error("expected 'package sqlite' in generated code")
+	}
+	if !strings.Contains(codeStr, "func parseSQLiteTime(") {
+		t.Error("sqlite runner should include sqlite time parser helper")
+	}
+	if !strings.Contains(codeStr, "func parseSQLiteNullTime(") {
+		t.Error("sqlite runner should include sqlite nullable time parser helper")
+	}
+}
+
+func TestGetCompiler(t *testing.T) {
+	tests := []struct {
+		dialect string
+		wantErr bool
+	}{
+		{dburl.DialectPostgres, false},
+		{dburl.DialectMySQL, false},
+		{dburl.DialectSQLite, false},
+		{"unknown", true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.dialect, func(t *testing.T) {
+			compiler, err := getCompiler(tt.dialect)
+			if tt.wantErr {
+				if err == nil {
+					t.Error("expected error for unknown dialect")
+				}
+			} else {
+				if err != nil {
+					t.Errorf("unexpected error: %v", err)
+				}
+				if compiler == nil {
+					t.Error("expected non-nil compiler")
+				}
+			}
+		})
+	}
+}
+
+func TestIsStdLib(t *testing.T) {
+	tests := []struct {
+		pkg      string
+		expected bool
+	}{
+		{"context", true},
+		{"database/sql", true},
+		{"encoding/json", true},
+		{"time", true},
+		{"github.com/shipq/shipq/query", false},
+		{"example.com/myapp/queries", false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.pkg, func(t *testing.T) {
+			result := isStdLib(tt.pkg)
+			if result != tt.expected {
+				t.Errorf("isStdLib(%q) = %v, want %v", tt.pkg, result, tt.expected)
+			}
+		})
+	}
+}
+
+func TestNeedsTimeImport(t *testing.T) {
+	tests := []struct {
+		goType   string
+		expected bool
+	}{
+		{"time.Time", true},
+		{"*time.Time", true},
+		{"string", false},
+		{"int64", false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.goType, func(t *testing.T) {
+			result := needsTimeImport(tt.goType)
+			if result != tt.expected {
+				t.Errorf("needsTimeImport(%q) = %v, want %v", tt.goType, result, tt.expected)
+			}
+		})
+	}
+}
+
+func TestNeedsJSONImport(t *testing.T) {
+	tests := []struct {
+		goType   string
+		expected bool
+	}{
+		{"json.RawMessage", true},
+		{"string", false},
+		{"int64", false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.goType, func(t *testing.T) {
+			result := needsJSONImport(tt.goType)
+			if result != tt.expected {
+				t.Errorf("needsJSONImport(%q) = %v, want %v", tt.goType, result, tt.expected)
+			}
+		})
+	}
+}
+
+// =============================================================================
+// JSON Aggregation Tests
+// =============================================================================
+
+// makeJSONAggQuery builds a serialized SELECT query with a json_agg field.
+// This is a helper for the json_agg unit tests.
+func makeJSONAggQuery(queryName string, cols []query.SerializedColumn) query.SerializedQuery {
+	aggCols := make([]query.SerializedColumn, len(cols))
+	copy(aggCols, cols)
+	return query.SerializedQuery{
+		Name:       queryName,
+		ReturnType: query.ReturnOne,
+		AST: &query.SerializedAST{
+			Kind: "select",
+			FromTable: query.SerializedTableRef{
+				Name: "accounts",
+			},
+			SelectCols: []query.SerializedSelectExpr{
+				{
+					Expr: query.SerializedExpr{
+						Type: "column",
+						Column: &query.SerializedColumn{
+							Table:  "accounts",
+							Name:   "email",
+							GoType: "string",
+						},
+					},
+				},
+				{
+					Expr: query.SerializedExpr{
+						Type: "json_agg",
+						JSONAgg: &query.SerializedJSONAgg{
+							FieldName: "roles",
+							Columns:   aggCols,
+						},
+					},
+					Alias: "roles",
+				},
+			},
+			Where: &query.SerializedExpr{
+				Type: "binary",
+				Binary: &query.SerializedBinary{
+					Left: query.SerializedExpr{
+						Type: "column",
+						Column: &query.SerializedColumn{
+							Table:  "accounts",
+							Name:   "id",
+							GoType: "int64",
+						},
+					},
+					Op: "=",
+					Right: query.SerializedExpr{
+						Type: "param",
+						Param: &query.SerializedParam{
+							Name:   "id",
+							GoType: "int64",
+						},
+					},
+				},
+			},
+			Params: []query.SerializedParamInfo{
+				{Name: "id", GoType: "int64"},
+			},
+		},
+	}
+}
+
+// TestExtractResults_JSONAgg verifies that a serialized AST with json_agg
+// produces the correct Go type (slice-of-struct) and populates JSONAggCols.
+func TestExtractResults_JSONAgg(t *testing.T) {
+	sq := makeJSONAggQuery("FindAccountByInternalID", []query.SerializedColumn{
+		{Table: "roles", Name: "name", GoType: "string"},
+		{Table: "roles", Name: "description", GoType: "*string"},
+	})
+
+	results := extractResults(sq.AST, sq.Name)
+	if len(results) != 2 {
+		t.Fatalf("expected 2 results, got %d", len(results))
+	}
+
+	// First result should be the email column
+	if results[0].Name != "Email" || results[0].GoType != "string" {
+		t.Errorf("expected Email string, got %s %s", results[0].Name, results[0].GoType)
+	}
+	if results[0].JSONAggCols != nil {
+		t.Error("email field should not have JSONAggCols")
+	}
+
+	// Second result should be the json_agg field
+	r := results[1]
+	if r.Name != "Roles" {
+		t.Errorf("expected name Roles, got %s", r.Name)
+	}
+	if r.GoType != "[]FindAccountByInternalIDRolesItem" {
+		t.Errorf("expected GoType []FindAccountByInternalIDRolesItem, got %s", r.GoType)
+	}
+	if len(r.JSONAggCols) != 2 {
+		t.Fatalf("expected 2 JSONAggCols, got %d", len(r.JSONAggCols))
+	}
+	if r.JSONAggCols[0].Name != "name" || r.JSONAggCols[0].GoType != "string" {
+		t.Errorf("JSONAggCols[0] = %+v, want {name string}", r.JSONAggCols[0])
+	}
+	if r.JSONAggCols[1].Name != "description" || r.JSONAggCols[1].GoType != "*string" {
+		t.Errorf("JSONAggCols[1] = %+v, want {description *string}", r.JSONAggCols[1])
+	}
+}
+
+// TestGenerateSharedTypes_WithJSONAgg verifies that nested struct is generated
+// for json_agg fields with correct field names, types, and json tags.
+func TestGenerateSharedTypes_WithJSONAgg(t *testing.T) {
+	sq := makeJSONAggQuery("FindAccountByInternalID", []query.SerializedColumn{
+		{Table: "roles", Name: "name", GoType: "string"},
+		{Table: "roles", Name: "description", GoType: "*string"},
+	})
+
+	cfg := UnifiedRunnerConfig{
+		ModulePath:  "example.com/myapp",
+		Dialect:     dburl.DialectPostgres,
+		UserQueries: []query.SerializedQuery{sq},
+	}
+
+	code, err := GenerateSharedTypes(cfg)
+	if err != nil {
+		t.Fatalf("GenerateSharedTypes failed: %v", err)
+	}
+
+	codeStr := string(code)
+
+	// Should have the result struct with the slice field
+	if !strings.Contains(codeStr, "Roles []FindAccountByInternalIDRolesItem") {
+		t.Error("expected Roles []FindAccountByInternalIDRolesItem in result struct")
+	}
+
+	// Should have the nested item struct
+	if !strings.Contains(codeStr, "type FindAccountByInternalIDRolesItem struct") {
+		t.Error("expected FindAccountByInternalIDRolesItem struct")
+	}
+
+	// Should have Name field with json tag
+	if !strings.Contains(codeStr, "Name string") && !strings.Contains(codeStr, `json:"name"`) {
+		t.Error("expected Name string field with json tag in nested struct")
+	}
+
+	// Should have Description field with json tag including omitempty
+	if !strings.Contains(codeStr, "Description *string") && !strings.Contains(codeStr, `json:"description,omitempty"`) {
+		t.Error("expected Description *string field with omitempty json tag in nested struct")
+	}
+
+	// Should be valid Go
+	if _, err := format.Source(code); err != nil {
+		t.Errorf("generated types.go is not valid Go: %v\n%s", err, codeStr)
+	}
+}
+
+// TestGenerateUnifiedRunner_WithJSONAgg_ScanCodegen verifies the generated runner
+// scans json_agg into a temp string and unmarshals into the typed slice.
+func TestGenerateUnifiedRunner_WithJSONAgg_ScanCodegen(t *testing.T) {
+	for _, dialect := range []string{dburl.DialectPostgres, dburl.DialectMySQL, dburl.DialectSQLite} {
+		t.Run(dialect, func(t *testing.T) {
+			sq := makeJSONAggQuery("FindAccountByInternalID", []query.SerializedColumn{
+				{Table: "roles", Name: "name", GoType: "string"},
+				{Table: "roles", Name: "description", GoType: "*string"},
+			})
+
+			cfg := UnifiedRunnerConfig{
+				ModulePath:  "example.com/myapp",
+				Dialect:     dialect,
+				UserQueries: []query.SerializedQuery{sq},
+			}
+
+			code, err := GenerateUnifiedRunner(cfg)
+			if err != nil {
+				t.Fatalf("GenerateUnifiedRunner failed: %v", err)
+			}
+
+			codeStr := string(code)
+
+			// Should declare a temp string for the json_agg field
+			if !strings.Contains(codeStr, "var rolesRaw string") {
+				t.Error("expected 'var rolesRaw string' for json_agg scan intermediate")
+			}
+
+			// Should scan into the temp string
+			if !strings.Contains(codeStr, "&rolesRaw") {
+				t.Error("expected '&rolesRaw' in Scan call")
+			}
+
+			// Should json.Unmarshal into the typed field
+			if !strings.Contains(codeStr, "json.Unmarshal([]byte(rolesRaw), &result.Roles)") {
+				t.Error("expected json.Unmarshal([]byte(rolesRaw), &result.Roles)")
+			}
+
+			// Should import encoding/json
+			if !strings.Contains(codeStr, `"encoding/json"`) {
+				t.Error("expected encoding/json import for json_agg unmarshal")
+			}
+
+			// Should be valid Go
+			if _, err := format.Source(code); err != nil {
+				t.Errorf("generated runner is not valid Go: %v\n%s", err, codeStr)
+			}
+		})
+	}
+}
+
+// TestGenerateUnifiedRunner_WithJSONAgg_ReturnMany verifies the json_agg scan
+// codegen for ReturnMany queries.
+func TestGenerateUnifiedRunner_WithJSONAgg_ReturnMany(t *testing.T) {
+	sq := makeJSONAggQuery("ListAccountsWithRoles", []query.SerializedColumn{
+		{Table: "roles", Name: "name", GoType: "string"},
+	})
+	sq.ReturnType = query.ReturnMany
+
+	cfg := UnifiedRunnerConfig{
+		ModulePath:  "example.com/myapp",
+		Dialect:     dburl.DialectPostgres,
+		UserQueries: []query.SerializedQuery{sq},
+	}
+
+	code, err := GenerateUnifiedRunner(cfg)
+	if err != nil {
+		t.Fatalf("GenerateUnifiedRunner failed: %v", err)
+	}
+
+	codeStr := string(code)
+
+	// Should declare temp string and unmarshal in the row loop
+	if !strings.Contains(codeStr, "var rolesRaw string") {
+		t.Error("expected 'var rolesRaw string' in ReturnMany scan")
+	}
+	if !strings.Contains(codeStr, "json.Unmarshal([]byte(rolesRaw), &item.Roles)") {
+		t.Error("expected json.Unmarshal into item.Roles in ReturnMany")
+	}
+
+	// Should be valid Go
+	if _, err := format.Source(code); err != nil {
+		t.Errorf("generated runner is not valid Go: %v\n%s", err, codeStr)
+	}
+}
+
+// =============================================================================
+// Property Tests
+// =============================================================================
+
+// generateRandomInsertQuery creates a random INSERT query with RETURNING columns
+// for property testing. It generates an INSERT into the given table with all non-auto
+// columns as insert values and some columns as RETURNING.
+func generateRandomInsertQuery(g *proptest.Generator, tableName string, table ddl.Table) query.SerializedQuery {
+	queryName := "Insert" + strings.Title(tableName) //nolint:staticcheck
+
+	var insertCols []query.SerializedColumn
+	var insertVals []query.SerializedExpr
+	var params []query.SerializedParamInfo
+	var returningCols []query.SerializedColumn
+
+	for _, col := range table.Columns {
+		// Skip auto-generated columns
+		if col.Name == "id" || col.Name == "created_at" || col.Name == "updated_at" || col.Name == "deleted_at" || col.Name == "public_id" {
+			continue
+		}
+		goType := ddlTypeToGoType(col.Type)
+		insertCols = append(insertCols, query.SerializedColumn{
+			Table:  tableName,
+			Name:   col.Name,
+			GoType: goType,
+		})
+		insertVals = append(insertVals, query.SerializedExpr{
+			Type: "param",
+			Param: &query.SerializedParam{
+				Name:   col.Name,
+				GoType: goType,
+			},
+		})
+		params = append(params, query.SerializedParamInfo{
+			Name:   col.Name,
+			GoType: goType,
+		})
+	}
+
+	// Add some RETURNING columns (at least "id")
+	returningCols = append(returningCols, query.SerializedColumn{
+		Table:  tableName,
+		Name:   "id",
+		GoType: "int64",
+	})
+	for _, col := range table.Columns {
+		if col.Name == "id" {
+			continue
+		}
+		if g.BoolWithProb(0.5) {
+			returningCols = append(returningCols, query.SerializedColumn{
+				Table:  tableName,
+				Name:   col.Name,
+				GoType: ddlTypeToGoType(col.Type),
+			})
+		}
+	}
+
+	// SELECT cols match RETURNING for result scanning
+	var selectCols []query.SerializedSelectExpr
+	for _, rc := range returningCols {
+		selectCols = append(selectCols, query.SerializedSelectExpr{
+			Expr: query.SerializedExpr{
+				Type:   "column",
+				Column: &query.SerializedColumn{Table: rc.Table, Name: rc.Name, GoType: rc.GoType},
+			},
+		})
+	}
+
+	return query.SerializedQuery{
+		Name:       queryName,
+		ReturnType: query.ReturnOne,
+		AST: &query.SerializedAST{
+			Kind:       "insert",
+			FromTable:  query.SerializedTableRef{Name: tableName},
+			SelectCols: selectCols,
+			InsertCols: insertCols,
+			InsertVals: insertVals,
+			Returning:  returningCols,
+			Params:     params,
+		},
+	}
+}
+
+// ddlTypeToGoType converts a DDL column type to a Go type string.
+func ddlTypeToGoType(colType string) string {
+	switch colType {
+	case ddl.IntegerType:
+		return "int64"
+	case ddl.BigintType:
+		return "int64"
+	case ddl.FloatType:
+		return "float64"
+	case ddl.DecimalType:
+		return "string"
+	case ddl.BooleanType:
+		return "bool"
+	case ddl.StringType, ddl.TextType:
+		return "string"
+	case ddl.DatetimeType:
+		return "time.Time"
+	case ddl.BinaryType:
+		return "[]byte"
+	case ddl.JSONType:
+		return "json.RawMessage"
+	default:
+		return "string"
+	}
+}
+
+// generateRandomTable creates a random table using the proptest generator.
+// Ensures the table has at least one non-auto column for INSERTs.
+func generateRandomTable(g *proptest.Generator) (string, ddl.Table) {
+	tableName := migrate.GenerateTableName(g)
+	cfg := migrate.DefaultTableConfig()
+	cfg.MinColumns = 2
+	cfg.MaxColumns = 6
+	table := migrate.GenerateTable(g, tableName, cfg)
+	return tableName, *table
+}
+
+// Property 1: Generated runner code always formats for all dialects.
+// Uses a curated set of table names to avoid pre-existing codegen edge cases
+// with arbitrary identifier generation.
+func TestProperty_GeneratedRunnerAlwaysFormats(t *testing.T) {
+	allDialects := []string{dburl.DialectPostgres, dburl.DialectMySQL, dburl.DialectSQLite}
+
+	proptest.Check(t, "generated runner always formats as valid Go", proptest.Config{NumTrials: 30}, func(g *proptest.Generator) bool {
+		tableName, table := generateRandomTable(g)
+		insertQuery := generateRandomInsertQuery(g, tableName, table)
+
+		for _, dialect := range allDialects {
+			cfg := UnifiedRunnerConfig{
+				ModulePath:  "example.com/myapp",
+				Dialect:     dialect,
+				UserQueries: []query.SerializedQuery{insertQuery},
+			}
+
+			code, err := GenerateUnifiedRunner(cfg)
+			if err != nil {
+				t.Logf("[%s] GenerateUnifiedRunner failed for table %q: %v", dialect, tableName, err)
+				return false
+			}
+
+			if _, err := format.Source(code); err != nil {
+				t.Logf("[%s] generated code does not format for table %q: %v", dialect, tableName, err)
+				return false
+			}
+		}
+		return true
+	})
+}
+
+// Property 2: MySQL runner never uses QueryRowContext for INSERT with RETURNING.
+// Instead it must use ExecContext for the insert step.
+func TestProperty_MySQLNeverUsesQueryRowContextForInsertReturning(t *testing.T) {
+	proptest.Check(t, "MySQL INSERT with RETURNING uses ExecContext, not QueryRowContext for insert", proptest.Config{NumTrials: 50}, func(g *proptest.Generator) bool {
+		tableName, table := generateRandomTable(g)
+		insertQuery := generateRandomInsertQuery(g, tableName, table)
+
+		cfg := UnifiedRunnerConfig{
+			ModulePath:  "example.com/myapp",
+			Dialect:     dburl.DialectMySQL,
+			UserQueries: []query.SerializedQuery{insertQuery},
+		}
+
+		code, err := GenerateUnifiedRunner(cfg)
+		if err != nil {
+			t.Logf("GenerateUnifiedRunner failed for table %q: %v", tableName, err)
+			return false
+		}
+
+		codeStr := string(code)
+
+		// Find the user query method (e.g., func (r *QueryRunner) InsertXxx(...))
+		methodName := insertQuery.Name
+		methodStart := strings.Index(codeStr, "func (r *QueryRunner) "+methodName+"(")
+		if methodStart < 0 {
+			t.Logf("MySQL: cannot find method %s in generated code", methodName)
+			return false
+		}
+
+		// Extract just the method body (until the next top-level func)
+		methodBody := extractMethodBody(codeStr, methodStart)
+
+		// The INSERT step must use ExecContext, not QueryRowContext directly on the insert SQL field
+		sqlField := "r." + toFirstLower(methodName) + "SQL"
+		insertExecPattern := "r.db.ExecContext(ctx, " + sqlField
+		if !strings.Contains(methodBody, insertExecPattern) {
+			t.Logf("MySQL INSERT method %s: expected ExecContext with %s\nmethod body:\n%s", methodName, sqlField, methodBody)
+			return false
+		}
+
+		return true
+	})
+}
+
+// Property 3: Postgres and SQLite INSERT with RETURNING use QueryRowContext.
+func TestProperty_PostgresSQLiteUseQueryRowContextForInsertReturning(t *testing.T) {
+	for _, dialect := range []string{dburl.DialectPostgres, dburl.DialectSQLite} {
+		t.Run(dialect, func(t *testing.T) {
+			proptest.Check(t, dialect+" INSERT with RETURNING uses QueryRowContext", proptest.Config{NumTrials: 50}, func(g *proptest.Generator) bool {
+				tableName, table := generateRandomTable(g)
+				insertQuery := generateRandomInsertQuery(g, tableName, table)
+
+				cfg := UnifiedRunnerConfig{
+					ModulePath:  "example.com/myapp",
+					Dialect:     dialect,
+					UserQueries: []query.SerializedQuery{insertQuery},
+				}
+
+				code, err := GenerateUnifiedRunner(cfg)
+				if err != nil {
+					t.Logf("[%s] GenerateUnifiedRunner failed for table %q: %v", dialect, tableName, err)
+					return false
+				}
+
+				codeStr := string(code)
+
+				methodName := insertQuery.Name
+				methodStart := strings.Index(codeStr, "func (r *QueryRunner) "+methodName+"(")
+				if methodStart < 0 {
+					t.Logf("[%s] cannot find method %s in generated code", dialect, methodName)
+					return false
+				}
+
+				methodBody := extractMethodBody(codeStr, methodStart)
+
+				// Should use QueryRowContext with the query SQL field
+				sqlField := "r." + toFirstLower(methodName) + "SQL"
+				queryRowPattern := "r.db.QueryRowContext(ctx, " + sqlField
+				if !strings.Contains(methodBody, queryRowPattern) {
+					t.Logf("[%s] INSERT method %s: expected QueryRowContext with %s\nmethod body:\n%s", dialect, methodName, sqlField, methodBody)
+					return false
+				}
+
+				return true
+			})
+		})
+	}
+}
+
+// Property 5: All dialects generate consistent method signatures for the same schema.
+func TestProperty_ConsistentMethodSignaturesAcrossDialects(t *testing.T) {
+	proptest.Check(t, "all dialects produce consistent method signatures", proptest.Config{NumTrials: 50}, func(g *proptest.Generator) bool {
+		tableName, table := generateRandomTable(g)
+		insertQuery := generateRandomInsertQuery(g, tableName, table)
+
+		allDialects := []string{dburl.DialectPostgres, dburl.DialectMySQL, dburl.DialectSQLite}
+
+		// Collect method signatures for each dialect
+		sigPattern := regexp.MustCompile(`func \(r \*QueryRunner\) (\w+)\(([^)]*)\)\s*([^{]+)\{`)
+
+		var firstDialectSigs []querySig
+		var firstDialect string
+
+		for _, dialect := range allDialects {
+			cfg := UnifiedRunnerConfig{
+				ModulePath:  "example.com/myapp",
+				Dialect:     dialect,
+				UserQueries: []query.SerializedQuery{insertQuery},
+			}
+
+			code, err := GenerateUnifiedRunner(cfg)
+			if err != nil {
+				t.Logf("[%s] GenerateUnifiedRunner failed for table %q: %v", dialect, tableName, err)
+				return false
+			}
+
+			codeStr := string(code)
+			matches := sigPattern.FindAllStringSubmatch(codeStr, -1)
+
+			var sigs []querySig
+			for _, m := range matches {
+				sigs = append(sigs, querySig{
+					name:       m[1],
+					params:     strings.TrimSpace(m[2]),
+					returnType: strings.TrimSpace(m[3]),
+				})
+			}
+
+			if firstDialectSigs == nil {
+				firstDialectSigs = sigs
+				firstDialect = dialect
+				continue
+			}
+
+			// Compare method names (should be the same set across dialects)
+			firstNames := methodNames(firstDialectSigs)
+			currentNames := methodNames(sigs)
+
+			if !equalStringSlices(firstNames, currentNames) {
+				t.Logf("method name mismatch: %s has %v, %s has %v", firstDialect, firstNames, dialect, currentNames)
+				return false
+			}
+
+			// Compare return types for each method
+			firstByName := sigsByName(firstDialectSigs)
+			currentByName := sigsByName(sigs)
+
+			for name, firstSig := range firstByName {
+				currentSig, ok := currentByName[name]
+				if !ok {
+					continue
+				}
+				if firstSig.returnType != currentSig.returnType {
+					t.Logf("return type mismatch for %s: %s=%q, %s=%q",
+						name, firstDialect, firstSig.returnType, dialect, currentSig.returnType)
+					return false
+				}
+			}
+		}
+
+		return true
+	})
+}
+
+// =============================================================================
+// Test Helpers
+// =============================================================================
+
+// extractMethodBody extracts the body of a Go method starting at the given position.
+// It finds the matching closing brace for the function.
+func extractMethodBody(code string, start int) string {
+	braceCount := 0
+	inMethod := false
+	for i := start; i < len(code); i++ {
+		if code[i] == '{' {
+			braceCount++
+			inMethod = true
+		} else if code[i] == '}' {
+			braceCount--
+			if inMethod && braceCount == 0 {
+				return code[start : i+1]
+			}
+		}
+	}
+	return code[start:]
+}
+
+// toFirstLower converts the first character of a string to lowercase.
+func toFirstLower(s string) string {
+	if s == "" {
+		return s
+	}
+	return strings.ToLower(s[:1]) + s[1:]
+}
+
+// querySig captures a method signature from generated code.
+type querySig struct {
+	name       string
+	params     string
+	returnType string
+}
+
+func methodNames(sigs []querySig) []string {
+	seen := map[string]bool{}
+	var names []string
+	for _, s := range sigs {
+		if !seen[s.name] {
+			seen[s.name] = true
+			names = append(names, s.name)
+		}
+	}
+	return names
+}
+
+func sigsByName(sigs []querySig) map[string]querySig {
+	m := make(map[string]querySig)
+	for _, s := range sigs {
+		m[s.name] = s
+	}
+	return m
+}
+
+func equalStringSlices(a, b []string) bool {
+	setA := map[string]bool{}
+	setB := map[string]bool{}
+	for _, s := range a {
+		setA[s] = true
+	}
+	for _, s := range b {
+		setB[s] = true
+	}
+	if len(setA) != len(setB) {
+		return false
+	}
+	for k := range setA {
+		if !setB[k] {
+			return false
+		}
+	}
+	return true
+}

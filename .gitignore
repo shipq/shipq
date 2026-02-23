@@ -1,0 +1,8 @@
+db/databases/.mysql-data
+db/databases/.postgres-data
+db/databases/.sqlite-data
+db/databases/.minio-data
+test_results/*.log
+cmd/shipq/shipq
+node_modules
+shipq

@@ -1,0 +1,23 @@
+{
+  "client": {
+    "token": {
+      "hmac_secret_key": "test-hmac-secret-that-is-at-least-32-chars-long"
+    },
+    "allowed_origins": ["*"]
+  },
+  "http_api": {
+    "key": "test-api-key"
+  },
+  "channel": {
+    "without_namespace": {
+      "allow_subscribe_for_client": true,
+      "allow_publish_for_subscriber": true
+    },
+    "namespaces": [
+      {
+        "name": "scoped",
+        "allow_publish_for_subscriber": true
+      }
+    ]
+  }
+}

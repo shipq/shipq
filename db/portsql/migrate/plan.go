@@ -1,0 +1,371 @@
+package migrate
+
+import (
+	"fmt"
+	"sync"
+	"time"
+
+	"github.com/shipq/shipq/db/portsql/ddl"
+	"github.com/shipq/shipq/db/portsql/ref"
+)
+
+// migrationTimestamp manages unique timestamp generation for migrations.
+// It ensures that each migration gets a unique timestamp even when multiple
+// migrations are created in rapid succession.
+var (
+	lastTimestamp   string
+	timestampMu     sync.Mutex
+	timestampOffset int
+)
+
+// generateMigrationTimestamp generates a unique 14-digit timestamp for a migration.
+// If multiple migrations are created within the same second, it increments the
+// timestamp to ensure uniqueness and proper ordering.
+func generateMigrationTimestamp() string {
+	timestampMu.Lock()
+	defer timestampMu.Unlock()
+
+	now := time.Now().UTC()
+	currentTS := now.Format("20060102150405")
+
+	if currentTS == lastTimestamp {
+		// Same second, increment offset
+		timestampOffset++
+		// Add offset seconds to get unique timestamp
+		adjusted := now.Add(time.Duration(timestampOffset) * time.Second)
+		currentTS = adjusted.Format("20060102150405")
+	} else {
+		// New second, reset offset
+		lastTimestamp = currentTS
+		timestampOffset = 0
+	}
+
+	return currentTS
+}
+
+// generateMigrationName creates a properly formatted migration name with timestamp.
+func generateMigrationName(action, tableName string) string {
+	timestamp := generateMigrationTimestamp()
+	return fmt.Sprintf("%s_%s_%s", timestamp, action, tableName)
+}
+
+// ValidateMigrationName validates that a migration name follows the TIMESTAMP_name format.
+// The name must be at least 16 characters: 14 digit timestamp + underscore + at least 1 char.
+func ValidateMigrationName(name string) error {
+	// Check minimum length for: 14 digit timestamp + underscore + 1 char name
+	if len(name) < 16 {
+		// Provide more specific error based on what's wrong
+		if len(name) < 14 {
+			return fmt.Errorf("migration name must start with 14-digit timestamp, too short: %q", name)
+		}
+		if len(name) == 14 {
+			return fmt.Errorf("migration name must have underscore and name after timestamp, too short: %q", name)
+		}
+		if len(name) == 15 {
+			return fmt.Errorf("migration name empty after timestamp underscore: %q", name)
+		}
+		return fmt.Errorf("migration name too short: %q", name)
+	}
+
+	// First 14 characters must be digits (timestamp)
+	for i := 0; i < 14; i++ {
+		if name[i] < '0' || name[i] > '9' {
+			return fmt.Errorf("migration name must start with 14-digit timestamp: %q", name)
+		}
+	}
+
+	// Character 15 (index 14) must be underscore
+	if name[14] != '_' {
+		return fmt.Errorf("migration name must have underscore after timestamp: %q", name)
+	}
+
+	return nil
+}
+
+type Schema struct {
+	Name   string               `json:"name"`
+	Tables map[string]ddl.Table `json:"tables"`
+}
+
+// currentMigrationName holds the name set by SetCurrentMigration.
+// This is used to ensure migration names match the file timestamps.
+var currentMigrationName string
+
+const (
+	Sqlite   = "sqlite"
+	Postgres = "postgres"
+	MySQL    = "mysql"
+)
+
+type MigrationInstructions struct {
+	Sqlite   string `json:"sqlite"`
+	Postgres string `json:"postgres"`
+	MySQL    string `json:"mysql"`
+}
+
+type Migration struct {
+	Instructions MigrationInstructions `json:"instructions"`
+	Name         string                `json:"name"`
+}
+
+type MigrationPlan struct {
+	Schema     Schema      `json:"schema"`
+	Migrations []Migration `json:"migrations"`
+}
+
+// SetCurrentMigration sets the migration name to use for the next AddTable/AddEmptyTable call.
+// This should be called by the migration runner before executing each migration function,
+// passing the migration name derived from the filename (e.g., "20260204134211_create_accounts").
+// This ensures migration names are stable across rebuilds.
+func (m *MigrationPlan) SetCurrentMigration(name string) {
+	currentMigrationName = name
+}
+
+// consumeCurrentMigrationName returns the current migration name and clears it.
+// If no name was set, it generates one using the old behavior (for backwards compatibility).
+func consumeCurrentMigrationName(action, tableName string) string {
+	if currentMigrationName != "" {
+		name := currentMigrationName
+		currentMigrationName = "" // Clear after use
+		return name
+	}
+	// Fallback to generated name for backwards compatibility
+	return generateMigrationName(action, tableName)
+}
+
+// Table returns a validated reference to an existing table in the schema.
+// Returns an error if the table does not exist. This is used to establish
+// relationships between tables without creating actual FK constraints.
+func (m *MigrationPlan) Table(name string) (*ref.TableRef, error) {
+	if _, ok := m.Schema.Tables[name]; !ok {
+		return nil, fmt.Errorf("table %q not found in schema", name)
+	}
+	return &ref.TableRef{Name: name}, nil
+}
+
+// AddEmptyTable creates a new table in the schema and passes a TableBuilder for type-safe column definitions.
+func (m *MigrationPlan) AddEmptyTable(name string, fn func(*ddl.TableBuilder) error) (*MigrationPlan, error) {
+	// Check for duplicate table
+	if _, exists := m.Schema.Tables[name]; exists {
+		return nil, fmt.Errorf("table %q already exists in schema", name)
+	}
+
+	// Initialize tables map if nil
+	if m.Schema.Tables == nil {
+		m.Schema.Tables = make(map[string]ddl.Table)
+	}
+
+	// Build the table using the TableBuilder
+	tb := ddl.MakeEmptyTable(name)
+	if err := fn(tb); err != nil {
+		return nil, err
+	}
+
+	// Add the built table to the schema
+	table := tb.Build()
+
+	// Validate junction tables must have exactly 2 References columns
+	if table.IsJunctionTable {
+		refCount := 0
+		for _, col := range table.Columns {
+			if col.References != "" {
+				refCount++
+			}
+		}
+		if refCount != 2 {
+			return nil, fmt.Errorf("junction table %q must have exactly 2 References columns, found %d", name, refCount)
+		}
+	}
+
+	m.Schema.Tables[name] = *table
+
+	// Generate SQL for each database with properly timestamped migration name
+	m.Migrations = append(m.Migrations, Migration{
+		Name: consumeCurrentMigrationName("create", name),
+		Instructions: MigrationInstructions{
+			Postgres: generatePostgresCreateTable(table),
+			MySQL:    generateMySQLCreateTable(table),
+			Sqlite:   generateSQLiteCreateTable(table),
+		},
+	})
+
+	return m, nil
+}
+
+// authTableNames contains tables generated by `shipq auth` that should NOT
+// receive the automatic author_account_id column.
+var authTableNames = map[string]bool{
+	"accounts":           true,
+	"organizations":      true,
+	"organization_users": true,
+	"sessions":           true,
+}
+
+// AddTable creates a new table with default columns (id, public_id, created_at, deleted_at, updated_at)
+// and passes a TableBuilder for adding additional columns.
+// If the accounts table already exists in the schema (i.e., `shipq auth` has been run)
+// and this table is not one of the auth tables, an author_account_id column referencing
+// accounts is automatically added for author tracking.
+func (m *MigrationPlan) AddTable(name string, fn func(*ddl.TableBuilder) error) (*MigrationPlan, error) {
+	// Check for duplicate table
+	if _, exists := m.Schema.Tables[name]; exists {
+		return nil, fmt.Errorf("table %q already exists in schema", name)
+	}
+
+	// Initialize tables map if nil
+	if m.Schema.Tables == nil {
+		m.Schema.Tables = make(map[string]ddl.Table)
+	}
+
+	// Build the table using MakeTable (with default columns)
+	tb := ddl.MakeTable(name)
+	if err := fn(tb); err != nil {
+		return nil, err
+	}
+
+	// Auto-add author_account_id if auth is set up and this isn't an auth table
+	// or a junction table (junction tables have exactly 2 References columns
+	// and adding author_account_id would break that constraint).
+	if _, hasAccounts := m.Schema.Tables["accounts"]; hasAccounts && !authTableNames[name] && !tb.IsJunctionTable() {
+		accountsRef, err := m.Table("accounts")
+		if err == nil {
+			tb.Bigint("author_account_id").References(accountsRef)
+		}
+	}
+
+	// Add the built table to the schema
+	table := tb.Build()
+	m.Schema.Tables[name] = *table
+
+	// Generate SQL for each database with properly timestamped migration name
+	m.Migrations = append(m.Migrations, Migration{
+		Name: consumeCurrentMigrationName("create", name),
+		Instructions: MigrationInstructions{
+			Postgres: generatePostgresCreateTable(table),
+			MySQL:    generateMySQLCreateTable(table),
+			Sqlite:   generateSQLiteCreateTable(table),
+		},
+	})
+
+	return m, nil
+}
+
+// UpdateTable looks up an existing table from the schema and passes an AlterTableBuilder
+// with access to the table's columns for type-safe column references via ExistingColumn.
+func (m *MigrationPlan) UpdateTable(tableName string, fn func(*ddl.AlterTableBuilder) error) error {
+	table, ok := m.Schema.Tables[tableName]
+	if !ok {
+		return fmt.Errorf("table %q not found in schema", tableName)
+	}
+	alt := ddl.AlterTableFrom(&table)
+	if err := fn(alt); err != nil {
+		return err
+	}
+
+	// Apply operations to the schema
+	operations := alt.Build()
+	for _, op := range operations {
+		switch op.Type {
+		case ddl.OpAddColumn:
+			if op.ColumnDef != nil {
+				table.Columns = append(table.Columns, *op.ColumnDef)
+			}
+		case ddl.OpDropColumn:
+			newColumns := make([]ddl.ColumnDefinition, 0, len(table.Columns))
+			for _, col := range table.Columns {
+				if col.Name != op.Column {
+					newColumns = append(newColumns, col)
+				}
+			}
+			table.Columns = newColumns
+		case ddl.OpRenameColumn:
+			for i, col := range table.Columns {
+				if col.Name == op.Column {
+					table.Columns[i].Name = op.NewName
+					break
+				}
+			}
+		case ddl.OpAddIndex:
+			if op.IndexDef != nil {
+				table.Indexes = append(table.Indexes, *op.IndexDef)
+			}
+		case ddl.OpDropIndex:
+			newIndexes := make([]ddl.IndexDefinition, 0, len(table.Indexes))
+			for _, idx := range table.Indexes {
+				if idx.Name != op.IndexName {
+					newIndexes = append(newIndexes, idx)
+				}
+			}
+			table.Indexes = newIndexes
+		case ddl.OpRenameIndex:
+			for i, idx := range table.Indexes {
+				if idx.Name == op.IndexName {
+					table.Indexes[i].Name = op.NewName
+					break
+				}
+			}
+		case ddl.OpChangeType:
+			for i, col := range table.Columns {
+				if col.Name == op.Column {
+					table.Columns[i].Type = op.NewType
+					break
+				}
+			}
+		case ddl.OpChangeNullable:
+			if op.Nullable != nil {
+				for i, col := range table.Columns {
+					if col.Name == op.Column {
+						table.Columns[i].Nullable = *op.Nullable
+						break
+					}
+				}
+			}
+		case ddl.OpChangeDefault:
+			for i, col := range table.Columns {
+				if col.Name == op.Column {
+					table.Columns[i].Default = op.Default
+					break
+				}
+			}
+		}
+	}
+
+	// Update the table in the schema
+	m.Schema.Tables[tableName] = table
+
+	// Generate SQL for each database
+	// Note: SQLite needs the current table for potential table rebuild operations
+	m.Migrations = append(m.Migrations, Migration{
+		Name: consumeCurrentMigrationName("alter", tableName),
+		Instructions: MigrationInstructions{
+			Postgres: generatePostgresAlterTable(tableName, operations),
+			MySQL:    generateMySQLAlterTable(tableName, operations),
+			Sqlite:   generateSQLiteAlterTable(tableName, operations, &table),
+		},
+	})
+
+	return nil
+}
+
+// DropTable removes a table from the schema and returns a new plan with the table removed.
+func (m *MigrationPlan) DropTable(name string) (*MigrationPlan, error) {
+	// Verify table exists
+	if _, ok := m.Schema.Tables[name]; !ok {
+		return nil, fmt.Errorf("table %q not found in schema", name)
+	}
+
+	// Delete from schema
+	delete(m.Schema.Tables, name)
+
+	// Generate SQL for each database
+	m.Migrations = append(m.Migrations, Migration{
+		Name: fmt.Sprintf("drop_%s_table", name),
+		Instructions: MigrationInstructions{
+			Postgres: generatePostgresDropTable(name),
+			MySQL:    generateMySQLDropTable(name),
+			Sqlite:   generateSQLiteDropTable(name),
+		},
+	})
+
+	return m, nil
+}

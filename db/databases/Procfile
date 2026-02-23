@@ -1,0 +1,7 @@
+mysql: "$PROJECT_ROOT"/db/databases/mysql.sh
+postgres: "$PROJECT_ROOT"/db/databases/postgres.sh
+sqlite: "$PROJECT_ROOT"/db/databases/sqlite.sh
+valkey: valkey-server --port 6379
+centrifugo: centrifugo --config centrifugo.json -p 8100
+minio: minio server "$PROJECT_ROOT"/db/databases/.minio-data
+minio-setup: sleep 2 && "$PROJECT_ROOT"/db/databases/minio-setup.sh
