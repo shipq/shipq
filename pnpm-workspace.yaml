@@ -1,0 +1,22 @@
+packages:
+  # Existing code (current admin app lives here today)
+  - "admin"
+
+  # Future home for all JS/TS code (as you introduce it)
+  - "docs/**"
+
+  # Optional: if you later add more JS/TS packages outside docs,
+  # add them explicitly here (e.g. "packages/*").
+
+catalog:
+  # Centralized versions (use via: "catalog:" in package.json deps)
+  "@astrojs/starlight": "^0.37.6"
+  "@playwright/test": "^1.58.2"
+  astro: "^5.6.1"
+  concurrently: "^9.2.1"
+  esbuild: "^0.27.3"
+  happy-dom: "^20.6.1"
+  sharp: "^0.34.2"
+  tsx: "^4.21.0"
+  typescript: "^5.9.3"
+  vitest: "^4.0.18"

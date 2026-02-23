@@ -1,0 +1,87 @@
+---
+title: ShipQ
+description: A Go-first backend compiler toolchain that generates a production-oriented API stack from your schema and API surface.
+template: splash
+hero:
+  tagline: Declare your schema. Write your queries. Ship your API. ShipQ is a compiler toolchain for backend code — not an ORM.
+  actions:
+    - text: Get Started
+      link: /getting-started/installation/
+      icon: right-arrow
+    - text: View on GitHub
+      link: https://github.com/shipq/shipq
+      icon: external
+      variant: minimal
+---
+
+import { Card, CardGrid } from '@astrojs/starlight/components';
+
+## What is ShipQ?
+
+ShipQ treats your **schema**, **queries**, and **handler registrations** as build targets. When you change any of those inputs, re-run the relevant compile step — and ShipQ generates everything else: typed query runners, server wiring, OpenAPI specs, admin UIs, TypeScript clients, and test harnesses.
+
+<CardGrid stagger>
+  <Card title="Compile-Time Over Runtime" icon="rocket">
+    Schema, queries, and handler registries are build targets — not runtime reflection magic. Errors surface at compile time, not in production.
+  </Card>
+  <Card title="Three-Compiler Chain" icon="setting">
+    **Schema compiler**: migrations → typed schema bindings. **Query compiler**: PortSQL DSL → typed query runners. **Handler compiler**: API packages → server wiring, OpenAPI, tests, and TS clients.
+  </Card>
+  <Card title="Multi-Database by Construction" icon="random">
+    The same query DSL compiles to **Postgres**, **MySQL**, and **SQLite** — handling quoting, placeholders, JSON aggregation, and dialect differences automatically.
+  </Card>
+  <Card title="SQL-Shaped Data Access" icon="list-format">
+    You write SQL-shaped query code using a typed Go DSL (PortSQL), not ActiveRecord-like object graphs. Query boundaries are explicit and testable.
+  </Card>
+  <Card title="Self-Contained Projects" icon="seti:folder">
+    ShipQ embeds its runtime libraries into your repo and rewrites imports. Your generated project has zero dependency on a published ShipQ module.
+  </Card>
+  <Card title="Full-Stack Codegen" icon="laptop">
+    From a single `handler compile`, get an OpenAPI spec, API docs UI, admin UI, HTTP test client, integration tests, and TypeScript HTTP clients with optional React/Svelte hooks.
+  </Card>
+</CardGrid>
+
+## The Workflow
+
+```sh
+# Initialize a project
+shipq init
+
+# Set up your database
+shipq db setup
+
+# Add authentication
+shipq auth
+shipq signup
+
+# Define your schema
+shipq migrate new pets name:string species:string age:int
+shipq migrate up
+
+# Generate CRUD endpoints + tests
+shipq resource pets all
+
+# Compile everything
+shipq handler compile
+
+# Run tests and start the server
+go test ./... -v
+go run ./cmd/server
+```
+
+## Next Steps
+
+<CardGrid>
+  <Card title="Installation" icon="laptop">
+    [Install ShipQ](/getting-started/installation/) and build the CLI from source.
+  </Card>
+  <Card title="Quickstart" icon="rocket">
+    Follow the [Quickstart guide](/getting-started/quickstart/) to build a complete API in minutes.
+  </Card>
+  <Card title="Core Concepts" icon="open-book">
+    Understand the [compiler chain](/concepts/compiler-chain/) and how ShipQ's three compilers feed each other.
+  </Card>
+  <Card title="E2E Example" icon="puzzle">
+    Walk through a [full end-to-end example](/e2e-example/) building a real application with auth, CRUD, and tests.
+  </Card>
+</CardGrid>

@@ -1,0 +1,14 @@
+{
+  "name": "@shipq/admin",
+  "private": true,
+  "scripts": {
+    "build": "esbuild src/index.ts --bundle --minify --outfile=../assets/admin.min.js --format=iife --target=es2022",
+    "build:dev": "esbuild src/index.ts --bundle --outfile=../assets/admin.min.js --format=iife --target=es2022 --sourcemap",
+    "watch": "esbuild src/index.ts --bundle --outfile=../assets/admin.min.js --format=iife --target=es2022 --sourcemap --watch",
+    "mock": "tsx --watch mock-server.ts",
+    "dev": "pnpm run build:dev && pnpm exec concurrently -n watch,server -c blue,green \"pnpm:watch\" \"pnpm:mock\"",
+    "test": "vitest run --config vitest.config.ts",
+    "test:watch": "vitest --config vitest.config.ts",
+    "e2e": "playwright test --config playwright.config.ts"
+  }
+}

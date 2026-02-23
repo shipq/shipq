@@ -8,7 +8,7 @@ export default defineConfig({
     headless: true,
   },
   webServer: {
-    command: "cd .. && npm run admin:build:dev && tsx admin/mock-server.ts",
+    command: "cd .. && pnpm run admin:build:dev && pnpm exec tsx admin/mock-server.ts",
     url: "http://localhost:3000/admin",
     reuseExistingServer: !process.env.CI,
     timeout: 10_000,
