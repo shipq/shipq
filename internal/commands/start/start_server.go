@@ -13,9 +13,9 @@ import (
 )
 
 // StartServer implements "shipq start server".
-// It runs `go run ./cmd/server` as a foreground child process, forwarding
-// SIGINT/SIGTERM to it.
-func StartServer() {
+// When watch is true it uses go build + fsnotify for hot reload.
+// When watch is false it falls back to the original go run behaviour.
+func StartServer(watch bool) {
 	roots, err := project.FindProjectRoots()
 	if err != nil {
 		cli.FatalErr("not in a shipq project", err)
@@ -27,6 +27,22 @@ func StartServer() {
 		cli.Fatal("cmd/server/main.go not found -- run 'shipq init' or scaffold your server first")
 	}
 
+	if watch {
+		fmt.Println("  Starting server with hot reload (go build + watch)...")
+		fmt.Println("  Watching for .go file changes.  Use --no-watch to disable.")
+		fmt.Println("")
+		RunWithWatch(WatchConfig{
+			ProjectRoot: roots.ShipqRoot,
+			BuildCmd:    []string{"go", "build", "-o", filepath.Join(roots.ShipqRoot, ".shipq", "bin", "server"), "./cmd/server"},
+			BinPath:     filepath.Join(roots.ShipqRoot, ".shipq", "bin", "server"),
+			Stdout:      os.Stdout,
+			Stderr:      os.Stderr,
+			Name:        "server",
+		})
+		return
+	}
+
+	// --no-watch: original go run flow.
 	fmt.Println("  Starting server (go run ./cmd/server)...")
 	fmt.Println("")
 

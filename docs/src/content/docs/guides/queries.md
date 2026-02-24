@@ -49,8 +49,270 @@ This registers a query named `"GetPetById"` that:
 After running `shipq db compile`, you get a generated method like:
 
 ```go
-func GetPetById(ctx context.Context, db Queryer, params GetPetByIdParams) (*GetPetByIdResult, error)
+func (r *Runner) GetPetById(ctx context.Context, params GetPetByIdParams) (*GetPetByIdResult, error)
 ```
+
+## What `shipq db compile` Generates
+
+This is the part most documentation glosses over. Let's look at what actually appears in your project after you run `shipq db compile`.
+
+### Generated param and result types
+
+For every query you define, ShipQ generates a **params struct** (the inputs) and a **result struct** (the outputs) in `shipq/queries/types.go`:
+
+```go
+// shipq/queries/types.go (generated)
+
+// --- GetPetByPublicId ---
+
+type GetPetByPublicIdParams struct {
+	PublicId       string `json:"publicId"`
+	OrganizationId int64  `json:"organizationId"`
+}
+
+type GetPetByPublicIdResult struct {
+	PublicId  string    `json:"public_id"`
+	Name      string    `json:"name"`
+	Species   string    `json:"species"`
+	Age       int       `json:"age"`
+	CreatedAt time.Time `json:"created_at"`
+	UpdatedAt time.Time `json:"updated_at"`
+}
+
+// --- CreatePet ---
+
+type CreatePetParams struct {
+	PublicId       string `json:"publicId"`
+	Name           string `json:"name"`
+	Species        string `json:"species"`
+	Age            int    `json:"age"`
+	OrganizationId int64  `json:"organizationId"`
+}
+
+type CreatePetResult struct {
+	Id       int64  `json:"id"`
+	PublicId string `json:"public_id"`
+}
+
+// --- ListPets (paginated) ---
+
+type ListPetsParams struct {
+	OrganizationId int64          `json:"organizationId"`
+	Limit          int            `json:"limit"`
+	Cursor         *ListPetsCursor `json:"cursor"`
+}
+
+type ListPetsCursor struct {
+	CreatedAt time.Time `json:"created_at"`
+	PublicId  string    `json:"public_id"`
+}
+
+type ListPetsItem struct {
+	PublicId  string    `json:"public_id"`
+	Name      string    `json:"name"`
+	Species   string    `json:"species"`
+	Age       int       `json:"age"`
+	CreatedAt time.Time `json:"created_at"`
+	UpdatedAt time.Time `json:"updated_at"`
+}
+
+type ListPetsResult struct {
+	Items      []ListPetsItem  `json:"items"`
+	NextCursor *ListPetsCursor `json:"next_cursor"`
+}
+
+// --- SearchPets (custom query, MustDefineMany) ---
+
+type SearchPetsParams struct {
+	Search         string `json:"search"`
+	OrganizationId int64  `json:"organizationId"`
+}
+
+type SearchPetsResult struct {
+	PublicId string `json:"public_id"`
+	Name     string `json:"name"`
+	Species  string `json:"species"`
+	Age      int    `json:"age"`
+}
+```
+
+Every field is strongly typed. The Go types are derived from your schema column types — `string` columns become `string`, `int` columns become `int`, `datetime` columns become `time.Time`, nullable columns become pointers.
+
+### Generated runner methods
+
+The runner itself is generated in `shipq/queries/<dialect>/runner.go` with a method per query:
+
+```go
+// shipq/queries/postgres/runner.go (generated, simplified)
+
+type Runner struct {
+	db Queryer
+}
+
+func (r *Runner) GetPetByPublicId(ctx context.Context, params GetPetByPublicIdParams) (*GetPetByPublicIdResult, error) {
+	row := r.db.QueryRowContext(ctx,
+		`SELECT "pets"."public_id", "pets"."name", "pets"."species", "pets"."age",
+		        "pets"."created_at", "pets"."updated_at"
+		 FROM "pets"
+		 WHERE "pets"."public_id" = $1
+		   AND "pets"."deleted_at" IS NULL
+		   AND "pets"."organization_id" = $2`,
+		params.PublicId, params.OrganizationId,
+	)
+	var result GetPetByPublicIdResult
+	err := row.Scan(
+		&result.PublicId, &result.Name, &result.Species, &result.Age,
+		&result.CreatedAt, &result.UpdatedAt,
+	)
+	if err == sql.ErrNoRows {
+		return nil, nil // MustDefineOne: nil means "not found"
+	}
+	if err != nil {
+		return nil, err
+	}
+	return &result, nil
+}
+
+func (r *Runner) CreatePet(ctx context.Context, params CreatePetParams) (*CreatePetResult, error) {
+	row := r.db.QueryRowContext(ctx,
+		`INSERT INTO "pets" ("public_id", "name", "species", "age", "organization_id")
+		 VALUES ($1, $2, $3, $4, $5)
+		 RETURNING "id", "public_id"`,
+		params.PublicId, params.Name, params.Species, params.Age, params.OrganizationId,
+	)
+	var result CreatePetResult
+	err := row.Scan(&result.Id, &result.PublicId)
+	if err != nil {
+		return nil, err
+	}
+	return &result, nil
+}
+
+func (r *Runner) SearchPets(ctx context.Context, params SearchPetsParams) ([]SearchPetsResult, error) {
+	rows, err := r.db.QueryContext(ctx,
+		`SELECT "pets"."public_id", "pets"."name", "pets"."species", "pets"."age"
+		 FROM "pets"
+		 WHERE "pets"."name" ILIKE $1
+		   AND "pets"."deleted_at" IS NULL
+		   AND "pets"."organization_id" = $2
+		 ORDER BY "pets"."name" ASC`,
+		params.Search, params.OrganizationId,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var results []SearchPetsResult
+	for rows.Next() {
+		var item SearchPetsResult
+		if err := rows.Scan(&item.PublicId, &item.Name, &item.Species, &item.Age); err != nil {
+			return nil, err
+		}
+		results = append(results, item)
+	}
+	return results, rows.Err()
+}
+```
+
+That SQL was generated from your PortSQL definition. If you switch your database from Postgres to MySQL, `shipq db compile` regenerates the runner with backtick-quoted identifiers, `?` placeholders, `LOWER(col) LIKE LOWER(?)` instead of `ILIKE`, and other dialect differences. **You never change your query definitions.**
+
+### Cursor helpers
+
+For paginated queries, ShipQ also generates encode/decode helpers:
+
+```go
+// shipq/queries/types.go (generated)
+
+func DecodeListPetsCursor(encoded string) *ListPetsCursor { ... }
+func EncodeListPetsCursor(cursor *ListPetsCursor) string  { ... }
+```
+
+These use base64-encoded JSON internally. The cursor is opaque to API consumers.
+
+### The RunnerFromContext pattern
+
+The generated code also includes a context-based accessor so handlers can get the runner without knowing the dialect:
+
+```go
+// shipq/queries/context.go (generated)
+
+func RunnerFromContext(ctx context.Context) *Runner { ... }
+```
+
+The generated `cmd/server/main.go` injects the runner into the request context based on the configured database dialect. Your handler code just calls `queries.RunnerFromContext(ctx)` and gets back a typed runner — no dialect awareness needed.
+
+### Calling generated queries from a handler
+
+Here's the full pattern — from query definition to handler call:
+
+**Step 1: Define the query** in `querydefs/`:
+
+```go
+// querydefs/pets/queries.go
+func init() {
+	query.MustDefineMany("FindPetsBySpecies",
+		query.From(schema.Pets).
+			Select(
+				schema.Pets.PublicId(),
+				schema.Pets.Name(),
+				schema.Pets.Species(),
+				schema.Pets.Age(),
+			).
+			Where(
+				query.And(
+					schema.Pets.Species().Eq(query.Param[string]("species")),
+					schema.Pets.DeletedAt().IsNull(),
+					schema.Pets.OrganizationId().Eq(query.Param[int64]("organizationId")),
+				),
+			).
+			Build(),
+	)
+}
+```
+
+**Step 2: Run `shipq db compile`** — generates `FindPetsBySpeciesParams`, `FindPetsBySpeciesResult`, and the runner method.
+
+**Step 3: Call it from a handler:**
+
+```go
+// api/pets/find_by_species.go
+func FindPetsBySpecies(ctx context.Context, req *FindBySpeciesRequest) (*FindBySpeciesResponse, error) {
+	runner := queries.RunnerFromContext(ctx)
+
+	orgID, ok := httputil.OrganizationIDFromContext(ctx)
+	if !ok {
+		return nil, httperror.Wrap(403, "organization context missing", nil)
+	}
+
+	results, err := runner.FindPetsBySpecies(ctx, queries.FindPetsBySpeciesParams{
+		Species:        req.Species,
+		OrganizationId: orgID,
+	})
+	if err != nil {
+		return nil, httperror.Wrap(500, "failed to find pets", err)
+	}
+
+	items := make([]PetItem, len(results))
+	for i, r := range results {
+		items[i] = PetItem{
+			PublicId: r.PublicId,
+			Name:    r.Name,
+			Species: r.Species,
+			Age:     r.Age,
+		}
+	}
+
+	return &FindBySpeciesResponse{Items: items}, nil
+}
+```
+
+**Step 4: Register the route** in `api/pets/register.go`:
+
+```go
+app.Get("/pets/by-species", FindPetsBySpecies).Auth()
+```
+
+**Step 5: Run `shipq handler compile`** — the new endpoint appears in the OpenAPI spec, TypeScript client, and test harness.
 
 ## Registration Functions
 
@@ -119,6 +381,49 @@ query.MustDefinePaginated("ListPosts",
 The cursor columns (last two arguments) specify the sort order and tiebreaker. Use `.Desc()` for newest-first or `.Asc()` for oldest-first.
 
 **Generated signature:** `(*ListPostsResult, error)` with `Items` and `NextCursor` fields.
+
+**Generated cursor helpers:**
+
+```go
+func DecodeListPostsCursor(encoded string) *ListPostsCursor
+func EncodeListPostsCursor(cursor *ListPostsCursor) string
+```
+
+**How the handler uses it:**
+
+```go
+func ListPosts(ctx context.Context, req *ListPostsRequest) (*ListPostsResponse, error) {
+	runner := queries.RunnerFromContext(ctx)
+
+	// Decode cursor from request (nil on first page)
+	var cursor *queries.ListPostsCursor
+	if req.Cursor != nil {
+		cursor = queries.DecodeListPostsCursor(*req.Cursor)
+	}
+
+	result, err := runner.ListPosts(ctx, queries.ListPostsParams{
+		Limit:  20,
+		Cursor: cursor,
+	})
+	if err != nil {
+		return nil, httperror.Wrap(500, "failed to list posts", err)
+	}
+
+	// Encode next cursor for the response (nil on last page)
+	var nextCursor *string
+	if result.NextCursor != nil {
+		encoded := queries.EncodeListPostsCursor(result.NextCursor)
+		nextCursor = &encoded
+	}
+
+	return &ListPostsResponse{
+		Items:      mapPostItems(result.Items),
+		NextCursor: nextCursor,
+	}, nil
+}
+```
+
+The cursor is an opaque base64 string. The client passes it back as a query parameter (`?cursor=...`) to fetch the next page. Internally, the generated SQL uses `WHERE (created_at, id) < ($cursor_created_at, $cursor_id)` to efficiently seek without OFFSET.
 
 ## The Query Builder API
 
@@ -204,7 +509,15 @@ query.From(schema.Authors).
 	Build()
 ```
 
-This produces a result where the `books` field is a JSON array of objects.
+This produces a result where the `books` field is a JSON array of objects. The generated SQL differs by dialect:
+
+| Dialect | Generated SQL |
+|---------|---------------|
+| Postgres | `json_agg(json_build_object('id', books.id, 'title', books.title))` |
+| MySQL | `JSON_ARRAYAGG(JSON_OBJECT('id', books.id, 'title', books.title))` |
+| SQLite | `json_group_array(json_object('id', books.id, 'title', books.title))` |
+
+You write the query once; ShipQ handles the dialect translation.
 
 ### UPDATE Builder
 
@@ -342,6 +655,25 @@ query.From(schema.Authors).
 	Build()
 ```
 
+ShipQ also uses subqueries internally for **foreign key resolution**. When a CRUD resource has a FK column like `author_id:references:authors`, the generated CREATE query uses a subquery to resolve the public ID to the internal ID:
+
+```go
+// Generated by `shipq resource books all`
+query.InsertInto(schema.Books).
+	Columns(schema.Books.PublicId(), schema.Books.Title(), schema.Books.AuthorId()).
+	Values(
+		query.Param[string]("publicId"),
+		query.Param[string]("title"),
+		query.Subquery(
+			query.From(schema.Authors).
+				Select(schema.Authors.Id()).
+				Where(schema.Authors.PublicId().Eq(query.Param[string]("authorId")))),
+	).
+	Build()
+```
+
+This means API consumers always pass public ID strings (`"abc123"`) rather than internal integer IDs. The subquery resolves it at the SQL level.
+
 ## Compiling Queries
 
 After writing your query definitions, run:
@@ -353,6 +685,16 @@ shipq db compile
 This generates:
 - `shipq/queries/types.go` — shared parameter and result types
 - `shipq/queries/<dialect>/runner.go` — dialect-specific query runner with typed methods
+
+The compilation step:
+1. Generates a temporary Go program that imports your `querydefs/` packages (triggering `init()`)
+2. Serializes each registered query's AST into JSON
+3. Compiles each AST to dialect-specific SQL for your configured database
+4. Generates typed Go runner code with `Scan` calls matching the selected columns
+
+:::tip
+If you only changed query definitions (not handlers), you only need `shipq db compile`. But if handler signatures also changed, you need `shipq handler compile` to update the server wiring and TypeScript client.
+:::
 
 ## Panic Behavior
 
@@ -383,3 +725,15 @@ A single PortSQL query compiles to correct SQL for all three supported databases
 | RETURNING | Native | Emulated | Emulated |
 
 You never think about dialect differences — PortSQL handles them at compile time.
+
+## Summary: The Full Lifecycle
+
+Here's the complete lifecycle of a query in ShipQ:
+
+1. **Define your schema** — `shipq migrate new pets name:string species:string age:int` → `shipq migrate up`
+2. **Write a query definition** — create a file in `querydefs/` using the PortSQL DSL with `query.MustDefineOne`, `MustDefineMany`, `MustDefineExec`, or `MustDefinePaginated`
+3. **Compile** — `shipq db compile` generates param structs, result structs, and a typed runner method with dialect-specific SQL
+4. **Call from a handler** — `runner := queries.RunnerFromContext(ctx)` then `runner.YourQuery(ctx, params)` — fully typed, compile-time checked
+5. **Wire to HTTP** — register the handler in `register.go`, then `shipq handler compile` picks it up and generates the server route, OpenAPI spec, TypeScript client, and tests
+
+If you rename a column in your schema, `shipq migrate up` updates the schema bindings, `shipq db compile` updates the query runner, and any handler referencing the old field name fails at **Go compile time** — not at runtime, not in production.

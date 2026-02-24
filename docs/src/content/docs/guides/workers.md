@@ -77,6 +77,858 @@ Each service can also be started manually:
 - **Worker**: `go run ./cmd/worker`
 - **Server**: `go run ./cmd/server`
 
+## Defining a Channel: Concrete Example
+
+Let's walk through building a real channel — an AI chatbot that streams responses back to the browser, with a human-in-the-loop tool-calling approval step.
+
+### 1. Create the channel package
+
+Create a directory `channels/chatbot/` and write a `register.go` that defines the channel's message types and registers them:
+
+```go
+// channels/chatbot/register.go
+package chatbot
+
+import "myapp/shipq/lib/channel"
+
+// --- Client-to-server messages ---
+
+// StartChat is the dispatch message — the first thing the client sends to kick off the job.
+type StartChat struct {
+	Prompt string `json:"prompt"`
+}
+
+// ToolCallApproval is a mid-stream message — the client sends this after
+// reviewing a tool call request from the bot.
+type ToolCallApproval struct {
+	CallId   string `json:"call_id"`
+	Approved bool   `json:"approved"`
+}
+
+// --- Server-to-client messages ---
+
+// BotMessage is a complete message from the bot.
+type BotMessage struct {
+	Text string `json:"text"`
+}
+
+// ToolCallRequest asks the user to approve a tool invocation.
+type ToolCallRequest struct {
+	CallId   string         `json:"call_id"`
+	ToolName string         `json:"tool_name"`
+	Args     map[string]any `json:"args"`
+}
+
+// StreamingToken is a single token from a streaming LLM response.
+type StreamingToken struct {
+	Token string `json:"token"`
+}
+
+// ChatFinished signals the conversation is complete.
+type ChatFinished struct {
+	Summary string `json:"summary"`
+}
+
+// Register defines the chatbot channel.
+func Register(app *channel.App) {
+	app.DefineChannel("chatbot",
+		// Client-to-server: first type is the dispatch (trigger), rest are mid-stream
+		channel.FromClient(StartChat{}, ToolCallApproval{}),
+		// Server-to-client: all types the worker can push to the browser
+		channel.FromServer(BotMessage{}, ToolCallRequest{}, StreamingToken{}, ChatFinished{}),
+	).Retries(3).BackoffSeconds(5).TimeoutSeconds(120)
+}
+```
+
+Key things to notice:
+
+- **`StartChat` is the dispatch message** — it's the first type in `FromClient(...)`. When the client calls the dispatch endpoint, this payload is serialized and enqueued as a Redis job.
+- **`ToolCallApproval` is a mid-stream message** — the client can send it *after* the job has started, while the worker is running. The worker receives it via the Centrifugo channel.
+- **`FromServer(...)` types** are messages the worker pushes back to the client over WebSockets.
+- **`.Retries(3).BackoffSeconds(5)`** configures the Redis job queue to retry the handler up to 3 times with exponential backoff starting at 5 seconds.
+
+### 2. Write the handler
+
+The handler function runs in the **worker process** (not the HTTP server). Its signature must be `func(context.Context, *DispatchType) error` where `DispatchType` is the first `FromClient` type:
+
+```go
+// channels/chatbot/handler.go
+package chatbot
+
+import (
+	"context"
+	"fmt"
+)
+
+// HandleStartChat is called by the worker when a StartChat job is dequeued.
+// The function name must be Handle + <DispatchTypeName>.
+func HandleStartChat(ctx context.Context, req *StartChat) error {
+	// Get the typed channel from context — this gives you type-safe Send/Receive methods
+	ch := TypedChannelFromContext(ctx)
+
+	// Stream tokens back to the client
+	for i, token := range tokenize(callLLM(req.Prompt)) {
+		if err := ch.SendStreamingToken(ctx, &StreamingToken{Token: token}); err != nil {
+			return fmt.Errorf("send token %d: %w", i, err)
+		}
+	}
+
+	// Ask the user to approve a tool call
+	if err := ch.SendToolCallRequest(ctx, &ToolCallRequest{
+		CallId:   "call_1",
+		ToolName: "web_search",
+		Args:     map[string]any{"query": req.Prompt},
+	}); err != nil {
+		return fmt.Errorf("send tool call request: %w", err)
+	}
+
+	// Block until the client responds with a ToolCallApproval
+	approval, err := ch.ReceiveToolCallApproval(ctx)
+	if err != nil {
+		return fmt.Errorf("receive approval: %w", err)
+	}
+
+	if approval.Approved {
+		// Execute the tool and send the result
+		result := executeWebSearch(req.Prompt)
+		if err := ch.SendBotMessage(ctx, &BotMessage{Text: result}); err != nil {
+			return err
+		}
+	} else {
+		if err := ch.SendBotMessage(ctx, &BotMessage{Text: "Tool call declined. How else can I help?"}); err != nil {
+			return err
+		}
+	}
+
+	// Signal completion
+	return ch.SendChatFinished(ctx, &ChatFinished{Summary: "Chat completed"})
+}
+```
+
+Key things to notice:
+
+- **`TypedChannelFromContext(ctx)`** — this is a **generated** wrapper (see below). It gives you `Send<Type>` and `Receive<Type>` methods that are fully typed. You can't accidentally send a `BotMessage` when you meant to send a `StreamingToken`.
+- **`ch.ReceiveToolCallApproval(ctx)`** — this blocks the worker goroutine until the client publishes a `ToolCallApproval` message on the Centrifugo channel. The transport handles echo filtering so the worker doesn't receive its own publications.
+- **The handler returns `error`** — if it returns a non-nil error, the job is marked as "failed" in the `job_results` table and retried according to the `.Retries()` config.
+
+### 3. What ShipQ generates from this
+
+When you run `shipq workers compile`, ShipQ reads your channel definitions and generates several files. Here's what each one looks like:
+
+#### Generated typed channel wrapper (`zz_generated_channel.go`)
+
+This file is generated in your channel package directory:
+
+```go
+// channels/chatbot/zz_generated_channel.go
+// Code generated by shipq. DO NOT EDIT.
+package chatbot
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+
+	"myapp/shipq/lib/channel"
+)
+
+// ServerMessage is a sealed interface representing messages the server can send.
+// Only types defined in this package may implement it.
+type ServerMessage interface {
+	serverMessage()
+	TypeName() string
+}
+
+func (*BotMessage) serverMessage()      {}
+func (*BotMessage) TypeName() string    { return "BotMessage" }
+
+func (*ToolCallRequest) serverMessage()   {}
+func (*ToolCallRequest) TypeName() string { return "ToolCallRequest" }
+
+func (*StreamingToken) serverMessage()    {}
+func (*StreamingToken) TypeName() string  { return "StreamingToken" }
+
+func (*ChatFinished) serverMessage()     {}
+func (*ChatFinished) TypeName() string   { return "ChatFinished" }
+
+// ClientMessage is a sealed interface representing mid-stream messages the client can send.
+type ClientMessage interface {
+	clientMessage()
+	TypeName() string
+}
+
+func (*ToolCallApproval) clientMessage()   {}
+func (*ToolCallApproval) TypeName() string { return "ToolCallApproval" }
+
+// TypedChannel provides type-safe send and receive operations for the chatbot channel.
+type TypedChannel struct {
+	raw *channel.Channel
+}
+
+// TypedChannelFromContext extracts the raw channel from the context and wraps it.
+func TypedChannelFromContext(ctx context.Context) *TypedChannel {
+	return &TypedChannel{raw: channel.FromContext(ctx)}
+}
+
+// Send marshals a ServerMessage and sends it over the channel.
+func (tc *TypedChannel) Send(ctx context.Context, msg ServerMessage) error {
+	data, err := json.Marshal(msg)
+	if err != nil {
+		return fmt.Errorf("marshal %s: %w", msg.TypeName(), err)
+	}
+	return tc.raw.Send(ctx, msg.TypeName(), data)
+}
+
+// SendBotMessage is a convenience method that sends a BotMessage.
+func (tc *TypedChannel) SendBotMessage(ctx context.Context, msg *BotMessage) error {
+	return tc.Send(ctx, msg)
+}
+
+// SendToolCallRequest is a convenience method that sends a ToolCallRequest.
+func (tc *TypedChannel) SendToolCallRequest(ctx context.Context, msg *ToolCallRequest) error {
+	return tc.Send(ctx, msg)
+}
+
+// SendStreamingToken is a convenience method that sends a StreamingToken.
+func (tc *TypedChannel) SendStreamingToken(ctx context.Context, msg *StreamingToken) error {
+	return tc.Send(ctx, msg)
+}
+
+// SendChatFinished is a convenience method that sends a ChatFinished.
+func (tc *TypedChannel) SendChatFinished(ctx context.Context, msg *ChatFinished) error {
+	return tc.Send(ctx, msg)
+}
+
+// ReceiveToolCallApproval blocks until a ToolCallApproval message arrives from the client.
+func (tc *TypedChannel) ReceiveToolCallApproval(ctx context.Context) (*ToolCallApproval, error) {
+	data, err := tc.raw.Receive(ctx, "ToolCallApproval")
+	if err != nil {
+		return nil, err
+	}
+	var msg ToolCallApproval
+	if err := json.Unmarshal(data, &msg); err != nil {
+		return nil, fmt.Errorf("unmarshal ToolCallApproval: %w", err)
+	}
+	return &msg, nil
+}
+```
+
+Every `FromServer` type gets a `Send<Type>` method. Every mid-stream `FromClient` type gets a `Receive<Type>` method. The sealed interface pattern means you can't accidentally implement `ServerMessage` outside this package.
+
+#### Generated worker main (`cmd/worker/main.go`)
+
+The worker binary wires everything together:
+
+```go
+// cmd/worker/main.go
+// Code generated by shipq. DO NOT EDIT.
+package main
+
+import (
+	"context"
+	"database/sql"
+	"os"
+	"os/signal"
+	"syscall"
+
+	"myapp/config"
+	"myapp/shipq/lib/channel"
+	chatbot "myapp/channels/chatbot"
+
+	_ "github.com/jackc/pgx/v5/stdlib"
+)
+
+func main() {
+	// Database connection
+	driver, dsn := config.ParseDatabaseURL(config.Settings.DATABASE_URL)
+	db, err := sql.Open(driver, dsn)
+	if err != nil {
+		config.Logger.Error("failed to open database", "error", err.Error())
+		os.Exit(1)
+	}
+	defer db.Close()
+
+	if err := db.Ping(); err != nil {
+		config.Logger.Error("failed to connect to database", "error", err.Error())
+		os.Exit(1)
+	}
+
+	// These two variables are the ONLY coupling to Machinery/Centrifugo in the entire worker.
+	// To swap backends, replace them (e.g., channel.NewAsynqQueue(...), channel.NewPusherTransport(...)).
+	var transport channel.RealtimeTransport = channel.NewCentrifugoTransport(
+		config.Settings.CENTRIFUGO_API_URL,
+		config.Settings.CENTRIFUGO_API_KEY,
+		config.Settings.CENTRIFUGO_HMAC_SECRET,
+		config.Settings.CENTRIFUGO_WS_URL,
+	)
+
+	queue, err := channel.NewMachineryQueue(config.Settings.REDIS_URL)
+	if err != nil {
+		config.Logger.Error("failed to create task queue", "error", err.Error())
+		os.Exit(1)
+	}
+	var _ channel.TaskQueue = queue
+
+	// Register task handlers for each channel.
+	if err := queue.RegisterTask("chatbot", channel.WrapDispatchHandler(chatbot.HandleStartChat, transport, db, "chatbot")); err != nil {
+		config.Logger.Error("failed to register task", "task", "chatbot", "error", err.Error())
+		os.Exit(1)
+	}
+
+	// Start the worker. Blocks until context is cancelled.
+	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer cancel()
+
+	config.Logger.Info("starting worker", "concurrency", 10)
+	if err := queue.StartWorker(ctx, "shipq-worker", 10); err != nil {
+		if ctx.Err() != nil {
+			config.Logger.Info("worker shutting down gracefully")
+		} else {
+			config.Logger.Error("worker failed", "error", err.Error())
+			os.Exit(1)
+		}
+	}
+}
+```
+
+Key things to notice:
+
+- **`channel.WrapDispatchHandler`** takes your handler function, the transport, the DB, and the channel name. It returns a `func(string) error` that the task queue can call. Internally, it deserializes the dispatch payload, subscribes to the Centrifugo channel, creates the `Channel` struct, injects it into context, calls your handler, and updates the `job_results` table.
+- **`RealtimeTransport` and `TaskQueue` are interfaces** — the concrete types (`CentrifugoTransport` and `MachineryQueue`) only appear in this one file. Swapping to a different transport or queue backend means changing two lines.
+
+#### Generated TypeScript client (`shipq-channels.ts`)
+
+This is the client your frontend imports:
+
+```ts
+// shipq-channels.ts (generated)
+// Code generated by shipq. DO NOT EDIT.
+
+import { Centrifuge } from "centrifuge";
+
+export interface ChannelConfig {
+  baseURL: string;
+  centrifugoURL: string;
+}
+
+let config: ChannelConfig | null = null;
+
+export function configure(cfg: ChannelConfig): void {
+  config = cfg;
+}
+
+function getConfig(): ChannelConfig {
+  if (!config) {
+    throw new Error("shipq channels not configured — call configure() first");
+  }
+  return config;
+}
+
+// ─── Channel: chatbot ───
+
+export interface StartChat {
+  prompt: string;
+}
+
+export interface ToolCallApproval {
+  call_id: string;
+  approved: boolean;
+}
+
+export interface BotMessage {
+  text: string;
+}
+
+export interface ToolCallRequest {
+  call_id: string;
+  tool_name: string;
+  args: Record<string, any>;
+}
+
+export interface StreamingToken {
+  token: string;
+}
+
+export interface ChatFinished {
+  summary: string;
+}
+
+export interface ChatbotChannel {
+  jobId: string;
+  onBotMessage(handler: (msg: BotMessage) => void): void;
+  onToolCallRequest(handler: (msg: ToolCallRequest) => void): void;
+  onStreamingToken(handler: (msg: StreamingToken) => void): void;
+  onChatFinished(handler: (msg: ChatFinished) => void): void;
+  sendToolCallApproval(msg: ToolCallApproval): void;
+  unsubscribe(): void;
+}
+
+export async function dispatchChatbot(request: StartChat): Promise<ChatbotChannel> {
+  const cfg = getConfig();
+
+  // Step 1: Dispatch the job via HTTP POST
+  const dispatchRes = await fetch(`${cfg.baseURL}/channels/chatbot/dispatch`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(request),
+    credentials: "include",
+  });
+  if (!dispatchRes.ok) {
+    throw new Error(`dispatch failed: ${dispatchRes.status} ${dispatchRes.statusText}`);
+  }
+  const dispatchData = await dispatchRes.json();
+  const jobId: string = dispatchData.job_id;
+
+  // Step 2: Get connection and subscription tokens
+  const tokenRes = await fetch(`${cfg.baseURL}/channels/chatbot/token?job_id=${jobId}`, {
+    method: "GET",
+    credentials: "include",
+  });
+  if (!tokenRes.ok) {
+    throw new Error(`token fetch failed: ${tokenRes.status} ${tokenRes.statusText}`);
+  }
+  const tokenData = await tokenRes.json();
+  const { connection_token, subscription_token, channel, ws_url } = tokenData;
+
+  // Token refresh helper
+  const refreshTokens = async () => {
+    const res = await fetch(`${cfg.baseURL}/channels/chatbot/token?job_id=${jobId}`, {
+      method: "GET",
+      credentials: "include",
+    });
+    if (!res.ok) throw new Error(`token refresh failed: ${res.status}`);
+    return res.json();
+  };
+
+  // Step 3: Create per-channel Centrifuge client
+  const client = new Centrifuge(ws_url, {
+    token: connection_token,
+    getToken: async () => {
+      const data = await refreshTokens();
+      return data.connection_token;
+    },
+  });
+  client.connect();
+
+  // Step 4: Create subscription
+  const sub = client.newSubscription(channel, {
+    token: subscription_token,
+    getToken: async () => {
+      const data = await refreshTokens();
+      return data.subscription_token;
+    },
+  });
+
+  // Handler registries for each FromServer type
+  const onBotMessageHandlers: Array<(msg: BotMessage) => void> = [];
+  const onToolCallRequestHandlers: Array<(msg: ToolCallRequest) => void> = [];
+  const onStreamingTokenHandlers: Array<(msg: StreamingToken) => void> = [];
+  const onChatFinishedHandlers: Array<(msg: ChatFinished) => void> = [];
+
+  // FromClient type names — echoed publications with these types are ignored
+  const fromClientTypes = new Set<string>(["ToolCallApproval"]);
+
+  // Step 5: Demultiplex publications by envelope type
+  sub.on("publication", (ctx) => {
+    const envelope = ctx.data as { type: string; data: unknown };
+    const msgType = envelope.type;
+    const msgData = envelope.data;
+
+    // Skip echoed FromClient messages
+    if (fromClientTypes.has(msgType)) return;
+
+    switch (msgType) {
+      case "BotMessage":
+        for (const h of onBotMessageHandlers) h(msgData as BotMessage);
+        break;
+      case "ToolCallRequest":
+        for (const h of onToolCallRequestHandlers) h(msgData as ToolCallRequest);
+        break;
+      case "StreamingToken":
+        for (const h of onStreamingTokenHandlers) h(msgData as StreamingToken);
+        break;
+      case "ChatFinished":
+        for (const h of onChatFinishedHandlers) h(msgData as ChatFinished);
+        break;
+    }
+  });
+
+  sub.subscribe();
+
+  // Step 6: Return the typed channel interface
+  return {
+    jobId,
+    onBotMessage(handler) { onBotMessageHandlers.push(handler); },
+    onToolCallRequest(handler) { onToolCallRequestHandlers.push(handler); },
+    onStreamingToken(handler) { onStreamingTokenHandlers.push(handler); },
+    onChatFinished(handler) { onChatFinishedHandlers.push(handler); },
+    sendToolCallApproval(msg) {
+      sub.publish({ type: "ToolCallApproval", data: msg });
+    },
+    unsubscribe() {
+      sub.unsubscribe();
+      client.disconnect();
+    },
+  };
+}
+```
+
+The generated client handles the complete lifecycle:
+
+1. **POST to dispatch** — enqueues the job in Redis, gets back a `job_id`
+2. **GET token** — fetches JWT tokens scoped to this specific job's Centrifugo channel
+3. **Connect WebSocket** — creates a Centrifuge client with automatic token refresh
+4. **Subscribe** — listens for publications and demuxes by message type
+5. **Return a typed interface** — `on<Type>` for receiving, `send<Type>` for mid-stream messages
+
+#### Generated React hooks (`shipq-react-channels.ts`)
+
+When `[typescript] framework = react`, ShipQ also generates React hooks that wrap the dispatch function:
+
+```tsx
+// shipq-react-channels.ts (generated)
+// Code generated by shipq. DO NOT EDIT.
+
+import { useEffect, useRef, useCallback, useState } from "react";
+import {
+  type ChatbotChannel,
+  type StartChat,
+  type ToolCallApproval,
+  type BotMessage,
+  type ToolCallRequest,
+  type StreamingToken,
+  type ChatFinished,
+  dispatchChatbot,
+} from "../shipq-channels";
+
+export interface useChatbotOptions {
+  /** Called when the channel is connected and ready */
+  onReady?: (channel: ChatbotChannel) => void;
+  /** Called on dispatch or connection error */
+  onError?: (error: Error) => void;
+  /** Called when a BotMessage is received */
+  onBotMessage?: (msg: BotMessage) => void;
+  /** Called when a ToolCallRequest is received */
+  onToolCallRequest?: (msg: ToolCallRequest) => void;
+  /** Called when a StreamingToken is received */
+  onStreamingToken?: (msg: StreamingToken) => void;
+  /** Called when a ChatFinished is received */
+  onChatFinished?: (msg: ChatFinished) => void;
+}
+
+export interface useChatbotReturn {
+  channel: ChatbotChannel | null;
+  isConnecting: boolean;
+  error: Error | null;
+  dispatch: (req: StartChat) => void;
+  sendToolCallApproval: (msg: ToolCallApproval) => void;
+  disconnect: () => void;
+}
+
+export function useChatbot(options?: useChatbotOptions): useChatbotReturn {
+  const channelRef = useRef<ChatbotChannel | null>(null);
+  const [channel, setChannel] = useState<ChatbotChannel | null>(null);
+  const [isConnecting, setIsConnecting] = useState(false);
+  const [error, setError] = useState<Error | null>(null);
+
+  const optionsRef = useRef(options);
+  optionsRef.current = options;
+
+  // Cleanup on unmount
+  useEffect(() => {
+    return () => { channelRef.current?.unsubscribe(); };
+  }, []);
+
+  const dispatch = useCallback(async (req: StartChat) => {
+    channelRef.current?.unsubscribe();
+    setIsConnecting(true);
+    setError(null);
+
+    try {
+      const ch = await dispatchChatbot(req);
+      channelRef.current = ch;
+      setChannel(ch);
+      setIsConnecting(false);
+
+      // Wire up FromServer handlers
+      ch.onBotMessage((msg) => optionsRef.current?.onBotMessage?.(msg));
+      ch.onToolCallRequest((msg) => optionsRef.current?.onToolCallRequest?.(msg));
+      ch.onStreamingToken((msg) => optionsRef.current?.onStreamingToken?.(msg));
+      ch.onChatFinished((msg) => optionsRef.current?.onChatFinished?.(msg));
+
+      optionsRef.current?.onReady?.(ch);
+    } catch (err) {
+      const e = err instanceof Error ? err : new Error(String(err));
+      setError(e);
+      setIsConnecting(false);
+      optionsRef.current?.onError?.(e);
+    }
+  }, []);
+
+  const sendToolCallApproval = useCallback((msg: ToolCallApproval) => {
+    channelRef.current?.sendToolCallApproval(msg);
+  }, []);
+
+  const disconnect = useCallback(() => {
+    channelRef.current?.unsubscribe();
+    channelRef.current = null;
+    setChannel(null);
+  }, []);
+
+  return { channel, isConnecting, error, dispatch, sendToolCallApproval, disconnect };
+}
+```
+
+### 4. Using the React hook in your component
+
+Here's a complete React component that uses the generated hook:
+
+```tsx
+// src/components/ChatBot.tsx
+import { useState } from "react";
+import { useChatbot } from "../api/shipq-react-channels";
+
+export function ChatBot() {
+  const [messages, setMessages] = useState<string[]>([]);
+  const [streaming, setStreaming] = useState("");
+  const [pendingApproval, setPendingApproval] = useState<{
+    callId: string;
+    toolName: string;
+    args: Record<string, any>;
+  } | null>(null);
+
+  const { dispatch, sendToolCallApproval, isConnecting, error } = useChatbot({
+    onStreamingToken(msg) {
+      setStreaming((prev) => prev + msg.token);
+    },
+    onBotMessage(msg) {
+      setStreaming("");
+      setMessages((prev) => [...prev, msg.text]);
+    },
+    onToolCallRequest(msg) {
+      setPendingApproval({
+        callId: msg.call_id,
+        toolName: msg.tool_name,
+        args: msg.args,
+      });
+    },
+    onChatFinished(msg) {
+      setMessages((prev) => [...prev, `--- ${msg.summary} ---`]);
+    },
+    onError(err) {
+      console.error("Channel error:", err);
+    },
+  });
+
+  return (
+    <div>
+      {messages.map((msg, i) => (
+        <p key={i}>{msg}</p>
+      ))}
+      {streaming && <p className="streaming">{streaming}▌</p>}
+
+      {pendingApproval && (
+        <div className="approval-prompt">
+          <p>
+            The bot wants to call <strong>{pendingApproval.toolName}</strong>
+          </p>
+          <pre>{JSON.stringify(pendingApproval.args, null, 2)}</pre>
+          <button
+            onClick={() => {
+              sendToolCallApproval({
+                call_id: pendingApproval.callId,
+                approved: true,
+              });
+              setPendingApproval(null);
+            }}
+          >
+            Approve
+          </button>
+          <button
+            onClick={() => {
+              sendToolCallApproval({
+                call_id: pendingApproval.callId,
+                approved: false,
+              });
+              setPendingApproval(null);
+            }}
+          >
+            Deny
+          </button>
+        </div>
+      )}
+
+      <form
+        onSubmit={(e) => {
+          e.preventDefault();
+          const input = e.currentTarget.elements.namedItem(
+            "prompt"
+          ) as HTMLInputElement;
+          dispatch({ prompt: input.value });
+          input.value = "";
+        }}
+      >
+        <input name="prompt" placeholder="Ask something..." />
+        <button type="submit" disabled={isConnecting}>
+          {isConnecting ? "Connecting..." : "Send"}
+        </button>
+      </form>
+
+      {error && <p className="error">{error.message}</p>}
+    </div>
+  );
+}
+```
+
+That's the full stack — from Go channel definition to React component — with zero manual WebSocket wiring, token management, or serialization code.
+
+## Simpler Example: Fire-and-Forget Email Notification
+
+Not every channel needs mid-stream messages. Here's a simpler pattern — dispatch a job and listen for the result:
+
+### Channel definition
+
+```go
+// channels/email_notification/register.go
+package email_notification
+
+import "myapp/shipq/lib/channel"
+
+type SendEmailRequest struct {
+	To      string `json:"to"`
+	Subject string `json:"subject"`
+	Body    string `json:"body"`
+}
+
+type SendEmailResult struct {
+	Success      bool   `json:"success"`
+	ErrorMessage string `json:"error_message,omitempty"`
+}
+
+func Register(app *channel.App) {
+	app.DefineChannel("email_notification",
+		channel.FromClient(SendEmailRequest{}),
+		channel.FromServer(SendEmailResult{}),
+	).Retries(5).BackoffSeconds(10)
+}
+```
+
+### Handler
+
+```go
+// channels/email_notification/handler.go
+package email_notification
+
+import (
+	"context"
+	"fmt"
+)
+
+func HandleSendEmailRequest(ctx context.Context, req *SendEmailRequest) error {
+	ch := TypedChannelFromContext(ctx)
+
+	err := sendEmail(req.To, req.Subject, req.Body)
+	if err != nil {
+		// Notify the client of the failure (they can show a toast)
+		ch.SendSendEmailResult(ctx, &SendEmailResult{
+			Success:      false,
+			ErrorMessage: err.Error(),
+		})
+		// Return the error so the job is retried
+		return fmt.Errorf("send email to %s: %w", req.To, err)
+	}
+
+	return ch.SendSendEmailResult(ctx, &SendEmailResult{Success: true})
+}
+```
+
+### Frontend usage
+
+```ts
+import { dispatchEmailNotification } from "./api/shipq-channels";
+
+async function sendWelcomeEmail(userEmail: string) {
+  const ch = await dispatchEmailNotification({
+    to: userEmail,
+    subject: "Welcome!",
+    body: "Thanks for signing up.",
+  });
+
+  ch.onSendEmailResult((result) => {
+    if (result.success) {
+      showToast("Email sent!");
+    } else {
+      showToast(`Failed: ${result.error_message}`);
+    }
+    ch.unsubscribe();
+  });
+}
+```
+
+## Public Channels (No Auth Required)
+
+By default, channels require authentication. For public-facing channels (e.g., a public-facing AI assistant), use `.Public()`:
+
+```go
+func Register(app *channel.App) {
+	app.DefineChannel("assistant",
+		channel.FromClient(AssistantQuery{}),
+		channel.FromServer(AssistantAnswer{}),
+	).Public(channel.RateLimitConfig{
+		RequestsPerMinute: 10,
+		BurstSize:         3,
+	})
+}
+```
+
+Public channels get rate limiting and skip the `credentials: "include"` in the generated TypeScript client.
+
+## Setup Functions for Dependencies
+
+If your handler needs external dependencies (API clients, DB connections, etc.), export a `Setup` function in your channel package:
+
+```go
+// channels/chatbot/setup.go
+package chatbot
+
+import (
+	"context"
+	"database/sql"
+
+	"myapp/config"
+)
+
+type ctxKey struct{}
+
+type Deps struct {
+	DB        *sql.DB
+	APIClient *SomeAPIClient
+}
+
+func Setup(ctx context.Context) context.Context {
+	driver, dsn := config.ParseDatabaseURL(config.Settings.DATABASE_URL)
+	db, _ := sql.Open(driver, dsn)
+	return context.WithValue(ctx, ctxKey{}, &Deps{
+		DB:        db,
+		APIClient: NewSomeAPIClient(config.Settings.API_KEY),
+	})
+}
+
+func DepsFromContext(ctx context.Context) *Deps {
+	return ctx.Value(ctxKey{}).(*Deps)
+}
+```
+
+ShipQ's static analysis detects the `Setup` function and generates worker code that calls it before each handler invocation:
+
+```go
+// Generated in cmd/worker/main.go
+queue.RegisterTask("chatbot", channel.WrapDispatchHandler(
+    chatbot.HandleStartChat, transport, db, "chatbot",
+    channel.WithSetup(chatbot.Setup),
+))
+```
+
 ## Background Jobs
 
 The workers system uses Redis-backed job queues (powered by Machinery) for background task processing.
@@ -91,32 +943,6 @@ The workers system uses Redis-backed job queues (powered by Machinery) for backg
 ### Job results tracking
 
 The `job_results` migration (generated during bootstrap) creates a table for tracking job execution status. This gives you visibility into job history, failures, and retry behavior.
-
-## Real-Time Channels
-
-Channels provide real-time, bidirectional communication between your server and connected clients via WebSockets, using Centrifugo as the transport layer.
-
-### How channels work
-
-1. **Server-side**: Your Go code publishes messages to named channels via the Centrifugo API
-2. **Client-side**: TypeScript clients subscribe to channels and receive messages in real time
-3. **Authentication**: Channel subscriptions are authenticated using Centrifugo-specific JWT tokens signed with the `centrifugo_secret` (these are separate from the cookie-based HTTP auth system — JWTs are only used for the Centrifugo WebSocket protocol)
-
-### Typed channel definitions
-
-ShipQ generates typed channel code so that both the Go server and TypeScript client agree on:
-- Channel names and naming patterns
-- Message payload types
-- Subscription permissions
-
-This type safety spans the full stack — the same channel definition produces both the Go publishing code and the TypeScript subscription client.
-
-### TypeScript client
-
-After `shipq workers`, a `shipq-channels.ts` file is generated with:
-- Typed channel subscription helpers
-- Automatic JWT token handling for Centrifugo authentication
-- Framework-specific hooks (React or Svelte, depending on your `[typescript] framework` setting)
 
 ## Recompiling After Changes
 
@@ -172,6 +998,23 @@ This generates email verification and password reset flows that use the worker q
 
 Both the application server and the worker process can publish messages to Centrifugo. Clients connect to Centrifugo directly over WebSockets and receive real-time updates.
 
+### What happens when the user clicks "Send"
+
+Here's the exact sequence of events for the chatbot example:
+
+1. **React component** calls `dispatch({ prompt: "Hello" })`
+2. **Generated hook** calls `dispatchChatbot(request)` from `shipq-channels.ts`
+3. **TypeScript client** POSTs to `POST /channels/chatbot/dispatch` with the `StartChat` payload
+4. **Generated server handler** validates auth, creates a `job_results` row, serializes the payload, and enqueues it to Redis via the `TaskQueue` interface
+5. **Server responds** with `{ "job_id": "abc123" }`
+6. **TypeScript client** fetches a JWT from `GET /channels/chatbot/token?job_id=abc123`
+7. **TypeScript client** connects to Centrifugo via WebSocket using the JWT
+8. **Worker process** dequeues the job from Redis, subscribes to the same Centrifugo channel, calls `HandleStartChat`
+9. **Handler** calls `ch.SendStreamingToken(...)` → Centrifugo publishes to the channel → browser receives the token
+10. **Handler** calls `ch.SendToolCallRequest(...)` → browser shows the approval dialog
+11. **User clicks Approve** → React calls `sendToolCallApproval(...)` → published via Centrifugo → worker receives it via `ch.ReceiveToolCallApproval(ctx)`
+12. **Handler completes** → worker updates `job_results` to "completed"
+
 ## Testing
 
 ShipQ generates tests for the workers/channels system during bootstrap. Run them alongside your other tests:
@@ -194,6 +1037,12 @@ Key generated files:
 - `cmd/worker/main.go` — regenerated by `shipq workers compile`
 - `centrifugo.json` — regenerated by `shipq workers compile`
 - `shipq-channels.ts` — regenerated by `shipq workers compile`
+- `channels/<name>/zz_generated_channel.go` — regenerated by `shipq workers compile`
+
+Files you own and can edit:
+- `channels/<name>/register.go` — your channel definition
+- `channels/<name>/handler.go` — your handler logic
+- `channels/<name>/setup.go` — your dependency injection
 
 ## Next Steps
 

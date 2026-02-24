@@ -13,9 +13,9 @@ import (
 )
 
 // StartWorker implements "shipq start worker".
-// It runs `go run ./cmd/worker` as a foreground child process, forwarding
-// SIGINT/SIGTERM to it.
-func StartWorker() {
+// When watch is true it uses go build + fsnotify for hot reload.
+// When watch is false it falls back to the original go run behaviour.
+func StartWorker(watch bool) {
 	roots, err := project.FindProjectRoots()
 	if err != nil {
 		cli.FatalErr("not in a shipq project", err)
@@ -27,6 +27,22 @@ func StartWorker() {
 		cli.Fatal("cmd/worker/main.go not found -- run 'shipq workers' first")
 	}
 
+	if watch {
+		fmt.Println("  Starting worker with hot reload (go build + watch)...")
+		fmt.Println("  Watching for .go file changes.  Use --no-watch to disable.")
+		fmt.Println("")
+		RunWithWatch(WatchConfig{
+			ProjectRoot: roots.ShipqRoot,
+			BuildCmd:    []string{"go", "build", "-o", filepath.Join(roots.ShipqRoot, ".shipq", "bin", "worker"), "./cmd/worker"},
+			BinPath:     filepath.Join(roots.ShipqRoot, ".shipq", "bin", "worker"),
+			Stdout:      newPrefixWriter(os.Stdout, "[worker] "),
+			Stderr:      newPrefixWriter(os.Stderr, "[worker] "),
+			Name:        "worker",
+		})
+		return
+	}
+
+	// --no-watch: original go run flow.
 	fmt.Println("  Starting worker (go run ./cmd/worker)...")
 	fmt.Println("")
 

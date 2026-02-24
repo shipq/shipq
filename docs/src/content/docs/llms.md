@@ -228,7 +228,7 @@ STRIPE_SECRET_KEY = required
 
 Every table automatically gets: `id`, `public_id`, `created_at`, `updated_at`, `deleted_at`.
 
-## PortSQL Query DSL
+## PortSQL Query DSL and Generated Query Runner
 
 PortSQL is ShipQ's typed SQL DSL. Queries are Go code that compiles to correct SQL for Postgres, MySQL, and SQLite.
 
@@ -249,6 +249,64 @@ query.MustDefinePaginated("ListPosts", ast, cursorCol1.Desc(), cursorCol2.Desc()
 ```
 
 These all panic on errors (empty name, nil AST, duplicate names). This is intentional — registration happens at `init()` time. Use `TryDefine*` variants for non-panicking alternatives.
+
+### What `shipq db compile` Generates
+
+For every query you define, ShipQ generates a **params struct**, a **result struct**, and a **runner method**. Example for `GetPetByPublicId`:
+
+```go
+// shipq/queries/types.go (generated)
+type GetPetByPublicIdParams struct {
+    PublicId       string `json:"publicId"`
+    OrganizationId int64  `json:"organizationId"`
+}
+
+type GetPetByPublicIdResult struct {
+    PublicId  string    `json:"public_id"`
+    Name      string    `json:"name"`
+    Species   string    `json:"species"`
+    Age       int       `json:"age"`
+    CreatedAt time.Time `json:"created_at"`
+    UpdatedAt time.Time `json:"updated_at"`
+}
+```
+
+The generated runner method (Postgres dialect):
+
+```go
+// shipq/queries/postgres/runner.go (generated)
+func (r *Runner) GetPetByPublicId(ctx context.Context, params GetPetByPublicIdParams) (*GetPetByPublicIdResult, error) {
+    row := r.db.QueryRowContext(ctx,
+        `SELECT "pets"."public_id", "pets"."name", "pets"."species", "pets"."age",
+                "pets"."created_at", "pets"."updated_at"
+         FROM "pets"
+         WHERE "pets"."public_id" = $1
+           AND "pets"."deleted_at" IS NULL
+           AND "pets"."organization_id" = $2`,
+        params.PublicId, params.OrganizationId,
+    )
+    var result GetPetByPublicIdResult
+    err := row.Scan(&result.PublicId, &result.Name, &result.Species, &result.Age, &result.CreatedAt, &result.UpdatedAt)
+    if err == sql.ErrNoRows {
+        return nil, nil // MustDefineOne: nil means "not found"
+    }
+    if err != nil {
+        return nil, err
+    }
+    return &result, nil
+}
+```
+
+Switching from Postgres to MySQL regenerates the runner with backtick-quoted identifiers, `?` placeholders, `LOWER(col) LIKE LOWER(?)` instead of `ILIKE`, etc. You never change your query definitions.
+
+For paginated queries, ShipQ also generates cursor encode/decode helpers:
+
+```go
+func DecodeListPetsCursor(encoded string) *ListPetsCursor
+func EncodeListPetsCursor(cursor *ListPetsCursor) string
+```
+
+The `RunnerFromContext(ctx)` pattern lets handlers get the runner without knowing the dialect — the generated `cmd/server/main.go` injects it based on the configured database.
 
 ### Building Queries
 
@@ -335,7 +393,13 @@ Handlers register themselves with metadata via `handler.HandlerInfo`:
 - Request struct (nil for no-body handlers)
 - Response struct
 
-Request/response types use standard Go struct tags. Fields without `omitempty` and non-pointer fields are treated as required in OpenAPI.
+Every handler follows this function signature:
+
+```go
+func HandlerName(ctx context.Context, req *RequestType) (*ResponseType, error)
+```
+
+Request/response types use standard Go struct tags. Fields without `omitempty` and non-pointer fields are treated as required in OpenAPI. Struct tags: `json` for body fields, `path` for URL params (e.g., `path:"id"`), `query` for query string params (e.g., `query:"limit"`).
 
 ### Generated CRUD Handlers from `shipq resource <table> all`
 
@@ -347,6 +411,215 @@ Request/response types use standard Go struct tags. Fields without `omitempty` a
 | `update.go` | PATCH | `/<table>/:id` |
 | `soft_delete.go` | DELETE | `/<table>/:id` |
 | `register.go` | — | Handler registration |
+
+### Generated register.go example
+
+```go
+// api/pets/register.go
+package pets
+
+import "myapp/shipq/lib/handler"
+
+func Register(app *handler.App) {
+    app.Post("/pets", CreatePet).Auth()
+    app.Get("/pets", ListPets).Auth()
+    app.Get("/pets/:id", GetPet).Auth()
+    app.Patch("/pets/:id", UpdatePet).Auth()
+    app.Delete("/pets/:id", SoftDeletePet).Auth()
+}
+```
+
+Each line tells ShipQ the HTTP method, path, handler function, and auth requirement. The handler compiler uses reflection on the handler function to extract request/response types for OpenAPI generation, TypeScript clients, and test harness code.
+
+### Generated Create handler example
+
+```go
+// api/pets/create.go
+package pets
+
+import (
+    "context"
+    "time"
+
+    "myapp/shipq/lib/httperror"
+    "myapp/shipq/lib/httputil"
+    "myapp/shipq/lib/nanoid"
+    "myapp/shipq/queries"
+)
+
+type CreatePetRequest struct {
+    Name    string `json:"name"`
+    Species string `json:"species"`
+    Age     int    `json:"age"`
+}
+
+type CreatePetResponse struct {
+    PublicId  string `json:"id"`
+    Name      string `json:"name"`
+    Species   string `json:"species"`
+    Age       int    `json:"age"`
+    CreatedAt string `json:"created_at"`
+    UpdatedAt string `json:"updated_at"`
+}
+
+func CreatePet(ctx context.Context, req *CreatePetRequest) (*CreatePetResponse, error) {
+    runner := queries.RunnerFromContext(ctx)
+
+    orgID, ok := httputil.OrganizationIDFromContext(ctx)
+    if !ok {
+        return nil, httperror.Wrap(403, "organization context missing", nil)
+    }
+
+    publicId := nanoid.New()
+
+    _, err := runner.CreatePet(ctx, queries.CreatePetParams{
+        PublicId:       publicId,
+        Name:           req.Name,
+        Species:        req.Species,
+        Age:            req.Age,
+        OrganizationId: orgID,
+    })
+    if err != nil {
+        return nil, httperror.Wrap(500, "failed to create pet", err)
+    }
+
+    result, err := runner.GetPetByPublicId(ctx, queries.GetPetByPublicIdParams{
+        PublicId:       publicId,
+        OrganizationId: orgID,
+    })
+    if err != nil {
+        return nil, httperror.Wrap(500, "failed to fetch created pet", err)
+    }
+
+    return &CreatePetResponse{
+        PublicId:  result.PublicId,
+        Name:      result.Name,
+        Species:   result.Species,
+        Age:       result.Age,
+        CreatedAt: result.CreatedAt.Format(time.RFC3339),
+        UpdatedAt: result.UpdatedAt.Format(time.RFC3339),
+    }, nil
+}
+```
+
+Key patterns:
+- `queries.RunnerFromContext(ctx)` — the query runner is injected into context by the generated server wiring.
+- `httputil.OrganizationIDFromContext(ctx)` — when scoped, the org ID comes from the authenticated session, never from the request body.
+- `nanoid.New()` — public IDs are generated in the handler so the same ID can be used for both INSERT and re-fetch.
+- The handler re-fetches after create to get resolved JOINs (e.g., FK references as public IDs).
+- Error handling uses `httperror.Wrap(statusCode, message, err)` which the generated server wiring converts to proper HTTP responses.
+
+### Generated Get handler example
+
+```go
+// api/pets/get_one.go
+package pets
+
+type GetPetRequest struct {
+    ID string `path:"id"` // public ID extracted from /pets/:id
+}
+
+func GetPet(ctx context.Context, req *GetPetRequest) (*GetPetResponse, error) {
+    runner := queries.RunnerFromContext(ctx)
+
+    orgID, ok := httputil.OrganizationIDFromContext(ctx)
+    if !ok {
+        return nil, httperror.Wrap(403, "organization context missing", nil)
+    }
+
+    result, err := runner.GetPetByPublicId(ctx, queries.GetPetByPublicIdParams{
+        PublicId:       req.ID,
+        OrganizationId: orgID,
+    })
+    if err != nil {
+        return nil, httperror.Wrap(500, "failed to fetch pet", err)
+    }
+    if result == nil {
+        return nil, httperror.NotFoundf("pet %q not found", req.ID)
+    }
+
+    // ... map result to response ...
+    return resp, nil
+}
+```
+
+Key patterns:
+- `path:"id"` struct tag extracts the path parameter from `/pets/:id`.
+- `MustDefineOne` queries return `nil` when no row matches — the handler converts that to a 404.
+- Scope is always checked: a user in Org A can never fetch Org B's data by guessing a public ID.
+
+### Generated List handler example (with cursor pagination)
+
+```go
+// api/pets/list.go
+package pets
+
+type ListPetsRequest struct {
+    Limit  int     `query:"limit"`  // from ?limit=20
+    Cursor *string `query:"cursor"` // from ?cursor=base64...
+}
+
+type ListPetsResponse struct {
+    Items      []PetItem `json:"items"`
+    NextCursor *string   `json:"next_cursor,omitempty"`
+}
+
+func ListPets(ctx context.Context, req *ListPetsRequest) (*ListPetsResponse, error) {
+    runner := queries.RunnerFromContext(ctx)
+
+    orgID, ok := httputil.OrganizationIDFromContext(ctx)
+    if !ok {
+        return nil, httperror.Wrap(403, "organization context missing", nil)
+    }
+
+    limit := req.Limit
+    if limit <= 0 || limit > 100 {
+        limit = 20
+    }
+
+    var cursor *queries.ListPetsCursor
+    if req.Cursor != nil {
+        cursor = queries.DecodeListPetsCursor(*req.Cursor)
+    }
+
+    result, err := runner.ListPets(ctx, queries.ListPetsParams{
+        OrganizationId: orgID,
+        Limit:          limit,
+        Cursor:         cursor,
+    })
+    if err != nil {
+        return nil, httperror.Wrap(500, "failed to list pets", err)
+    }
+
+    items := make([]PetItem, len(result.Items))
+    for i, item := range result.Items {
+        items[i] = PetItem{ /* map fields */ }
+    }
+
+    var nextCursor *string
+    if result.NextCursor != nil {
+        encoded := queries.EncodeListPetsCursor(result.NextCursor)
+        nextCursor = &encoded
+    }
+
+    return &ListPetsResponse{Items: items, NextCursor: nextCursor}, nil
+}
+```
+
+Key patterns:
+- `query:"limit"` and `query:"cursor"` tags extract query string parameters.
+- Cursor-based pagination is automatic for tables with `created_at` + `public_id`.
+- The cursor is an opaque base64 string. Internally uses `WHERE (created_at, public_id) < (?, ?)` for efficient seeking.
+
+### How the full HTTP flow works
+
+1. HTTP request arrives → generated `cmd/server/main.go` routes it to the handler
+2. Auth middleware checks the session cookie, extracts account ID and org ID, injects into context
+3. JSON deserialization — the server reads the request body into the typed request struct
+4. Handler runs — calls `queries.RunnerFromContext(ctx)` then `runner.SomeQuery(ctx, params)`
+5. Query runner executes dialect-specific SQL and scans into typed result structs
+6. Handler returns `(*Response, nil)` → serialized to JSON with correct HTTP status
+7. If handler returns `(nil, error)` → `httperror.Wrap` errors set the status code; unexpected errors become 500s
 
 ### File Ownership Rules
 
@@ -398,11 +671,179 @@ Local dev: `shipq start minio` starts a local MinIO server.
 
 Architecture: Server dispatches jobs to Redis → Worker process picks them up → optionally publishes real-time notifications to Centrifugo → Browser clients receive via WebSocket.
 
-Generated: `cmd/worker/main.go`, `centrifugo.json`, `shipq-channels.ts`, typed channel code.
+Generated: `cmd/worker/main.go`, `centrifugo.json`, `shipq-channels.ts`, typed channel code, React/Svelte hooks.
 
 Running: `shipq start redis`, `shipq start centrifugo`, `shipq start worker`, `shipq start server` (each in separate terminals).
 
 Fast recompile after channel changes: `shipq workers compile`.
+
+### Defining a Channel
+
+Create a package under `channels/` with message types and a `Register` function:
+
+```go
+// channels/chatbot/register.go
+package chatbot
+
+import "myapp/shipq/lib/channel"
+
+// Client-to-server messages
+type StartChat struct {
+    Prompt string `json:"prompt"`
+}
+
+type ToolCallApproval struct {
+    CallId   string `json:"call_id"`
+    Approved bool   `json:"approved"`
+}
+
+// Server-to-client messages
+type BotMessage struct {
+    Text string `json:"text"`
+}
+
+type StreamingToken struct {
+    Token string `json:"token"`
+}
+
+type ChatFinished struct {
+    Summary string `json:"summary"`
+}
+
+func Register(app *channel.App) {
+    app.DefineChannel("chatbot",
+        // First type in FromClient is the dispatch (trigger) message; rest are mid-stream
+        channel.FromClient(StartChat{}, ToolCallApproval{}),
+        channel.FromServer(BotMessage{}, StreamingToken{}, ChatFinished{}),
+    ).Retries(3).BackoffSeconds(5).TimeoutSeconds(120)
+}
+```
+
+Key: first type in `FromClient(...)` is the dispatch message (triggers the job). Subsequent types are mid-stream (sent while the worker is running). `FromServer(...)` types are pushed from worker to browser.
+
+### Writing the Channel Handler
+
+The handler runs in the **worker process**. Signature: `func(context.Context, *DispatchType) error`. Name must be `Handle` + dispatch type name:
+
+```go
+// channels/chatbot/handler.go
+package chatbot
+
+import (
+    "context"
+    "fmt"
+)
+
+func HandleStartChat(ctx context.Context, req *StartChat) error {
+    ch := TypedChannelFromContext(ctx) // generated typed wrapper
+
+    // Stream tokens to the browser
+    for _, token := range streamLLM(req.Prompt) {
+        if err := ch.SendStreamingToken(ctx, &StreamingToken{Token: token}); err != nil {
+            return fmt.Errorf("send token: %w", err)
+        }
+    }
+
+    // Block until the client sends a ToolCallApproval
+    approval, err := ch.ReceiveToolCallApproval(ctx)
+    if err != nil {
+        return fmt.Errorf("receive approval: %w", err)
+    }
+
+    if approval.Approved {
+        result := executeTool()
+        ch.SendBotMessage(ctx, &BotMessage{Text: result})
+    }
+
+    return ch.SendChatFinished(ctx, &ChatFinished{Summary: "Done"})
+}
+```
+
+Key patterns:
+- `TypedChannelFromContext(ctx)` is **generated** — gives you `Send<Type>` and `Receive<Type>` methods.
+- `ch.ReceiveToolCallApproval(ctx)` blocks until the client publishes that message type via Centrifugo.
+- Returning a non-nil error marks the job as "failed" in `job_results` and triggers retry.
+
+### Generated TypeScript Client
+
+`shipq workers compile` generates `shipq-channels.ts`:
+
+```typescript
+export interface ChatbotChannel {
+  jobId: string;
+  onBotMessage(handler: (msg: BotMessage) => void): void;
+  onStreamingToken(handler: (msg: StreamingToken) => void): void;
+  onChatFinished(handler: (msg: ChatFinished) => void): void;
+  sendToolCallApproval(msg: ToolCallApproval): void;
+  unsubscribe(): void;
+}
+
+export async function dispatchChatbot(request: StartChat): Promise<ChatbotChannel> {
+  // 1. POST /channels/chatbot/dispatch → enqueues job, gets job_id
+  // 2. GET /channels/chatbot/token?job_id=... → gets JWT tokens
+  // 3. Connects to Centrifugo WebSocket with auto token refresh
+  // 4. Returns typed channel interface with on<Type> and send<Type> methods
+}
+```
+
+The client handles: HTTP dispatch, JWT token fetching/refresh, Centrifugo WebSocket connection, publication echo filtering (ignores own `FromClient` messages echoed back), and type-safe message demultiplexing.
+
+### Generated React Hook
+
+When `[typescript] framework = react`:
+
+```typescript
+export function useChatbot(options?: useChatbotOptions): useChatbotReturn {
+  // Returns: { channel, isConnecting, error, dispatch, sendToolCallApproval, disconnect }
+  // Handles cleanup on unmount, stale closure prevention via refs
+}
+
+// Usage in a component:
+const { dispatch, sendToolCallApproval, isConnecting } = useChatbot({
+    onStreamingToken(msg) { setStreaming(prev => prev + msg.token); },
+    onBotMessage(msg) { setMessages(prev => [...prev, msg.text]); },
+    onChatFinished(msg) { console.log("Done:", msg.summary); },
+});
+
+dispatch({ prompt: "Hello" }); // kicks off the whole flow
+```
+
+### Public Channels
+
+For unauthenticated channels, use `.Public()` with rate limiting:
+
+```go
+app.DefineChannel("assistant",
+    channel.FromClient(AssistantQuery{}),
+    channel.FromServer(AssistantAnswer{}),
+).Public(channel.RateLimitConfig{RequestsPerMinute: 10, BurstSize: 3})
+```
+
+### Setup Functions
+
+If your handler needs external deps, export a `Setup(ctx context.Context) context.Context` function. ShipQ detects it via static analysis and calls it before each handler invocation:
+
+```go
+func Setup(ctx context.Context) context.Context {
+    return context.WithValue(ctx, depsKey{}, &Deps{APIClient: NewClient(config.Settings.API_KEY)})
+}
+```
+
+Generated worker code: `queue.RegisterTask("chatbot", channel.WrapDispatchHandler(chatbot.HandleStartChat, transport, db, "chatbot", channel.WithSetup(chatbot.Setup)))`.
+
+### Full Sequence (what happens when the user clicks "Send")
+
+1. React calls `dispatch({ prompt: "Hello" })`
+2. Generated TS client POSTs to `POST /channels/chatbot/dispatch`
+3. Server validates auth, creates `job_results` row, enqueues to Redis
+4. Server responds with `{ "job_id": "abc123" }`
+5. TS client fetches JWT from `GET /channels/chatbot/token?job_id=abc123`
+6. TS client connects to Centrifugo WebSocket
+7. Worker dequeues job, subscribes to same Centrifugo channel, calls `HandleStartChat`
+8. Handler calls `ch.SendStreamingToken(...)` → Centrifugo publishes → browser receives
+9. Handler calls `ch.ReceiveToolCallApproval(ctx)` → blocks until user responds
+10. User clicks Approve → React calls `sendToolCallApproval(...)` → Centrifugo → worker receives
+11. Handler completes → worker updates `job_results` to "completed"
 
 ## Recommended Workflow
 
