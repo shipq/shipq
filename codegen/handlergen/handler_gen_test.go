@@ -1955,3 +1955,236 @@ func TestGenerateCreateHandler_ImportsHttputil_WhenAuthor(t *testing.T) {
 		t.Error("expected httputil import when table has author_account_id, even without scope column")
 	}
 }
+
+func TestTableHasJSONColumn(t *testing.T) {
+	tests := []struct {
+		name     string
+		table    ddl.Table
+		expected bool
+	}{
+		{
+			name: "has JSON column",
+			table: ddl.Table{
+				Columns: []ddl.ColumnDefinition{
+					{Name: "id", Type: ddl.BigintType},
+					{Name: "metadata", Type: ddl.JSONType},
+				},
+			},
+			expected: true,
+		},
+		{
+			name: "no JSON column",
+			table: ddl.Table{
+				Columns: []ddl.ColumnDefinition{
+					{Name: "id", Type: ddl.BigintType},
+					{Name: "title", Type: ddl.StringType},
+					{Name: "created_at", Type: ddl.TimestampType},
+				},
+			},
+			expected: false,
+		},
+		{
+			name: "empty table",
+			table: ddl.Table{
+				Columns: []ddl.ColumnDefinition{},
+			},
+			expected: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := tableHasJSONColumn(tt.table)
+			if result != tt.expected {
+				t.Errorf("tableHasJSONColumn() = %v, want %v", result, tt.expected)
+			}
+		})
+	}
+}
+
+func TestGenerateCreateHandler_ImportsEncodingJSON_WhenJSONColumn(t *testing.T) {
+	table := ddl.Table{
+		Name: "events",
+		Columns: []ddl.ColumnDefinition{
+			{Name: "id", Type: ddl.BigintType, PrimaryKey: true},
+			{Name: "public_id", Type: ddl.StringType},
+			{Name: "title", Type: ddl.StringType},
+			{Name: "metadata", Type: ddl.JSONType},
+			{Name: "created_at", Type: ddl.TimestampType},
+			{Name: "updated_at", Type: ddl.TimestampType},
+		},
+	}
+
+	cfg := HandlerGenConfig{
+		ModulePath: "myapp",
+		TableName:  "events",
+		Table:      table,
+		Schema:     map[string]ddl.Table{"events": table},
+	}
+
+	result, err := GenerateCreateHandler(cfg, nil)
+	if err != nil {
+		t.Fatalf("GenerateCreateHandler failed: %v", err)
+	}
+
+	code := string(result)
+	if !strings.Contains(code, `"encoding/json"`) {
+		t.Error("expected encoding/json import when table has JSON column")
+	}
+}
+
+func TestGenerateCreateHandler_OmitsEncodingJSON_WhenNoJSONColumn(t *testing.T) {
+	table := ddl.Table{
+		Name: "posts",
+		Columns: []ddl.ColumnDefinition{
+			{Name: "id", Type: ddl.BigintType, PrimaryKey: true},
+			{Name: "public_id", Type: ddl.StringType},
+			{Name: "title", Type: ddl.StringType},
+			{Name: "content", Type: ddl.TextType},
+			{Name: "created_at", Type: ddl.TimestampType},
+			{Name: "updated_at", Type: ddl.TimestampType},
+		},
+	}
+
+	cfg := HandlerGenConfig{
+		ModulePath: "myapp",
+		TableName:  "posts",
+		Table:      table,
+		Schema:     map[string]ddl.Table{"posts": table},
+	}
+
+	result, err := GenerateCreateHandler(cfg, nil)
+	if err != nil {
+		t.Fatalf("GenerateCreateHandler failed: %v", err)
+	}
+
+	code := string(result)
+	if strings.Contains(code, `"encoding/json"`) {
+		t.Error("did not expect encoding/json import when table has no JSON column")
+	}
+}
+
+func TestGenerateGetOneHandler_ImportsEncodingJSON_WhenJSONColumn(t *testing.T) {
+	table := ddl.Table{
+		Name: "events",
+		Columns: []ddl.ColumnDefinition{
+			{Name: "id", Type: ddl.BigintType, PrimaryKey: true},
+			{Name: "public_id", Type: ddl.StringType},
+			{Name: "title", Type: ddl.StringType},
+			{Name: "metadata", Type: ddl.JSONType},
+			{Name: "created_at", Type: ddl.TimestampType},
+			{Name: "updated_at", Type: ddl.TimestampType},
+		},
+	}
+
+	cfg := HandlerGenConfig{
+		ModulePath: "myapp",
+		TableName:  "events",
+		Table:      table,
+		Schema:     map[string]ddl.Table{"events": table},
+	}
+
+	result, err := GenerateGetOneHandler(cfg, nil)
+	if err != nil {
+		t.Fatalf("GenerateGetOneHandler failed: %v", err)
+	}
+
+	code := string(result)
+	if !strings.Contains(code, `"encoding/json"`) {
+		t.Error("expected encoding/json import when table has JSON column")
+	}
+}
+
+func TestGenerateListHandler_ImportsEncodingJSON_WhenJSONColumn(t *testing.T) {
+	table := ddl.Table{
+		Name: "events",
+		Columns: []ddl.ColumnDefinition{
+			{Name: "id", Type: ddl.BigintType, PrimaryKey: true},
+			{Name: "public_id", Type: ddl.StringType},
+			{Name: "title", Type: ddl.StringType},
+			{Name: "metadata", Type: ddl.JSONType},
+			{Name: "created_at", Type: ddl.TimestampType},
+			{Name: "updated_at", Type: ddl.TimestampType},
+		},
+	}
+
+	cfg := HandlerGenConfig{
+		ModulePath: "myapp",
+		TableName:  "events",
+		Table:      table,
+		Schema:     map[string]ddl.Table{"events": table},
+	}
+
+	result, err := GenerateListHandler(cfg, nil)
+	if err != nil {
+		t.Fatalf("GenerateListHandler failed: %v", err)
+	}
+
+	code := string(result)
+	if !strings.Contains(code, `"encoding/json"`) {
+		t.Error("expected encoding/json import when table has JSON column")
+	}
+}
+
+func TestGenerateUpdateHandler_ImportsEncodingJSON_WhenJSONColumn(t *testing.T) {
+	table := ddl.Table{
+		Name: "events",
+		Columns: []ddl.ColumnDefinition{
+			{Name: "id", Type: ddl.BigintType, PrimaryKey: true},
+			{Name: "public_id", Type: ddl.StringType},
+			{Name: "title", Type: ddl.StringType},
+			{Name: "metadata", Type: ddl.JSONType},
+			{Name: "created_at", Type: ddl.TimestampType},
+			{Name: "updated_at", Type: ddl.TimestampType},
+		},
+	}
+
+	cfg := HandlerGenConfig{
+		ModulePath: "myapp",
+		TableName:  "events",
+		Table:      table,
+		Schema:     map[string]ddl.Table{"events": table},
+	}
+
+	result, err := GenerateUpdateHandler(cfg, nil)
+	if err != nil {
+		t.Fatalf("GenerateUpdateHandler failed: %v", err)
+	}
+
+	code := string(result)
+	if !strings.Contains(code, `"encoding/json"`) {
+		t.Error("expected encoding/json import when table has JSON column")
+	}
+}
+
+func TestGenerateAdminListHandler_ImportsEncodingJSON_WhenJSONColumn(t *testing.T) {
+	table := ddl.Table{
+		Name: "events",
+		Columns: []ddl.ColumnDefinition{
+			{Name: "id", Type: ddl.BigintType, PrimaryKey: true},
+			{Name: "public_id", Type: ddl.StringType},
+			{Name: "title", Type: ddl.StringType},
+			{Name: "metadata", Type: ddl.JSONType},
+			{Name: "created_at", Type: ddl.TimestampType},
+			{Name: "updated_at", Type: ddl.TimestampType},
+			{Name: "deleted_at", Type: ddl.TimestampType, Nullable: true},
+		},
+	}
+
+	cfg := HandlerGenConfig{
+		ModulePath: "myapp",
+		TableName:  "events",
+		Table:      table,
+		Schema:     map[string]ddl.Table{"events": table},
+	}
+
+	result, err := GenerateAdminListHandler(cfg, nil)
+	if err != nil {
+		t.Fatalf("GenerateAdminListHandler failed: %v", err)
+	}
+
+	code := string(result)
+	if !strings.Contains(code, `"encoding/json"`) {
+		t.Error("expected encoding/json import when table has JSON column")
+	}
+}

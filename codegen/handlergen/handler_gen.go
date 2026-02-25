@@ -296,9 +296,14 @@ func GenerateCreateHandler(cfg HandlerGenConfig, _ []RelationshipInfo) ([]byte, 
 		}
 	}
 
+	hasJSON := tableHasJSONColumn(cfg.Table)
+
 	// Imports
 	buf.WriteString("import (\n")
 	buf.WriteString("\t\"context\"\n")
+	if hasJSON {
+		buf.WriteString("\t\"encoding/json\"\n")
+	}
 	buf.WriteString("\t\"time\"\n\n")
 	buf.WriteString("\t\"" + cfg.ModulePath + "/shipq/lib/httperror\"\n")
 	if cfg.ScopeColumn != "" || hasAuthor {
@@ -482,9 +487,14 @@ func GenerateGetOneHandler(cfg HandlerGenConfig, relations []RelationshipInfo) (
 	buf.WriteString(generatedFileHeader)
 	buf.WriteString("package " + pkgName + "\n\n")
 
+	hasJSON := tableHasJSONColumn(cfg.Table)
+
 	// Imports
 	buf.WriteString("import (\n")
 	buf.WriteString("\t\"context\"\n")
+	if hasJSON {
+		buf.WriteString("\t\"encoding/json\"\n")
+	}
 	buf.WriteString("\t\"time\"\n\n")
 	buf.WriteString("\t\"" + cfg.ModulePath + "/shipq/lib/httperror\"\n")
 	if cfg.ScopeColumn != "" {
@@ -713,9 +723,14 @@ func GenerateListHandler(cfg HandlerGenConfig, _ []RelationshipInfo) ([]byte, er
 	buf.WriteString(generatedFileHeader)
 	buf.WriteString("package " + pkgName + "\n\n")
 
+	hasJSON := tableHasJSONColumn(cfg.Table)
+
 	// Imports
 	buf.WriteString("import (\n")
 	buf.WriteString("\t\"context\"\n")
+	if hasJSON {
+		buf.WriteString("\t\"encoding/json\"\n")
+	}
 	buf.WriteString("\t\"time\"\n\n")
 	buf.WriteString("\t\"" + cfg.ModulePath + "/shipq/lib/httperror\"\n")
 	if cfg.ScopeColumn != "" {
@@ -868,9 +883,14 @@ func GenerateUpdateHandler(cfg HandlerGenConfig, _ []RelationshipInfo) ([]byte, 
 	buf.WriteString(generatedFileHeader)
 	buf.WriteString("package " + pkgName + "\n\n")
 
+	hasJSON := tableHasJSONColumn(cfg.Table)
+
 	// Imports
 	buf.WriteString("import (\n")
 	buf.WriteString("\t\"context\"\n")
+	if hasJSON {
+		buf.WriteString("\t\"encoding/json\"\n")
+	}
 	buf.WriteString("\t\"time\"\n\n")
 	buf.WriteString("\t\"" + cfg.ModulePath + "/shipq/lib/httperror\"\n")
 	if cfg.ScopeColumn != "" {
@@ -1180,9 +1200,14 @@ func GenerateAdminListHandler(cfg HandlerGenConfig, _ []RelationshipInfo) ([]byt
 	buf.WriteString(generatedFileHeader)
 	buf.WriteString("package " + pkgName + "\n\n")
 
+	hasJSON := tableHasJSONColumn(cfg.Table)
+
 	// Imports
 	buf.WriteString("import (\n")
 	buf.WriteString("\t\"context\"\n")
+	if hasJSON {
+		buf.WriteString("\t\"encoding/json\"\n")
+	}
 	buf.WriteString("\t\"time\"\n\n")
 	buf.WriteString("\t\"" + cfg.ModulePath + "/shipq/lib/httperror\"\n")
 	if cfg.ScopeColumn != "" {
@@ -1458,6 +1483,16 @@ func responseFieldType(col ddl.ColumnDefinition) string {
 		return "string"
 	}
 	return goTypeForColumn(col)
+}
+
+// tableHasJSONColumn reports whether any column in the table has type ddl.JSONType.
+func tableHasJSONColumn(table ddl.Table) bool {
+	for _, col := range table.Columns {
+		if col.Type == ddl.JSONType {
+			return true
+		}
+	}
+	return false
 }
 
 // hasNullableTime checks if a table has nullable time columns.
