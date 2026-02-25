@@ -41,10 +41,11 @@ func loadProjectConfig() (*ProjectConfig, error) {
 	}
 
 	// Get module path from go.mod
-	modulePath, err := codegen.GetModulePath(roots.GoModRoot)
+	moduleInfo, err := codegen.GetModuleInfo(roots.GoModRoot, roots.ShipqRoot)
 	if err != nil {
 		return nil, err
 	}
+	modulePath := moduleInfo.FullImportPath("")
 
 	// Parse shipq.ini
 	shipqIniPath := filepath.Join(roots.ShipqRoot, project.ShipqIniFile)

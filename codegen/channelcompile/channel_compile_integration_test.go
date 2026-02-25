@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/shipq/shipq/codegen"
 	"github.com/shipq/shipq/codegen/embed"
 )
 
@@ -114,7 +115,7 @@ func Register(app *channel.App) {
 	// Run the channel compile pipeline
 	// Note: BuildAndRunChannelCompileProgram does discovery internally,
 	// so we pass shipqRoot == goModRoot for the standard layout.
-	channels, err := BuildAndRunChannelCompileProgram(tmpDir, tmpDir, modulePath)
+	channels, err := BuildAndRunChannelCompileProgram(tmpDir, tmpDir, &codegen.ModuleInfo{ModulePath: modulePath})
 	if err != nil {
 		t.Fatalf("BuildAndRunChannelCompileProgram failed: %v", err)
 	}
@@ -244,7 +245,7 @@ func TestBuildAndRunChannelCompileProgram_NoChannels(t *testing.T) {
 		t.Fatalf("failed to create go.mod: %v", err)
 	}
 
-	channels, err := BuildAndRunChannelCompileProgram(tmpDir, tmpDir, modulePath)
+	channels, err := BuildAndRunChannelCompileProgram(tmpDir, tmpDir, &codegen.ModuleInfo{ModulePath: modulePath})
 	if err != nil {
 		t.Fatalf("BuildAndRunChannelCompileProgram failed: %v", err)
 	}
@@ -332,7 +333,7 @@ func Register(app *channel.App) {
 		t.Fatalf("go mod tidy failed: %v\noutput: %s", err, output)
 	}
 
-	channels, err := BuildAndRunChannelCompileProgram(tmpDir, tmpDir, modulePath)
+	channels, err := BuildAndRunChannelCompileProgram(tmpDir, tmpDir, &codegen.ModuleInfo{ModulePath: modulePath})
 	if err != nil {
 		t.Fatalf("BuildAndRunChannelCompileProgram failed: %v", err)
 	}
@@ -443,7 +444,7 @@ func Register(app *channel.App) {
 		t.Fatalf("go mod tidy failed: %v\noutput: %s", err, output)
 	}
 
-	channels, err := BuildAndRunChannelCompileProgram(tmpDir, tmpDir, modulePath)
+	channels, err := BuildAndRunChannelCompileProgram(tmpDir, tmpDir, &codegen.ModuleInfo{ModulePath: modulePath})
 	if err != nil {
 		t.Fatalf("BuildAndRunChannelCompileProgram failed: %v", err)
 	}
@@ -565,7 +566,7 @@ func HandleEchoRequest(ctx context.Context, req *EchoRequest) error {
 		// This MUST fail — the handler references TypedChannelFromContext
 		// which doesn't exist yet. If it somehow passes, the regression
 		// test is no longer meaningful.
-		_, err := BuildAndRunChannelCompileProgram(tmpDir, tmpDir, modulePath)
+		_, err := BuildAndRunChannelCompileProgram(tmpDir, tmpDir, &codegen.ModuleInfo{ModulePath: modulePath})
 		if err == nil {
 			t.Fatal("expected compile failure when handler referencing " +
 				"TypedChannelFromContext is in register.go, but got nil error")
@@ -631,7 +632,7 @@ func Register(app *channel.App) {
 		// With the handler removed from register.go, channel compilation
 		// must succeed because there is no reference to the not-yet-generated
 		// TypedChannelFromContext.
-		channels, err := BuildAndRunChannelCompileProgram(tmpDir, tmpDir, modulePath)
+		channels, err := BuildAndRunChannelCompileProgram(tmpDir, tmpDir, &codegen.ModuleInfo{ModulePath: modulePath})
 		if err != nil {
 			t.Fatalf("BuildAndRunChannelCompileProgram failed on fixed layout: %v", err)
 		}

@@ -44,10 +44,11 @@ func loadProjectConfig() (*ProjectConfig, error) {
 		return nil, err
 	}
 
-	modulePath, err := codegen.GetModulePath(roots.GoModRoot)
+	moduleInfo, err := codegen.GetModuleInfo(roots.GoModRoot, roots.ShipqRoot)
 	if err != nil {
 		return nil, err
 	}
+	modulePath := moduleInfo.FullImportPath("")
 
 	shipqIniPath := filepath.Join(roots.ShipqRoot, project.ShipqIniFile)
 	ini, err := inifile.ParseFile(shipqIniPath)

@@ -36,12 +36,13 @@ func HandlerGenerateCmd(args []string) {
 		os.Exit(1)
 	}
 
-	modulePath, err := codegen.GetModulePath(roots.GoModRoot)
+	moduleInfo, err := codegen.GetModuleInfo(roots.GoModRoot, roots.ShipqRoot)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "error: %v\n", err)
 		fmt.Fprintln(os.Stderr, "Make sure you're in a Go project with a go.mod file.")
 		os.Exit(1)
 	}
+	modulePath := moduleInfo.FullImportPath("")
 
 	// Load the migration plan (schema.json) from shipq root
 	schemaPath := filepath.Join(roots.ShipqRoot, "shipq", "db", "migrate", "schema.json")

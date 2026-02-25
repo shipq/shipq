@@ -36,7 +36,7 @@ func (c *DBPackageConfig) GetTableOpts() map[string]portsqlcodegen.CRUDOptions {
 // goModRoot is the directory containing go.mod, shipqRoot is the directory containing shipq.ini.
 // In a standard setup these are the same; in a monorepo, shipqRoot may be a subdirectory.
 func LoadDBPackageConfig(goModRoot, shipqRoot string) (*DBPackageConfig, error) {
-	modulePath, err := codegen.GetModulePath(goModRoot)
+	moduleInfo, err := codegen.GetModuleInfo(goModRoot, shipqRoot)
 	if err != nil {
 		return nil, err
 	}
@@ -64,7 +64,7 @@ func LoadDBPackageConfig(goModRoot, shipqRoot string) (*DBPackageConfig, error) 
 	return &DBPackageConfig{
 		GoModRoot:   goModRoot,
 		ShipqRoot:   shipqRoot,
-		ModulePath:  modulePath,
+		ModulePath:  moduleInfo.FullImportPath(""),
 		DatabaseURL: databaseURL,
 		Dialect:     dialect,
 		CRUDConfig:  crudCfg,

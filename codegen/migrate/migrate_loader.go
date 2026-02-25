@@ -93,10 +93,12 @@ func DiscoverMigrations(migrationsPath string) ([]MigrationFile, error) {
 //
 // Parameters:
 //   - goModRoot: directory containing go.mod
-//   - modulePath: module path from go.mod
+//   - goModModule: raw module path from go.mod (used for require/replace in temp go.mod)
+//   - importPrefix: effective import prefix for generated import statements
+//     (in a monorepo this includes the subpath, e.g. "com.company/apps/backend")
 //   - migrationsPath: absolute path to migrations directory (within shipqRoot)
 //   - migrations: list of migration files to execute
-func BuildMigrationPlan(goModRoot, modulePath, migrationsPath string, migrations []MigrationFile) ([]byte, error) {
+func BuildMigrationPlan(goModRoot, goModModule, importPrefix, migrationsPath string, migrations []MigrationFile) ([]byte, error) {
 	if len(migrations) == 0 {
 		// Return empty plan
 		return []byte(`{"schema":{"name":"","tables":{}},"migrations":[]}`), nil
@@ -114,10 +116,10 @@ func BuildMigrationPlan(goModRoot, modulePath, migrationsPath string, migrations
 	if err != nil {
 		return nil, fmt.Errorf("failed to get relative migrations path: %w", err)
 	}
-	migrationsImportPath := modulePath + "/" + filepath.ToSlash(relMigrationsPath)
+	migrationsImportPath := goModModule + "/" + filepath.ToSlash(relMigrationsPath)
 
 	// Generate the runner main.go
-	runnerCode := generateMigrationRunner(modulePath, migrationsImportPath, migrations)
+	runnerCode := generateMigrationRunner(importPrefix, migrationsImportPath, migrations)
 	runnerPath := filepath.Join(tmpDir, "main.go")
 	if err := os.WriteFile(runnerPath, []byte(runnerCode), 0644); err != nil {
 		return nil, fmt.Errorf("failed to write runner: %w", err)
@@ -125,6 +127,7 @@ func BuildMigrationPlan(goModRoot, modulePath, migrationsPath string, migrations
 
 	// Generate go.mod that requires the user's module
 	// The replace directive must point to goModRoot where the actual go.mod lives
+	// Uses the raw module path (goModModule) for require/replace directives.
 	goModContent := fmt.Sprintf(`module shipq-migrate-runner
 
 go 1.21
@@ -132,7 +135,7 @@ go 1.21
 require %s v0.0.0
 
 replace %s => %s
-`, modulePath, modulePath, goModRoot)
+`, goModModule, goModModule, goModRoot)
 
 	goModPath := filepath.Join(tmpDir, "go.mod")
 	if err := os.WriteFile(goModPath, []byte(goModContent), 0644); err != nil {
@@ -162,7 +165,9 @@ replace %s => %s
 }
 
 // generateMigrationRunner generates Go code that executes all migrations.
-func generateMigrationRunner(modulePath, migrationsImportPath string, migrations []MigrationFile) string {
+// importPrefix is the effective import prefix for generated import statements.
+// migrationsImportPath is the full import path to the migrations package.
+func generateMigrationRunner(importPrefix, migrationsImportPath string, migrations []MigrationFile) string {
 	var buf strings.Builder
 
 	buf.WriteString(`package main
@@ -173,7 +178,7 @@ import (
 	"os"
 
 	"`)
-	buf.WriteString(modulePath)
+	buf.WriteString(importPrefix)
 	buf.WriteString(`/shipq/lib/db/portsql/migrate"
 	migrations "`)
 	buf.WriteString(migrationsImportPath)

@@ -3,6 +3,7 @@ package discovery
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -456,5 +457,129 @@ func TestDiscoverPackages_MonorepoSetup(t *testing.T) {
 		if !found {
 			t.Errorf("missing expected package: %s", pkg)
 		}
+	}
+}
+
+func TestDiscoverQuerydefsPackages_MonorepoSetup(t *testing.T) {
+	// Regression test: in a monorepo, DiscoverQuerydefsPackages must receive the
+	// raw module path (from go.mod), NOT the full import prefix that includes the
+	// subpath. Passing the full import prefix causes the subpath to be doubled:
+	//   "com.company/apps/myservice/apps/myservice/querydefs/users"
+	// instead of:
+	//   "com.company/apps/myservice/querydefs/users"
+
+	goModRoot := t.TempDir()
+	shipqRoot := filepath.Join(goModRoot, "apps", "myservice")
+
+	// Create querydefs with nested packages
+	for _, dir := range []string{"querydefs", "querydefs/users", "querydefs/orders"} {
+		fullPath := filepath.Join(shipqRoot, dir)
+		if err := os.MkdirAll(fullPath, 0755); err != nil {
+			t.Fatalf("failed to create dir %s: %v", dir, err)
+		}
+		goFile := filepath.Join(fullPath, "queries.go")
+		if err := os.WriteFile(goFile, []byte("package "+filepath.Base(dir)+"\n"), 0644); err != nil {
+			t.Fatalf("failed to create Go file in %s: %v", dir, err)
+		}
+	}
+
+	// Correct usage: pass the raw module path from go.mod
+	rawModulePath := "com.company"
+	pkgs, err := DiscoverQuerydefsPackages(goModRoot, shipqRoot, rawModulePath)
+	if err != nil {
+		t.Fatalf("DiscoverQuerydefsPackages failed: %v", err)
+	}
+
+	if len(pkgs) != 3 {
+		t.Fatalf("expected 3 packages, got %d: %v", len(pkgs), pkgs)
+	}
+
+	expectedPkgs := map[string]bool{
+		"com.company/apps/myservice/querydefs":        false,
+		"com.company/apps/myservice/querydefs/users":  false,
+		"com.company/apps/myservice/querydefs/orders": false,
+	}
+
+	for _, pkg := range pkgs {
+		if _, ok := expectedPkgs[pkg]; !ok {
+			t.Errorf("unexpected package: %s", pkg)
+		}
+		expectedPkgs[pkg] = true
+	}
+
+	for pkg, found := range expectedPkgs {
+		if !found {
+			t.Errorf("missing expected package: %s", pkg)
+		}
+	}
+
+	// Verify no package path contains a doubled subpath
+	for _, pkg := range pkgs {
+		if strings.Contains(pkg, "apps/myservice/apps/myservice") {
+			t.Errorf("import path contains doubled subpath: %s", pkg)
+		}
+	}
+}
+
+func TestDiscoverPackages_MonorepoFullImportPrefixDoublesSubpath(t *testing.T) {
+	// This test documents the API contract: DiscoverPackages expects the raw
+	// module path (from go.mod), NOT a full import prefix that already includes
+	// the monorepo subpath. Passing the full import prefix causes the subpath
+	// to appear twice in the generated import paths.
+	//
+	// This was the root cause of a bug in DBCompileCmd where cfg.ModulePath
+	// (which is moduleInfo.FullImportPath("")) was passed instead of the raw
+	// module path, producing imports like:
+	//   "com.company/apps/platform/backend/apps/platform/backend/querydefs/users"
+
+	goModRoot := t.TempDir()
+	shipqRoot := filepath.Join(goModRoot, "apps", "platform", "backend")
+
+	// Create a querydefs package
+	querydefsDir := filepath.Join(shipqRoot, "querydefs", "users")
+	if err := os.MkdirAll(querydefsDir, 0755); err != nil {
+		t.Fatalf("failed to create dir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(querydefsDir, "queries.go"), []byte("package users\n"), 0644); err != nil {
+		t.Fatalf("failed to create Go file: %v", err)
+	}
+
+	rawModulePath := "com.company"
+	subPath := "apps/platform/backend"
+	fullImportPrefix := rawModulePath + "/" + subPath
+
+	// CORRECT: raw module path produces correct import paths
+	correctPkgs, err := DiscoverPackages(goModRoot, shipqRoot, "querydefs", rawModulePath)
+	if err != nil {
+		t.Fatalf("DiscoverPackages with raw module path failed: %v", err)
+	}
+
+	if len(correctPkgs) != 1 {
+		t.Fatalf("expected 1 package, got %d: %v", len(correctPkgs), correctPkgs)
+	}
+
+	expectedCorrect := "com.company/apps/platform/backend/querydefs/users"
+	if correctPkgs[0] != expectedCorrect {
+		t.Errorf("expected %q, got %q", expectedCorrect, correctPkgs[0])
+	}
+
+	// WRONG: full import prefix doubles the subpath — this demonstrates the bug
+	wrongPkgs, err := DiscoverPackages(goModRoot, shipqRoot, "querydefs", fullImportPrefix)
+	if err != nil {
+		t.Fatalf("DiscoverPackages with full import prefix failed: %v", err)
+	}
+
+	if len(wrongPkgs) != 1 {
+		t.Fatalf("expected 1 package, got %d: %v", len(wrongPkgs), wrongPkgs)
+	}
+
+	// The subpath appears twice — this is the doubled-path bug
+	doubled := "com.company/apps/platform/backend/apps/platform/backend/querydefs/users"
+	if wrongPkgs[0] != doubled {
+		t.Fatalf("expected doubled path %q, got %q", doubled, wrongPkgs[0])
+	}
+
+	if !strings.Contains(wrongPkgs[0], subPath+"/"+subPath) {
+		t.Error("expected the subpath to appear twice when using full import prefix")
 	}
 }

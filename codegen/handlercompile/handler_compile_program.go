@@ -10,8 +10,9 @@ import (
 // HandlerCompileProgramConfig holds configuration for generating the handler
 // compile program.
 type HandlerCompileProgramConfig struct {
-	ModulePath string   // e.g., "myapp"
-	APIPkgs    []string // import paths to api packages with Register functions
+	ModulePath  string   // effective import prefix for generated imports (e.g., "com.company/apps/backend")
+	GoModModule string   // raw module path from go.mod for filesystem conversion in static analysis (e.g., "com.company")
+	APIPkgs     []string // import paths to api packages with Register functions
 }
 
 // GenerateHandlerCompileProgram generates the temporary program that extracts

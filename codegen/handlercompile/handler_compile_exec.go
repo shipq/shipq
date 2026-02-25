@@ -99,8 +99,14 @@ func BuildAndRunHandlerCompileProgram(projectRoot string, cfg HandlerCompileProg
 		return nil, err
 	}
 
-	// Parse register.go files to get function names via static analysis
-	staticCalls, err := parseAllRegisterFiles(projectRoot, cfg.ModulePath, cfg.APIPkgs)
+	// Parse register.go files to get function names via static analysis.
+	// Uses raw module path (GoModModule) for import-to-filesystem conversion.
+	// Falls back to ModulePath if GoModModule is not set (non-monorepo case).
+	rawModule := cfg.GoModModule
+	if rawModule == "" {
+		rawModule = cfg.ModulePath
+	}
+	staticCalls, err := parseAllRegisterFiles(projectRoot, rawModule, cfg.APIPkgs)
 	if err != nil {
 		return nil, fmt.Errorf("static analysis failed: %w", err)
 	}

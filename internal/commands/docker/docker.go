@@ -89,11 +89,11 @@ func DockerCmd() {
 	}
 	dialect := ini.Get("db", "dialect")
 
-	modulePath, err := codegen.GetModulePath(roots.GoModRoot)
+	moduleInfo, err := codegen.GetModuleInfo(roots.GoModRoot, roots.ShipqRoot)
 	if err != nil {
 		cli.FatalErr("failed to read module path", err)
 	}
-	_ = modulePath // used implicitly via project name
+	_ = moduleInfo // used implicitly via project name
 
 	goVersion, err := extractGoVersion(roots.GoModRoot)
 	if err != nil {

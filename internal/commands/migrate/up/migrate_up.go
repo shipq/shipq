@@ -34,10 +34,11 @@ func MigrateUpCmd() {
 	}
 
 	// Step 2: Load configuration
-	modulePath, err := codegen.GetModulePath(roots.GoModRoot)
+	moduleInfo, err := codegen.GetModuleInfo(roots.GoModRoot, roots.ShipqRoot)
 	if err != nil {
-		cli.FatalErr("failed to get module path", err)
+		cli.FatalErr("failed to get module info", err)
 	}
+	importPrefix := moduleInfo.FullImportPath("")
 
 	shipqIniPath := filepath.Join(roots.ShipqRoot, project.ShipqIniFile)
 	ini, err := inifile.ParseFile(shipqIniPath)
@@ -79,14 +80,14 @@ func MigrateUpCmd() {
 
 	// Step 4.5: Embed shipq library packages (needed by migration files)
 	cli.Info("Embedding shipq library packages...")
-	if err := embed.EmbedAllPackages(roots.ShipqRoot, modulePath); err != nil {
+	if err := embed.EmbedAllPackages(roots.ShipqRoot, importPrefix); err != nil {
 		cli.FatalErr("failed to embed library packages", err)
 	}
 
 	// Step 5: Build migration plan by executing migration functions
 	// Use GoModRoot for the replace directive in temp go.mod
 	cli.Info("Building migration plan...")
-	planJSON, err := codegenMigrate.BuildMigrationPlan(roots.GoModRoot, modulePath, migrationsPath, migrations)
+	planJSON, err := codegenMigrate.BuildMigrationPlan(roots.GoModRoot, moduleInfo.ModulePath, importPrefix, migrationsPath, migrations)
 	if err != nil {
 		cli.FatalErr("failed to build migration plan", err)
 	}
@@ -104,7 +105,7 @@ func MigrateUpCmd() {
 	cli.Success("Generated shipq/db/migrate/schema.json")
 
 	// Step 7: Generate runner.go
-	runnerContent, err := codegenMigrate.GenerateMigrateRunner(modulePath)
+	runnerContent, err := codegenMigrate.GenerateMigrateRunner(importPrefix)
 	if err != nil {
 		cli.FatalErr("failed to generate runner", err)
 	}
@@ -157,14 +158,14 @@ func MigrateUpCmd() {
 
 	// Step 10: Generate schema package (in shipq root)
 	cli.Info("Generating shipq/db/schema package...")
-	if err := generateSchemaPackage(roots.ShipqRoot, modulePath, plan); err != nil {
+	if err := generateSchemaPackage(roots.ShipqRoot, importPrefix, plan); err != nil {
 		cli.FatalErr("failed to generate schema package", err)
 	}
 	cli.Success("Generated shipq/db/schema/schema.go")
 
 	// Step 11: Generate query runner (in shipq root)
 	cli.Info("Generating shipq/queries package...")
-	if err := generateQueryRunner(roots.ShipqRoot, modulePath, plan, dialect); err != nil {
+	if err := generateQueryRunner(roots.ShipqRoot, importPrefix, plan, dialect); err != nil {
 		cli.FatalErr("failed to generate query runner", err)
 	}
 	cli.Successf("Generated shipq/queries/%s/runner.go", dialect)

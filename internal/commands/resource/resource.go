@@ -50,10 +50,11 @@ func generateResource(tableName, operation string, isPublic bool) error {
 	up.MigrateUpCmd()
 
 	// Step 2: Read config
-	modulePath, err := codegen.GetModulePath(roots.GoModRoot)
+	moduleInfo, err := codegen.GetModuleInfo(roots.GoModRoot, roots.ShipqRoot)
 	if err != nil {
 		return fmt.Errorf("%w\nMake sure you're in a Go project with a go.mod file.", err)
 	}
+	modulePath := moduleInfo.FullImportPath("")
 
 	requireAuth := false
 	if !isPublic {

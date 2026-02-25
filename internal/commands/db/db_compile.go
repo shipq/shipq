@@ -110,8 +110,14 @@ func DBCompileCmd() {
 		}
 	}
 
-	// 3. Discover querydefs packages (now includes CRUD querydefs)
-	pkgs, err := discovery.DiscoverQuerydefsPackages(roots.GoModRoot, roots.ShipqRoot, cfg.ModulePath)
+	// 3. Discover querydefs packages (now includes CRUD querydefs).
+	// Discovery uses filepath.Rel(goModRoot, ...) so it must receive the raw module path,
+	// NOT cfg.ModulePath (which is the full import prefix including the monorepo subpath).
+	rawModulePath, err := codegen.GetModulePath(roots.GoModRoot)
+	if err != nil {
+		cli.FatalErr("failed to read module path", err)
+	}
+	pkgs, err := discovery.DiscoverQuerydefsPackages(roots.GoModRoot, roots.ShipqRoot, rawModulePath)
 	if err != nil {
 		cli.FatalErr("failed to discover querydefs packages", err)
 	}

@@ -91,11 +91,12 @@ func EmailCmd() {
 		os.Exit(1)
 	}
 
-	modulePath, err := codegen.GetModulePath(roots.GoModRoot)
+	moduleInfo, err := codegen.GetModuleInfo(roots.GoModRoot, roots.ShipqRoot)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "error: failed to get module path: %v\n", err)
 		os.Exit(1)
 	}
+	modulePath := moduleInfo.FullImportPath("")
 
 	shipqIniPath := filepath.Join(roots.ShipqRoot, project.ShipqIniFile)
 	ini, err := inifile.ParseFile(shipqIniPath)

@@ -32,10 +32,11 @@ func MigrateResetCmd() {
 	}
 
 	// Step 2: Load configuration
-	modulePath, err := codegen.GetModulePath(roots.GoModRoot)
+	moduleInfo, err := codegen.GetModuleInfo(roots.GoModRoot, roots.ShipqRoot)
 	if err != nil {
-		cli.FatalErr("failed to get module path", err)
+		cli.FatalErr("failed to get module info", err)
 	}
+	importPrefix := moduleInfo.FullImportPath("")
 
 	shipqIniPath := filepath.Join(roots.ShipqRoot, project.ShipqIniFile)
 	ini, err := inifile.ParseFile(shipqIniPath)
@@ -105,7 +106,7 @@ func MigrateResetCmd() {
 
 	// Step 9: Build migration plan (use GoModRoot for replace directive)
 	cli.Info("Building migration plan...")
-	planJSON, err := codegenMigrate.BuildMigrationPlan(roots.GoModRoot, modulePath, migrationsPath, migrations)
+	planJSON, err := codegenMigrate.BuildMigrationPlan(roots.GoModRoot, moduleInfo.ModulePath, importPrefix, migrationsPath, migrations)
 	if err != nil {
 		cli.FatalErr("failed to build migration plan", err)
 	}
@@ -123,7 +124,7 @@ func MigrateResetCmd() {
 	cli.Success("Generated shipq/db/migrate/schema.json")
 
 	// Step 11: Generate runner.go
-	runnerContent, err := codegenMigrate.GenerateMigrateRunner(modulePath)
+	runnerContent, err := codegenMigrate.GenerateMigrateRunner(importPrefix)
 	if err != nil {
 		cli.FatalErr("failed to generate runner", err)
 	}
@@ -172,7 +173,7 @@ func MigrateResetCmd() {
 
 	// Step 14: Generate query runner (in shipq root)
 	cli.Info("Generating shipq/queries package...")
-	if err := generateQueryRunnerForReset(roots.ShipqRoot, modulePath, plan, dialect); err != nil {
+	if err := generateQueryRunnerForReset(roots.ShipqRoot, importPrefix, plan, dialect); err != nil {
 		cli.FatalErr("failed to generate query runner", err)
 	}
 	cli.Successf("Generated shipq/queries/%s/runner.go", dialect)

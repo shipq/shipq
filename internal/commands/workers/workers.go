@@ -70,10 +70,11 @@ func WorkersCmd() {
 
 	// ── Step 1: Load project config ──────────────────────────────────
 
-	modulePath, err := codegen.GetModulePath(roots.GoModRoot)
+	moduleInfo, err := codegen.GetModuleInfo(roots.GoModRoot, roots.ShipqRoot)
 	if err != nil {
-		cli.FatalErr("failed to get module path", err)
+		cli.FatalErr("failed to get module info", err)
 	}
+	importPrefix := moduleInfo.FullImportPath("")
 
 	migrationsDir := ini.Get("db", "migrations")
 	if migrationsDir == "" {
@@ -95,7 +96,7 @@ func WorkersCmd() {
 
 	filesEnabled := ini.Section("files") != nil
 
-	cli.Infof("Project: %s", modulePath)
+	cli.Infof("Project: %s", importPrefix)
 
 	// ── Step 2: Update shipq.ini with [workers] section ──────────────
 
@@ -156,7 +157,7 @@ func WorkersCmd() {
 		fmt.Println("  Generating job_results migration...")
 
 		timestamp := time.Now().UTC().Format("20060102150405")
-		code := channelgen.GenerateJobResultsMigration(timestamp, modulePath, hasTenancy)
+		code := channelgen.GenerateJobResultsMigration(timestamp, importPrefix, hasTenancy)
 		fileName := fmt.Sprintf("%s_job_results.go", timestamp)
 		filePath := filepath.Join(migrationsPath, fileName)
 
@@ -240,7 +241,7 @@ func WorkersCmd() {
 	fmt.Println("")
 	fmt.Println("Embedding runtime library packages...")
 
-	if err := embed.EmbedAllPackages(roots.ShipqRoot, modulePath); err != nil {
+	if err := embed.EmbedAllPackages(roots.ShipqRoot, importPrefix); err != nil {
 		cli.FatalErr("failed to embed packages", err)
 	}
 	fmt.Println("  Embedded all library packages")
@@ -258,7 +259,7 @@ func WorkersCmd() {
 			cli.FatalErr("failed to create example channel directory", err)
 		}
 
-		exampleCode := generateExampleChannel(modulePath)
+		exampleCode := generateExampleChannel(importPrefix)
 		examplePath := filepath.Join(exampleDir, "register.go")
 		if err := os.WriteFile(examplePath, []byte(exampleCode), 0644); err != nil {
 			cli.FatalErr("failed to write example channel", err)
@@ -300,7 +301,7 @@ func WorkersCmd() {
 		cli.FatalErr("failed to create querydefs directory", err)
 	}
 
-	querydefsCode := channelgen.GenerateJobResultsQuerydefs(modulePath, hasTenancy, hasAuth)
+	querydefsCode := channelgen.GenerateJobResultsQuerydefs(importPrefix, hasTenancy, hasAuth)
 	querydefsPath := filepath.Join(querydefsDir, "queries.go")
 	if err := os.WriteFile(querydefsPath, querydefsCode, 0644); err != nil {
 		cli.FatalErr("failed to write querydefs", err)
@@ -316,7 +317,7 @@ func WorkersCmd() {
 	fmt.Println("")
 	fmt.Println("Compiling channel registry...")
 
-	channels, err := channelcompile.BuildAndRunChannelCompileProgram(roots.GoModRoot, roots.ShipqRoot, modulePath)
+	channels, err := channelcompile.BuildAndRunChannelCompileProgram(roots.GoModRoot, roots.ShipqRoot, moduleInfo)
 	if err != nil {
 		cli.FatalErr("failed to compile channels", err)
 	}
@@ -332,7 +333,7 @@ func WorkersCmd() {
 	fmt.Println("")
 	fmt.Println("Generating typed channel code...")
 
-	if err := channelgen.GenerateAllTypedChannels(channels, roots.GoModRoot, roots.ShipqRoot, modulePath); err != nil {
+	if err := channelgen.GenerateAllTypedChannels(channels, roots.GoModRoot, roots.ShipqRoot, importPrefix); err != nil {
 		cli.FatalErr("failed to generate typed channels", err)
 	}
 	fmt.Println("  Generated typed channel files")
@@ -360,7 +361,7 @@ func WorkersCmd() {
 
 	workerCfg := channelgen.WorkerGenConfig{
 		Channels:             channels,
-		ModulePath:           modulePath,
+		ModulePath:           importPrefix,
 		DBDialect:            dialect,
 		RedisAddr:            redisAddr,
 		CentrifugoAPIURL:     centrifugoAPIURL,
@@ -449,12 +450,12 @@ func WorkersCmd() {
 	fmt.Println("")
 	fmt.Println("Generating channel tests...")
 
-	if err := channelgen.GenerateIntegrationTests(channels, modulePath, roots.ShipqRoot); err != nil {
+	if err := channelgen.GenerateIntegrationTests(channels, importPrefix, roots.ShipqRoot); err != nil {
 		cli.FatalErr("failed to generate integration tests", err)
 	}
 	fmt.Println("  Generated channels/spec/zz_generated_integration_test.go")
 
-	if err := channelgen.GenerateE2ETest(channels, modulePath, roots.ShipqRoot); err != nil {
+	if err := channelgen.GenerateE2ETest(channels, importPrefix, roots.ShipqRoot); err != nil {
 		cli.FatalErr("failed to generate E2E tests", err)
 	}
 	fmt.Println("  Generated channels/spec/zz_generated_e2e_test.go")

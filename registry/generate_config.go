@@ -48,15 +48,15 @@ type ConfigEarlyOptions struct {
 // GenerateConfigEarlyWithFullOptions generates the config package with full
 // control over which features are enabled.
 func GenerateConfigEarlyWithFullOptions(opts ConfigEarlyOptions) error {
-	modulePath, err := codegen.GetModulePath(opts.GoModRoot)
+	moduleInfo, err := codegen.GetModuleInfo(opts.GoModRoot, opts.ShipqRoot)
 	if err != nil {
-		return fmt.Errorf("failed to get module path: %w", err)
+		return fmt.Errorf("failed to get module info: %w", err)
 	}
 
 	cfg := CompileConfig{
 		ShipqRoot:      opts.ShipqRoot,
 		GoModRoot:      opts.GoModRoot,
-		ModulePath:     modulePath,
+		ModulePath:     moduleInfo.FullImportPath(""),
 		DBDialect:      opts.Dialect,
 		FilesEnabled:   opts.FilesEnabled,
 		WorkersEnabled: opts.WorkersEnabled,

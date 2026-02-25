@@ -27,14 +27,16 @@ import (
 //
 // This is the function called by CLI commands.
 func Run(shipqRoot, goModRoot string) error {
-	// Get module path
-	modulePath, err := codegen.GetModulePath(goModRoot)
+	// Get module info (raw module path + monorepo subpath)
+	moduleInfo, err := codegen.GetModuleInfo(goModRoot, shipqRoot)
 	if err != nil {
-		return fmt.Errorf("failed to get module path: %w", err)
+		return fmt.Errorf("failed to get module info: %w", err)
 	}
+	importPrefix := moduleInfo.FullImportPath("")
 
-	// Discover API packages (in shipq root, but import paths relative to go.mod root)
-	apiPkgs, err := discovery.DiscoverAPIPackages(goModRoot, shipqRoot, modulePath)
+	// Discover API packages (in shipq root, but import paths relative to go.mod root).
+	// Discovery uses filepath.Rel(goModRoot, ...) so it must receive the raw module path.
+	apiPkgs, err := discovery.DiscoverAPIPackages(goModRoot, shipqRoot, moduleInfo.ModulePath)
 	if err != nil {
 		return fmt.Errorf("failed to discover API packages: %w", err)
 	}
@@ -47,8 +49,9 @@ func Run(shipqRoot, goModRoot string) error {
 
 	// Build and run the compile program (uses goModRoot for replace directive)
 	cfg := handlercompile.HandlerCompileProgramConfig{
-		ModulePath: modulePath,
-		APIPkgs:    apiPkgs,
+		ModulePath:  importPrefix,
+		GoModModule: moduleInfo.ModulePath,
+		APIPkgs:     apiPkgs,
 	}
 
 	handlers, err := handlercompile.BuildAndRunHandlerCompileProgram(goModRoot, cfg)
@@ -155,7 +158,7 @@ func Run(shipqRoot, goModRoot string) error {
 	// Compile channel registry if workers are enabled
 	var channels []codegen.SerializedChannelInfo
 	if workersEnabled {
-		compiledChannels, compErr := channelcompile.BuildAndRunChannelCompileProgram(goModRoot, shipqRoot, modulePath)
+		compiledChannels, compErr := channelcompile.BuildAndRunChannelCompileProgram(goModRoot, shipqRoot, moduleInfo)
 		if compErr != nil {
 			return fmt.Errorf("failed to compile channels: %w", compErr)
 		}
@@ -166,7 +169,7 @@ func Run(shipqRoot, goModRoot string) error {
 	compileCfg := CompileConfig{
 		GoModRoot:       goModRoot,
 		ShipqRoot:       shipqRoot,
-		ModulePath:      modulePath,
+		ModulePath:      importPrefix,
 		Handlers:        handlers,
 		DBDialect:       dialect,
 		DatabaseURL:     databaseURL,

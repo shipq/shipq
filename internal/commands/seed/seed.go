@@ -36,10 +36,13 @@ func SeedCmd() {
 		cli.FatalErr("failed to find project", err)
 	}
 
-	modulePath, err := codegen.GetModulePath(roots.GoModRoot)
+	moduleInfo, err := codegen.GetModuleInfo(roots.GoModRoot, roots.ShipqRoot)
 	if err != nil {
-		cli.FatalErr("failed to get module path", err)
+		cli.FatalErr("failed to get module info", err)
 	}
+	// Seed runner builds import paths via filepath.Rel(goModRoot, seedsPath) and
+	// uses require/replace directives in a temp go.mod — both need the raw module path.
+	modulePath := moduleInfo.ModulePath
 
 	// Step 2: Load config
 	shipqIniPath := filepath.Join(roots.ShipqRoot, project.ShipqIniFile)

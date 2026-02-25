@@ -86,9 +86,13 @@ func RunChannelCompileProgram(projectRoot string) ([]codegen.SerializedChannelIn
 // visibility, message types), but Go reflection cannot get function names.
 // Static analysis parses register.go files via AST to extract handler function names.
 // This function merges both sources to produce complete channel info.
-func BuildAndRunChannelCompileProgram(goModRoot, shipqRoot, modulePath string) ([]codegen.SerializedChannelInfo, error) {
-	// Discover channel packages
-	channelPkgs, err := discovery.DiscoverChannelPackages(goModRoot, shipqRoot, modulePath)
+//
+// info provides both the raw module path (for discovery and filesystem conversion)
+// and the effective import prefix (for generated import statements).
+func BuildAndRunChannelCompileProgram(goModRoot, shipqRoot string, info *codegen.ModuleInfo) ([]codegen.SerializedChannelInfo, error) {
+	// Discover channel packages — uses raw module path because DiscoverChannelPackages
+	// constructs import paths via filepath.Rel(goModRoot, ...).
+	channelPkgs, err := discovery.DiscoverChannelPackages(goModRoot, shipqRoot, info.ModulePath)
 	if err != nil {
 		return nil, fmt.Errorf("channel discovery failed: %w", err)
 	}
@@ -97,8 +101,9 @@ func BuildAndRunChannelCompileProgram(goModRoot, shipqRoot, modulePath string) (
 		return nil, nil
 	}
 
+	// Generated compile program uses the effective import prefix for import statements.
 	cfg := ChannelCompileProgramConfig{
-		ModulePath:  modulePath,
+		ModulePath:  info.FullImportPath(""),
 		ChannelPkgs: channelPkgs,
 	}
 
@@ -113,8 +118,9 @@ func BuildAndRunChannelCompileProgram(goModRoot, shipqRoot, modulePath string) (
 		return nil, err
 	}
 
-	// Parse register.go files to get handler function names via static analysis
-	if err := MergeChannelStaticAnalysis(goModRoot, modulePath, channelPkgs, channels); err != nil {
+	// Parse register.go files to get handler function names via static analysis.
+	// Uses raw module path for import-to-filesystem conversion.
+	if err := MergeChannelStaticAnalysis(goModRoot, info.ModulePath, channelPkgs, channels); err != nil {
 		return nil, fmt.Errorf("static analysis failed: %w", err)
 	}
 
