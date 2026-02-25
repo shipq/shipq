@@ -10,6 +10,15 @@ import (
 	"github.com/shipq/shipq/dbstrings"
 )
 
+func testNeedsJSONImport(table ddl.Table) bool {
+	for _, col := range table.Columns {
+		if col.Type == ddl.JSONType && !isFixtureAutoColumn(col.Name) {
+			return true
+		}
+	}
+	return false
+}
+
 // PerOpTestGenConfig holds configuration for generating per-operation test files.
 type PerOpTestGenConfig struct {
 	ModulePath      string               // e.g., "myapp"
@@ -683,6 +692,9 @@ func writeSimpleTestImports(buf *bytes.Buffer, cfg PerOpTestGenConfig, needsFixt
 // (both nullable and non-nullable) since create calls the route directly.
 func writeCreateTestImports(buf *bytes.Buffer, cfg PerOpTestGenConfig) {
 	buf.WriteString("import (\n")
+	if testNeedsJSONImport(cfg.Table) {
+		buf.WriteString("\t\"encoding/json\"\n")
+	}
 	buf.WriteString("\t\"testing\"\n\n")
 	buf.WriteString(fmt.Sprintf("\t%q\n", cfg.ModulePath+"/api/"+cfg.TableName))
 	// All FK dep fixtures (create needs them to set up dependencies)
@@ -704,6 +716,9 @@ func writeCreateTestImports(buf *bytes.Buffer, cfg PerOpTestGenConfig) {
 // It needs the resource package, fixture package, and FK dependency fixtures.
 func writeUpdateTestImports(buf *bytes.Buffer, cfg PerOpTestGenConfig) {
 	buf.WriteString("import (\n")
+	if testNeedsJSONImport(cfg.Table) {
+		buf.WriteString("\t\"encoding/json\"\n")
+	}
 	buf.WriteString("\t\"testing\"\n\n")
 	buf.WriteString(fmt.Sprintf("\t%q\n", cfg.ModulePath+"/api/"+cfg.TableName))
 	if cfg.ScopeColumn == "" {

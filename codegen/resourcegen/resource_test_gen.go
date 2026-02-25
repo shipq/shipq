@@ -389,6 +389,8 @@ func getSampleValue(goType, fieldName string) string {
 		return "1.0"
 	case "bool":
 		return "true"
+	case "json.RawMessage":
+		return `json.RawMessage("{}")`
 	default:
 		if strings.HasPrefix(goType, "*") {
 			return "nil"

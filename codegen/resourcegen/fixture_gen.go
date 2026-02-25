@@ -74,6 +74,9 @@ func GenerateFixture(cfg FixtureGenConfig) ([]byte, error) {
 			break
 		}
 	}
+	if fixtureTableHasJSONColumn(cfg.Table) {
+		fmt.Fprintf(&buf, "\t\"encoding/json\"\n")
+	}
 	if hasPublicID {
 		fmt.Fprintf(&buf, "\t%q\n\n", cfg.ModulePath+"/shipq/lib/nanoid")
 	}
@@ -196,6 +199,15 @@ func isFixtureAutoColumn(name string) bool {
 	}
 }
 
+func fixtureTableHasJSONColumn(table ddl.Table) bool {
+	for _, col := range table.Columns {
+		if col.Type == ddl.JSONType && !isFixtureAutoColumn(col.Name) && !col.Nullable {
+			return true
+		}
+	}
+	return false
+}
+
 func goBaseTypeForFixture(colType string) string {
 	switch colType {
 	case ddl.IntegerType:
@@ -206,6 +218,8 @@ func goBaseTypeForFixture(colType string) string {
 		return "float64"
 	case ddl.BooleanType:
 		return "bool"
+	case ddl.JSONType:
+		return "json.RawMessage"
 	default:
 		return "string"
 	}

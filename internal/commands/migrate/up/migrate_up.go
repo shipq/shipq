@@ -80,7 +80,12 @@ func MigrateUpCmd() {
 
 	// Step 4.5: Embed shipq library packages (needed by migration files)
 	cli.Info("Embedding shipq library packages...")
-	if err := embed.EmbedAllPackages(roots.ShipqRoot, importPrefix); err != nil {
+	filesEnabled := ini.Section("files") != nil
+	workersEnabled := ini.Section("workers") != nil
+	if err := embed.EmbedAllPackages(roots.ShipqRoot, importPrefix, embed.EmbedOptions{
+		FilesEnabled:   filesEnabled,
+		WorkersEnabled: workersEnabled,
+	}); err != nil {
 		cli.FatalErr("failed to embed library packages", err)
 	}
 

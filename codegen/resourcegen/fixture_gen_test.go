@@ -9,6 +9,157 @@ import (
 	"github.com/shipq/shipq/db/portsql/ddl"
 )
 
+func TestGoBaseTypeForFixture_JSONType(t *testing.T) {
+	got := goBaseTypeForFixture(ddl.JSONType)
+	if got != "json.RawMessage" {
+		t.Errorf("goBaseTypeForFixture(%q) = %q, want %q", ddl.JSONType, got, "json.RawMessage")
+	}
+}
+
+func TestGetSampleValue_JSONRawMessage(t *testing.T) {
+	got := getSampleValue("json.RawMessage", "metadata")
+	want := `json.RawMessage("{}")`
+	if got != want {
+		t.Errorf("getSampleValue(\"json.RawMessage\", \"metadata\") = %q, want %q", got, want)
+	}
+}
+
+func TestGenerateFixture_JSONColumn_ImportsEncodingJSON(t *testing.T) {
+	cfg := FixtureGenConfig{
+		ModulePath: "myapp",
+		TableName:  "events",
+		Table: ddl.Table{
+			Name: "events",
+			Columns: []ddl.ColumnDefinition{
+				{Name: "id", Type: ddl.BigintType},
+				{Name: "public_id", Type: ddl.StringType},
+				{Name: "name", Type: ddl.StringType},
+				{Name: "metadata", Type: ddl.JSONType},
+				{Name: "created_at", Type: ddl.DatetimeType},
+				{Name: "updated_at", Type: ddl.DatetimeType},
+				{Name: "deleted_at", Type: ddl.DatetimeType, Nullable: true},
+			},
+		},
+		Schema:  map[string]ddl.Table{},
+		Dialect: "sqlite",
+	}
+
+	result, err := GenerateFixture(cfg)
+	if err != nil {
+		t.Fatalf("GenerateFixture failed: %v", err)
+	}
+
+	code := string(result)
+
+	// Must import encoding/json
+	if !strings.Contains(code, `"encoding/json"`) {
+		t.Error("expected \"encoding/json\" import for JSON column")
+	}
+
+	// Must use json.RawMessage sample value
+	if !strings.Contains(code, `json.RawMessage("{}")`) {
+		t.Error("expected json.RawMessage(\"{}\") sample value for JSON column")
+	}
+}
+
+func TestGenerateFixture_NoJSONColumn_OmitsEncodingJSON(t *testing.T) {
+	cfg := FixtureGenConfig{
+		ModulePath: "myapp",
+		TableName:  "users",
+		Table: ddl.Table{
+			Name: "users",
+			Columns: []ddl.ColumnDefinition{
+				{Name: "id", Type: ddl.BigintType},
+				{Name: "public_id", Type: ddl.StringType},
+				{Name: "name", Type: ddl.StringType},
+				{Name: "age", Type: ddl.IntegerType},
+				{Name: "created_at", Type: ddl.DatetimeType},
+				{Name: "updated_at", Type: ddl.DatetimeType},
+				{Name: "deleted_at", Type: ddl.DatetimeType, Nullable: true},
+			},
+		},
+		Schema:  map[string]ddl.Table{},
+		Dialect: "sqlite",
+	}
+
+	result, err := GenerateFixture(cfg)
+	if err != nil {
+		t.Fatalf("GenerateFixture failed: %v", err)
+	}
+
+	code := string(result)
+
+	if strings.Contains(code, `"encoding/json"`) {
+		t.Error("should NOT import \"encoding/json\" when there are no JSON columns")
+	}
+}
+
+func TestGenerateFixture_JSONColumn_ValidGo(t *testing.T) {
+	cfg := FixtureGenConfig{
+		ModulePath: "myapp",
+		TableName:  "events",
+		Table: ddl.Table{
+			Name: "events",
+			Columns: []ddl.ColumnDefinition{
+				{Name: "id", Type: ddl.BigintType},
+				{Name: "public_id", Type: ddl.StringType},
+				{Name: "name", Type: ddl.StringType},
+				{Name: "metadata", Type: ddl.JSONType},
+				{Name: "created_at", Type: ddl.DatetimeType},
+				{Name: "updated_at", Type: ddl.DatetimeType},
+				{Name: "deleted_at", Type: ddl.DatetimeType, Nullable: true},
+			},
+		},
+		Schema:  map[string]ddl.Table{},
+		Dialect: "sqlite",
+	}
+
+	result, err := GenerateFixture(cfg)
+	if err != nil {
+		t.Fatalf("GenerateFixture failed: %v", err)
+	}
+
+	// Verify the generated code is syntactically valid Go
+	_, err = parser.ParseFile(token.NewFileSet(), "", result, parser.AllErrors)
+	if err != nil {
+		t.Fatalf("generated fixture with JSON column is not valid Go: %v\n%s", err, string(result))
+	}
+}
+
+func TestGenerateFixture_NullableJSONColumn_OmitsEncodingJSON(t *testing.T) {
+	// A nullable JSON column is skipped in the fixture (gets nil),
+	// so no encoding/json import should be emitted.
+	cfg := FixtureGenConfig{
+		ModulePath: "myapp",
+		TableName:  "events",
+		Table: ddl.Table{
+			Name: "events",
+			Columns: []ddl.ColumnDefinition{
+				{Name: "id", Type: ddl.BigintType},
+				{Name: "public_id", Type: ddl.StringType},
+				{Name: "name", Type: ddl.StringType},
+				{Name: "metadata", Type: ddl.JSONType, Nullable: true},
+				{Name: "created_at", Type: ddl.DatetimeType},
+				{Name: "updated_at", Type: ddl.DatetimeType},
+				{Name: "deleted_at", Type: ddl.DatetimeType, Nullable: true},
+			},
+		},
+		Schema:  map[string]ddl.Table{},
+		Dialect: "sqlite",
+	}
+
+	result, err := GenerateFixture(cfg)
+	if err != nil {
+		t.Fatalf("GenerateFixture failed: %v", err)
+	}
+
+	code := string(result)
+
+	if strings.Contains(code, `"encoding/json"`) {
+		t.Error("should NOT import \"encoding/json\" when JSON column is nullable (skipped in fixture)")
+	}
+}
+
 func TestGenerateFixture_ValidGo(t *testing.T) {
 	cfg := FixtureGenConfig{
 		ModulePath: "myapp",

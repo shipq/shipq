@@ -241,7 +241,10 @@ func WorkersCmd() {
 	fmt.Println("")
 	fmt.Println("Embedding runtime library packages...")
 
-	if err := embed.EmbedAllPackages(roots.ShipqRoot, importPrefix); err != nil {
+	if err := embed.EmbedAllPackages(roots.ShipqRoot, importPrefix, embed.EmbedOptions{
+		FilesEnabled:   filesEnabled,
+		WorkersEnabled: true,
+	}); err != nil {
 		cli.FatalErr("failed to embed packages", err)
 	}
 	fmt.Println("  Embedded all library packages")

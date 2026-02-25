@@ -34,7 +34,7 @@ func TestBuildAndRunChannelCompileProgram_EndToEnd(t *testing.T) {
 	}
 
 	// Embed the channel package into shipq/lib/channel (mirrors real project setup)
-	if err := embed.EmbedAllPackages(tmpDir, modulePath); err != nil {
+	if err := embed.EmbedAllPackages(tmpDir, modulePath, embed.EmbedOptions{WorkersEnabled: true}); err != nil {
 		t.Fatalf("failed to embed packages: %v", err)
 	}
 
@@ -271,7 +271,7 @@ func TestBuildAndRunChannelCompileProgram_PublicChannel(t *testing.T) {
 		t.Fatalf("failed to create go.mod: %v", err)
 	}
 
-	if err := embed.EmbedAllPackages(tmpDir, modulePath); err != nil {
+	if err := embed.EmbedAllPackages(tmpDir, modulePath, embed.EmbedOptions{WorkersEnabled: true}); err != nil {
 		t.Fatalf("failed to embed packages: %v", err)
 	}
 
@@ -385,7 +385,7 @@ func TestBuildAndRunChannelCompileProgram_BackendChannel(t *testing.T) {
 		t.Fatalf("failed to create go.mod: %v", err)
 	}
 
-	if err := embed.EmbedAllPackages(tmpDir, modulePath); err != nil {
+	if err := embed.EmbedAllPackages(tmpDir, modulePath, embed.EmbedOptions{WorkersEnabled: true}); err != nil {
 		t.Fatalf("failed to embed packages: %v", err)
 	}
 
@@ -509,7 +509,7 @@ func TestBuildAndRunChannelCompileProgram_ExampleChannelRegression(t *testing.T)
 			t.Fatalf("failed to create go.mod: %v", err)
 		}
 
-		if err := embed.EmbedAllPackages(tmpDir, modulePath); err != nil {
+		if err := embed.EmbedAllPackages(tmpDir, modulePath, embed.EmbedOptions{WorkersEnabled: true}); err != nil {
 			t.Fatalf("failed to embed packages: %v", err)
 		}
 
@@ -584,7 +584,7 @@ func HandleEchoRequest(ctx context.Context, req *EchoRequest) error {
 			t.Fatalf("failed to create go.mod: %v", err)
 		}
 
-		if err := embed.EmbedAllPackages(tmpDir, modulePath); err != nil {
+		if err := embed.EmbedAllPackages(tmpDir, modulePath, embed.EmbedOptions{WorkersEnabled: true}); err != nil {
 			t.Fatalf("failed to embed packages: %v", err)
 		}
 

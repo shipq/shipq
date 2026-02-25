@@ -6,6 +6,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"strings"
 
 	shipqsrc "github.com/shipq/shipq"
 )
@@ -27,7 +28,13 @@ type embeddedPackage struct {
 // "github.com/shipq/shipq/..." are rewritten to use the user's
 // modulePath + "/shipq/lib/..." so the generated project never
 // depends on the published shipq module.
-func EmbedAllPackages(shipqRoot, modulePath string) error {
+// EmbedOptions controls which optional packages are embedded.
+type EmbedOptions struct {
+	FilesEnabled   bool
+	WorkersEnabled bool
+}
+
+func EmbedAllPackages(shipqRoot, modulePath string, opts EmbedOptions) error {
 	packages := []embeddedPackage{
 		{fs: shipqsrc.HandlerFS, srcDir: "handler", destDir: filepath.Join("shipq", "lib", "handler")},
 		{fs: shipqsrc.HttperrorFS, srcDir: "httperror", destDir: filepath.Join("shipq", "lib", "httperror")},
@@ -36,14 +43,26 @@ func EmbedAllPackages(shipqRoot, modulePath string) error {
 		{fs: shipqsrc.CryptoFS, srcDir: "crypto", destDir: filepath.Join("shipq", "lib", "crypto")},
 		{fs: shipqsrc.NanoidFS, srcDir: "nanoid", destDir: filepath.Join("shipq", "lib", "nanoid")},
 		{fs: shipqsrc.HttputilFS, srcDir: "httputil", destDir: filepath.Join("shipq", "lib", "httputil")},
-		{fs: shipqsrc.FilestorageFS, srcDir: "filestorage", destDir: filepath.Join("shipq", "lib", "filestorage")},
-		{fs: shipqsrc.ChannelFS, srcDir: "channel", destDir: filepath.Join("shipq", "lib", "channel")},
 		{fs: shipqsrc.QueryFS, srcDir: filepath.Join("db", "portsql", "query"), destDir: filepath.Join("shipq", "lib", "db", "portsql", "query")},
 		{fs: shipqsrc.QueryCompileFS, srcDir: filepath.Join("db", "portsql", "query", "compile"), destDir: filepath.Join("shipq", "lib", "db", "portsql", "query", "compile")},
 		{fs: shipqsrc.MigrateFS, srcDir: filepath.Join("db", "portsql", "migrate"), destDir: filepath.Join("shipq", "lib", "db", "portsql", "migrate")},
 		{fs: shipqsrc.DdlFS, srcDir: filepath.Join("db", "portsql", "ddl"), destDir: filepath.Join("shipq", "lib", "db", "portsql", "ddl")},
 		{fs: shipqsrc.RefFS, srcDir: filepath.Join("db", "portsql", "ref"), destDir: filepath.Join("shipq", "lib", "db", "portsql", "ref")},
 		{fs: shipqsrc.ProptestFS, srcDir: "proptest", destDir: filepath.Join("shipq", "lib", "proptest")},
+	}
+
+	if opts.FilesEnabled {
+		packages = append(packages, embeddedPackage{
+			fs: shipqsrc.FilestorageFS, srcDir: "filestorage",
+			destDir: filepath.Join("shipq", "lib", "filestorage"),
+		})
+	}
+
+	if opts.WorkersEnabled {
+		packages = append(packages, embeddedPackage{
+			fs: shipqsrc.ChannelFS, srcDir: "channel",
+			destDir: filepath.Join("shipq", "lib", "channel"),
+		})
 	}
 
 	for _, pkg := range packages {
@@ -137,6 +156,9 @@ func copyEmbeddedPackage(pkg embeddedPackage, shipqRoot, modulePath string) erro
 
 	for _, entry := range entries {
 		if entry.IsDir() || filepath.Ext(entry.Name()) != ".go" {
+			continue
+		}
+		if strings.HasSuffix(entry.Name(), "_test.go") {
 			continue
 		}
 

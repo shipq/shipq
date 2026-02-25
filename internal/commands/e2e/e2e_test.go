@@ -1563,3 +1563,57 @@ func TestEndToEnd_FKResolutionOpenAPI(t *testing.T) {
 		scenarioFKResolutionOpenAPI(t, shipq, db)
 	})
 }
+
+// -------------------------------------------------------------------------
+// Scenario: Public resource with a single JSON column (no auth)
+// -------------------------------------------------------------------------
+
+// scenarioPublicJSONColumn creates a resource whose only user-supplied column
+// is a JSON column, generates the CREATE route, and verifies that the
+// generated project compiles and tests pass. This is a regression test for
+// the bug where fixture/test generators produced `"test_metadata"` (untyped
+// string) instead of `json.RawMessage("{}")` for JSON columns, and omitted
+// the `"encoding/json"` import.
+func scenarioPublicJSONColumn(t *testing.T, shipq string, db dbConfig) {
+	t.Helper()
+
+	proj := setupProject(t, shipq, "shipq-e2e-json-col", db)
+	dbEnv := []string{"DATABASE_URL=" + proj.DatabaseURL}
+	tEnv := testEnvForProject(t, proj.CleanDir, db)
+
+	// Create a migration with a single JSON column (plus the auto columns)
+	t.Log("Creating migration with JSON column...")
+	runWithEnv(t, proj.CleanDir, dbEnv,
+		shipq, "migrate", "new", "website_signups", "metadata:json")
+
+	// Generate only the CREATE route (no auth)
+	t.Log("Generating public CREATE route...")
+	runWithEnv(t, proj.CleanDir, dbEnv,
+		shipq, "resource", "website_signups", "create", "--public")
+	run(t, proj.CleanDir, "go", "mod", "tidy")
+
+	// Build must succeed — previously failed with:
+	//   cannot use "test_metadata" (untyped string constant) as json.RawMessage
+	t.Log("Building project...")
+	runWithEnv(t, proj.CleanDir, tEnv, "go", "build", "./...")
+
+	// Tests must pass
+	t.Log("Running tests...")
+	runWithEnv(t, proj.CleanDir, tEnv, "go", "test", "./...", "-v", "-count=1")
+	t.Log("All tests passed!")
+}
+
+func TestEndToEnd_PublicJSONColumn(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping end-to-end test in short mode")
+	}
+
+	repoRoot := shipqRepoRoot(t)
+	shipq := buildShipq(t, repoRoot)
+
+	for _, db := range allDBConfigs(t) {
+		t.Run(db.Name, func(t *testing.T) {
+			scenarioPublicJSONColumn(t, shipq, db)
+		})
+	}
+}

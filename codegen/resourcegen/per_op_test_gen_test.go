@@ -9,6 +9,132 @@ import (
 	"github.com/shipq/shipq/db/portsql/ddl"
 )
 
+func TestGenerateCreateTest_JSONColumn_ImportsEncodingJSON(t *testing.T) {
+	cfg := PerOpTestGenConfig{
+		ModulePath: "myapp",
+		TableName:  "events",
+		Table: ddl.Table{
+			Name: "events",
+			Columns: []ddl.ColumnDefinition{
+				{Name: "id", Type: ddl.BigintType, PrimaryKey: true},
+				{Name: "public_id", Type: ddl.StringType},
+				{Name: "name", Type: ddl.StringType},
+				{Name: "metadata", Type: ddl.JSONType},
+				{Name: "created_at", Type: ddl.DatetimeType},
+				{Name: "updated_at", Type: ddl.DatetimeType},
+				{Name: "deleted_at", Type: ddl.DatetimeType, Nullable: true},
+			},
+		},
+		Schema:          map[string]ddl.Table{},
+		RequireAuth:     false,
+		Dialect:         "sqlite",
+		TestDatabaseURL: "file::memory:?cache=shared",
+	}
+
+	result, err := GenerateCreateTest(cfg)
+	if err != nil {
+		t.Fatalf("GenerateCreateTest failed: %v", err)
+	}
+
+	code := string(result)
+
+	// Verify valid Go
+	_, err = parser.ParseFile(token.NewFileSet(), "", result, parser.AllErrors)
+	if err != nil {
+		t.Fatalf("generated code is not valid Go: %v\n%s", err, code)
+	}
+
+	// Must import encoding/json
+	if !strings.Contains(code, `"encoding/json"`) {
+		t.Error("expected \"encoding/json\" import for JSON column in create test")
+	}
+
+	// Must use json.RawMessage sample value
+	if !strings.Contains(code, `json.RawMessage`) {
+		t.Error("expected json.RawMessage usage for JSON column in create test")
+	}
+}
+
+func TestGenerateCreateTest_NoJSONColumn_OmitsEncodingJSON(t *testing.T) {
+	cfg := PerOpTestGenConfig{
+		ModulePath: "myapp",
+		TableName:  "pets",
+		Table: ddl.Table{
+			Name: "pets",
+			Columns: []ddl.ColumnDefinition{
+				{Name: "id", Type: ddl.BigintType, PrimaryKey: true},
+				{Name: "public_id", Type: ddl.StringType},
+				{Name: "name", Type: ddl.StringType},
+				{Name: "species", Type: ddl.StringType},
+				{Name: "created_at", Type: ddl.DatetimeType},
+				{Name: "updated_at", Type: ddl.DatetimeType},
+				{Name: "deleted_at", Type: ddl.DatetimeType, Nullable: true},
+			},
+		},
+		Schema:          map[string]ddl.Table{},
+		RequireAuth:     false,
+		Dialect:         "sqlite",
+		TestDatabaseURL: "file::memory:?cache=shared",
+	}
+
+	result, err := GenerateCreateTest(cfg)
+	if err != nil {
+		t.Fatalf("GenerateCreateTest failed: %v", err)
+	}
+
+	code := string(result)
+
+	if strings.Contains(code, `"encoding/json"`) {
+		t.Error("should NOT import \"encoding/json\" when there are no JSON columns")
+	}
+}
+
+func TestGenerateUpdateTest_JSONColumn_ImportsEncodingJSON(t *testing.T) {
+	cfg := PerOpTestGenConfig{
+		ModulePath: "myapp",
+		TableName:  "events",
+		Table: ddl.Table{
+			Name: "events",
+			Columns: []ddl.ColumnDefinition{
+				{Name: "id", Type: ddl.BigintType, PrimaryKey: true},
+				{Name: "public_id", Type: ddl.StringType},
+				{Name: "name", Type: ddl.StringType},
+				{Name: "metadata", Type: ddl.JSONType},
+				{Name: "created_at", Type: ddl.DatetimeType},
+				{Name: "updated_at", Type: ddl.DatetimeType},
+				{Name: "deleted_at", Type: ddl.DatetimeType, Nullable: true},
+			},
+		},
+		Schema:          map[string]ddl.Table{},
+		RequireAuth:     false,
+		Dialect:         "sqlite",
+		TestDatabaseURL: "file::memory:?cache=shared",
+	}
+
+	result, err := GenerateUpdateTest(cfg)
+	if err != nil {
+		t.Fatalf("GenerateUpdateTest failed: %v", err)
+	}
+
+	code := string(result)
+
+	// Verify valid Go
+	_, err = parser.ParseFile(token.NewFileSet(), "", result, parser.AllErrors)
+	if err != nil {
+		t.Fatalf("generated code is not valid Go: %v\n%s", err, code)
+	}
+
+	// Must import encoding/json
+	if !strings.Contains(code, `"encoding/json"`) {
+		t.Error("expected \"encoding/json\" import for JSON column in update test")
+	}
+
+	// Must use json.RawMessage sample value
+	if !strings.Contains(code, `json.RawMessage`) {
+		t.Error("expected json.RawMessage usage for JSON column in update test")
+	}
+}
+
 func TestGenerateUpdateTest_NoCreateResultFieldReference(t *testing.T) {
 	// Regression test for Bug 3: the update test must NOT reference
 	// created.<Field> for non-ID fields, because CreateResult only

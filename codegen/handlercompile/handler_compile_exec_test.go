@@ -33,7 +33,7 @@ func TestBuildAndRunHandlerCompileProgram_FuncNamePopulated(t *testing.T) {
 	}
 
 	// Embed the handler package into shipq/lib/handler (mirrors real project setup)
-	if err := embed.EmbedAllPackages(tmpDir, modulePath); err != nil {
+	if err := embed.EmbedAllPackages(tmpDir, modulePath, embed.EmbedOptions{}); err != nil {
 		t.Fatalf("failed to embed packages: %v", err)
 	}
 
@@ -123,7 +123,6 @@ func Register(app *handler.App) {
 		t.Errorf("FUNCNAME BUG: expected FuncName 'SimpleHandler', got %q", h.FuncName)
 	}
 }
-
 
 // TestImportPathToRegisterFilePath tests the conversion from import paths to register.go file paths.
 // This conversion is critical for static analysis to find and parse register.go files.
@@ -363,7 +362,7 @@ func TestBuildAndRunHandlerCompileProgram_PackagePathPopulated(t *testing.T) {
 	}
 
 	// Embed the handler package into shipq/lib/handler (mirrors real project setup)
-	if err := embed.EmbedAllPackages(tmpDir, modulePath); err != nil {
+	if err := embed.EmbedAllPackages(tmpDir, modulePath, embed.EmbedOptions{}); err != nil {
 		t.Fatalf("failed to embed packages: %v", err)
 	}
 

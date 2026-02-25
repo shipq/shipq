@@ -1,6 +1,7 @@
 package registry
 
 import (
+	"fmt"
 	"strings"
 
 	"github.com/shipq/shipq/codegen"
@@ -128,6 +129,13 @@ func HasFramework(frameworks []string, fw string) bool {
 //   - generateTypeScriptSvelteHooks() ✓
 func CompileRegistry(cfg CompileConfig) error {
 	setDefaults(&cfg)
+
+	if cfg.DBDialect == "" {
+		return fmt.Errorf(
+			"could not determine database dialect; check that db.database_url in shipq.ini is a valid URL " +
+				"(e.g. postgres://..., mysql://..., sqlite://...)",
+		)
+	}
 
 	if cfg.Verbose {
 		if err := printDebugRegistry(cfg.Handlers); err != nil {
