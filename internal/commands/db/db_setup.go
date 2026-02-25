@@ -65,25 +65,21 @@ func inferDatabaseURL(projectRoot, projectName string) (string, string) {
 // DBSetupCmd implements the "shipq db setup" command.
 // It creates the database and configures shipq.ini.
 func DBSetupCmd() {
-	// Find and validate project root
-	projectRoot, err := project.FindProjectRoot()
+	// Find project roots (monorepo-aware)
+	roots, err := project.FindProjectRoots()
 	if err != nil {
-		cli.FatalErr("failed to find project root", err)
-	}
-
-	if err := project.ValidateProjectRoot(projectRoot); err != nil {
-		cli.FatalErr("invalid project", err)
+		cli.FatalErr("failed to find project", err)
 	}
 
 	// Get project name for database names
-	projectName := project.GetProjectName(projectRoot)
+	projectName := project.GetProjectName(roots.ShipqRoot)
 
 	// Get DATABASE_URL from environment, or infer a default
 	databaseURL := os.Getenv("DATABASE_URL")
 	var dialect string
 
 	if databaseURL == "" {
-		databaseURL, dialect = inferDatabaseURL(projectRoot, projectName)
+		databaseURL, dialect = inferDatabaseURL(roots.ShipqRoot, projectName)
 	} else {
 		// Infer dialect from provided URL
 		dialect, err = dburl.InferDialectFromDBUrl(databaseURL)
@@ -105,7 +101,7 @@ func DBSetupCmd() {
 	case dburl.DialectMySQL:
 		finalDatabaseURL, err = setupMySQL(databaseURL, projectName)
 	case dburl.DialectSQLite:
-		finalDatabaseURL, err = setupSQLite(projectRoot, projectName)
+		finalDatabaseURL, err = setupSQLite(roots.ShipqRoot, projectName)
 	default:
 		cli.Fatal(fmt.Sprintf("unsupported database dialect: %s", dialect))
 	}
@@ -115,7 +111,7 @@ func DBSetupCmd() {
 	}
 
 	// Update shipq.ini
-	shipqIniPath := filepath.Join(projectRoot, project.ShipqIniFile)
+	shipqIniPath := filepath.Join(roots.ShipqRoot, project.ShipqIniFile)
 	iniFile, err := inifile.ParseFile(shipqIniPath)
 	if err != nil {
 		cli.FatalErr("failed to parse shipq.ini", err)

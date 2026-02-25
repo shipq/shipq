@@ -12,10 +12,8 @@ const (
 )
 
 var (
-	ErrNotInProject    = errors.New("not in a Go project (no go.mod found)")
-	ErrNoGoMod         = errors.New("go.mod not found in project root")
-	ErrNoShipqIni      = errors.New("shipq.ini not found")
-	ErrNotShipqProject = errors.New("not a shipq project (missing go.mod or shipq.ini)")
+	ErrNotInProject = errors.New("not in a Go project (no go.mod found)")
+	ErrNoShipqIni   = errors.New("shipq.ini not found")
 )
 
 // ProjectRoots holds both the Go module root and the shipq project root.
@@ -24,22 +22,6 @@ var (
 type ProjectRoots struct {
 	GoModRoot string // Directory containing go.mod
 	ShipqRoot string // Directory containing shipq.ini
-}
-
-// FindProjectRoot walks up from the current working directory looking for go.mod.
-// Returns the directory containing go.mod, or an error if not found.
-func FindProjectRoot() (string, error) {
-	cwd, err := os.Getwd()
-	if err != nil {
-		return "", err
-	}
-	return FindProjectRootFrom(cwd)
-}
-
-// FindProjectRootFrom walks up from the given directory looking for go.mod.
-// Returns the directory containing go.mod, or an error if not found.
-func FindProjectRootFrom(startDir string) (string, error) {
-	return FindGoModRootFrom(startDir)
 }
 
 // FindGoModRoot walks up from the current working directory looking for go.mod.
@@ -139,26 +121,6 @@ func FindProjectRootsFrom(startDir string) (*ProjectRoots, error) {
 		GoModRoot: goModRoot,
 		ShipqRoot: shipqRoot,
 	}, nil
-}
-
-// ValidateProjectRoot checks that the given path contains both go.mod and shipq.ini.
-// Returns an error describing what's missing, or nil if both files exist.
-func ValidateProjectRoot(path string) error {
-	goModPath := filepath.Join(path, GoModFile)
-	if _, err := os.Stat(goModPath); os.IsNotExist(err) {
-		return ErrNoGoMod
-	} else if err != nil {
-		return err
-	}
-
-	shipqIniPath := filepath.Join(path, ShipqIniFile)
-	if _, err := os.Stat(shipqIniPath); os.IsNotExist(err) {
-		return ErrNoShipqIni
-	} else if err != nil {
-		return err
-	}
-
-	return nil
 }
 
 // GetProjectName returns the folder name of the project root.
