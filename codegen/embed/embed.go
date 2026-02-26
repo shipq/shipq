@@ -32,6 +32,7 @@ type embeddedPackage struct {
 type EmbedOptions struct {
 	FilesEnabled   bool
 	WorkersEnabled bool
+	LLMEnabled     bool
 }
 
 func EmbedAllPackages(shipqRoot, modulePath string, opts EmbedOptions) error {
@@ -63,6 +64,27 @@ func EmbedAllPackages(shipqRoot, modulePath string, opts EmbedOptions) error {
 			fs: shipqsrc.ChannelFS, srcDir: "channel",
 			destDir: filepath.Join("shipq", "lib", "channel"),
 		})
+	}
+
+	if opts.LLMEnabled {
+		packages = append(packages,
+			embeddedPackage{
+				fs: shipqsrc.LlmFS, srcDir: "llm",
+				destDir: filepath.Join("shipq", "lib", "llm"),
+			},
+			embeddedPackage{
+				fs: shipqsrc.LlmAnthropicFS, srcDir: filepath.Join("llm", "anthropic"),
+				destDir: filepath.Join("shipq", "lib", "llm", "anthropic"),
+			},
+			embeddedPackage{
+				fs: shipqsrc.LlmOpenaiFS, srcDir: filepath.Join("llm", "openai"),
+				destDir: filepath.Join("shipq", "lib", "llm", "openai"),
+			},
+			embeddedPackage{
+				fs: shipqsrc.LlmTestFS, srcDir: filepath.Join("llm", "llmtest"),
+				destDir: filepath.Join("shipq", "lib", "llm", "llmtest"),
+			},
+		)
 	}
 
 	for _, pkg := range packages {

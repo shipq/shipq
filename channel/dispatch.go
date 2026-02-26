@@ -144,6 +144,9 @@ func WrapDispatchHandler(handler any, transport RealtimeTransport, db *sql.DB, c
 
 		ctx := context.Background()
 		ctx = WithChannel(ctx, ch)
+		ctx = WithDB(ctx, db)
+		ctx = WithAccountID(ctx, dp.AccountID)
+		ctx = WithOrgID(ctx, dp.OrgID)
 
 		// If a Setup function was provided, call it to enrich the context
 		// with handler dependencies (e.g., API clients, DB connections).

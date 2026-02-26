@@ -597,6 +597,208 @@ func TestWrapDispatchHandler_WithoutSetup_StillWorks(t *testing.T) {
 	}
 }
 
+func TestWrapDispatchHandler_InjectsDB(t *testing.T) {
+	db := setupTestDB(t)
+	defer db.Close()
+
+	recorder := NewTestRecorder()
+
+	var capturedDB *sql.DB
+
+	handler := func(ctx context.Context, req *testRequest) error {
+		return nil
+	}
+
+	setupFn := func(ctx context.Context) context.Context {
+		capturedDB = DBFromContext(ctx)
+		return ctx
+	}
+
+	reqJSON, _ := json.Marshal(testRequest{Prompt: "db injection test"})
+	insertPendingJob(t, db, "db-job-1", "chatbot", 42, string(reqJSON))
+
+	wrappedFn := WrapDispatchHandler(handler, recorder, db, "chatbot", WithSetup(setupFn))
+
+	dp := DispatchPayload{
+		JobID:       "db-job-1",
+		ChannelName: "chatbot",
+		AccountID:   42,
+		OrgID:       7,
+		IsPublic:    false,
+		Request:     reqJSON,
+	}
+	payloadJSON, _ := json.Marshal(dp)
+
+	err := wrappedFn(string(payloadJSON))
+	if err != nil {
+		t.Fatalf("wrapped handler returned error: %v", err)
+	}
+
+	if capturedDB == nil {
+		t.Fatal("expected non-nil *sql.DB in context during Setup")
+	}
+	if capturedDB != db {
+		t.Error("expected same *sql.DB pointer that was passed to WrapDispatchHandler")
+	}
+}
+
+func TestWrapDispatchHandler_InjectsAccountID(t *testing.T) {
+	db := setupTestDB(t)
+	defer db.Close()
+
+	recorder := NewTestRecorder()
+
+	var capturedAccountID int64
+	var capturedOrgID int64
+
+	handler := func(ctx context.Context, req *testRequest) error {
+		return nil
+	}
+
+	setupFn := func(ctx context.Context) context.Context {
+		capturedAccountID = AccountIDFromContext(ctx)
+		capturedOrgID = OrgIDFromContext(ctx)
+		return ctx
+	}
+
+	reqJSON, _ := json.Marshal(testRequest{Prompt: "account id test"})
+	insertPendingJob(t, db, "acct-job-1", "chatbot", 55, string(reqJSON))
+
+	wrappedFn := WrapDispatchHandler(handler, recorder, db, "chatbot", WithSetup(setupFn))
+
+	dp := DispatchPayload{
+		JobID:       "acct-job-1",
+		ChannelName: "chatbot",
+		AccountID:   55,
+		OrgID:       13,
+		IsPublic:    false,
+		Request:     reqJSON,
+	}
+	payloadJSON, _ := json.Marshal(dp)
+
+	err := wrappedFn(string(payloadJSON))
+	if err != nil {
+		t.Fatalf("wrapped handler returned error: %v", err)
+	}
+
+	if capturedAccountID != 55 {
+		t.Errorf("expected AccountID 55 in context during Setup, got %d", capturedAccountID)
+	}
+	if capturedOrgID != 13 {
+		t.Errorf("expected OrgID 13 in context during Setup, got %d", capturedOrgID)
+	}
+}
+
+func TestWrapDispatchHandler_InjectsDBIntoHandler(t *testing.T) {
+	// Verify that DB, AccountID, and OrgID are also available in the handler itself,
+	// not just in Setup.
+	db := setupTestDB(t)
+	defer db.Close()
+
+	recorder := NewTestRecorder()
+
+	var handlerDB *sql.DB
+	var handlerAccountID int64
+	var handlerOrgID int64
+
+	handler := func(ctx context.Context, req *testRequest) error {
+		handlerDB = DBFromContext(ctx)
+		handlerAccountID = AccountIDFromContext(ctx)
+		handlerOrgID = OrgIDFromContext(ctx)
+		return nil
+	}
+
+	reqJSON, _ := json.Marshal(testRequest{Prompt: "handler injection test"})
+	insertPendingJob(t, db, "handler-inj-1", "chatbot", 77, string(reqJSON))
+
+	// No Setup function — values should still be in context for the handler.
+	wrappedFn := WrapDispatchHandler(handler, recorder, db, "chatbot")
+
+	dp := DispatchPayload{
+		JobID:       "handler-inj-1",
+		ChannelName: "chatbot",
+		AccountID:   77,
+		OrgID:       21,
+		IsPublic:    false,
+		Request:     reqJSON,
+	}
+	payloadJSON, _ := json.Marshal(dp)
+
+	err := wrappedFn(string(payloadJSON))
+	if err != nil {
+		t.Fatalf("wrapped handler returned error: %v", err)
+	}
+
+	if handlerDB == nil {
+		t.Fatal("expected non-nil *sql.DB in handler context")
+	}
+	if handlerDB != db {
+		t.Error("expected same *sql.DB pointer in handler context")
+	}
+	if handlerAccountID != 77 {
+		t.Errorf("expected AccountID 77 in handler context, got %d", handlerAccountID)
+	}
+	if handlerOrgID != 21 {
+		t.Errorf("expected OrgID 21 in handler context, got %d", handlerOrgID)
+	}
+}
+
+func TestWrapDispatchHandler_BackwardsCompatible(t *testing.T) {
+	// An existing handler that does NOT use DB, AccountID, or OrgID should
+	// still work identically — the extra context values are opt-in.
+	db := setupTestDB(t)
+	defer db.Close()
+
+	recorder := NewTestRecorder()
+
+	handlerCalled := false
+	var receivedPrompt string
+
+	handler := func(ctx context.Context, req *testRequest) error {
+		handlerCalled = true
+		receivedPrompt = req.Prompt
+		// Only access Channel (the pre-existing context value).
+		ch := FromContext(ctx)
+		if ch.Name() != "chatbot" {
+			t.Errorf("expected channel name 'chatbot', got %q", ch.Name())
+		}
+		return nil
+	}
+
+	reqJSON, _ := json.Marshal(testRequest{Prompt: "backwards compat"})
+	insertPendingJob(t, db, "compat-job-1", "chatbot", 42, string(reqJSON))
+
+	wrappedFn := WrapDispatchHandler(handler, recorder, db, "chatbot")
+
+	dp := DispatchPayload{
+		JobID:       "compat-job-1",
+		ChannelName: "chatbot",
+		AccountID:   42,
+		OrgID:       0,
+		IsPublic:    false,
+		Request:     reqJSON,
+	}
+	payloadJSON, _ := json.Marshal(dp)
+
+	err := wrappedFn(string(payloadJSON))
+	if err != nil {
+		t.Fatalf("wrapped handler returned error: %v", err)
+	}
+
+	if !handlerCalled {
+		t.Error("expected handler to be called")
+	}
+	if receivedPrompt != "backwards compat" {
+		t.Errorf("expected prompt 'backwards compat', got %q", receivedPrompt)
+	}
+
+	// Verify job completed successfully.
+	status, _, _, _ := getJobStatus(t, db, "compat-job-1")
+	if status != "completed" {
+		t.Errorf("expected job status 'completed', got %q", status)
+	}
+}
+
 func TestDispatchPayload_RoundTrip(t *testing.T) {
 	reqJSON := json.RawMessage(`{"prompt":"hello"}`)
 	dp := DispatchPayload{

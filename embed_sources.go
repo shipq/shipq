@@ -34,6 +34,18 @@ var FilestorageFS embed.FS
 //go:embed channel/*.go
 var ChannelFS embed.FS
 
+//go:embed llm/*.go
+var LlmFS embed.FS
+
+//go:embed llm/anthropic/*.go
+var LlmAnthropicFS embed.FS
+
+//go:embed llm/openai/*.go
+var LlmOpenaiFS embed.FS
+
+//go:embed llm/llmtest/*.go
+var LlmTestFS embed.FS
+
 // Category B: packages imported by temporary compile programs
 
 //go:embed db/portsql/query/*.go

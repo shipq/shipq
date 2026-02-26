@@ -17,3 +17,6 @@ start-dbs:  # Start all databases (MySQL, PostgreSQL, SQLite)
 
 test-all:  # Run all tests
     go test -v ./... -tags=integration,property | tee -a test_results/$(date +%s).log
+
+llm-test:  # Run the LLM plumbing test (requires real API keys, skipped in CI)
+    go run ./internal/llmtest/

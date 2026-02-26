@@ -2,9 +2,12 @@ package channel
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"testing"
 	"time"
+
+	_ "modernc.org/sqlite"
 )
 
 func TestFromContext_Panics_WhenMissing(t *testing.T) {
@@ -387,6 +390,63 @@ func TestChannel_Receive_MultipleBuffered(t *testing.T) {
 		if payload["i"] != i {
 			t.Errorf("Receive %d: expected i=%d, got i=%d", i, i, payload["i"])
 		}
+	}
+}
+
+// ── WithDB / DBFromContext tests ──────────────────────────────────────────────
+
+func TestWithDB_RoundTrip(t *testing.T) {
+	db, err := sql.Open("sqlite", ":memory:")
+	if err != nil {
+		t.Fatalf("failed to open test db: %v", err)
+	}
+	defer db.Close()
+
+	ctx := WithDB(context.Background(), db)
+	got := DBFromContext(ctx)
+	if got != db {
+		t.Error("expected same *sql.DB pointer from DBFromContext")
+	}
+}
+
+func TestDBFromContext_Missing(t *testing.T) {
+	got := DBFromContext(context.Background())
+	if got != nil {
+		t.Errorf("expected nil from DBFromContext on bare context, got %v", got)
+	}
+}
+
+// ── WithAccountID / AccountIDFromContext tests ────────────────────────────────
+
+func TestWithAccountID_RoundTrip(t *testing.T) {
+	ctx := WithAccountID(context.Background(), 42)
+	got := AccountIDFromContext(ctx)
+	if got != 42 {
+		t.Errorf("AccountIDFromContext: got %d, want 42", got)
+	}
+}
+
+func TestAccountIDFromContext_Missing(t *testing.T) {
+	got := AccountIDFromContext(context.Background())
+	if got != 0 {
+		t.Errorf("expected 0 from AccountIDFromContext on bare context, got %d", got)
+	}
+}
+
+// ── WithOrgID / OrgIDFromContext tests ────────────────────────────────────────
+
+func TestWithOrgID_RoundTrip(t *testing.T) {
+	ctx := WithOrgID(context.Background(), 99)
+	got := OrgIDFromContext(ctx)
+	if got != 99 {
+		t.Errorf("OrgIDFromContext: got %d, want 99", got)
+	}
+}
+
+func TestOrgIDFromContext_Missing(t *testing.T) {
+	got := OrgIDFromContext(context.Background())
+	if got != 0 {
+		t.Errorf("expected 0 from OrgIDFromContext on bare context, got %d", got)
 	}
 }
 

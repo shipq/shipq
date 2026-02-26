@@ -2,6 +2,7 @@ package channel
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"fmt"
 	"sync"
@@ -9,6 +10,15 @@ import (
 
 // contextKey is an unexported type used as the key for storing a Channel in context.Value.
 type contextKey struct{}
+
+// dbContextKey is the context key for the *sql.DB connection.
+type dbContextKey struct{}
+
+// accountIDKey is the context key for the account ID.
+type accountIDKey struct{}
+
+// orgIDKey is the context key for the org ID.
+type orgIDKey struct{}
 
 // Channel is the runtime handle that channel handlers use to send and receive
 // messages over a realtime transport. It is injected into the handler's context
@@ -77,6 +87,44 @@ func FromContext(ctx context.Context) *Channel {
 // WithChannel injects a Channel into the context.
 func WithChannel(ctx context.Context, ch *Channel) context.Context {
 	return context.WithValue(ctx, contextKey{}, ch)
+}
+
+// WithDB injects a *sql.DB into the context.
+// Called by WrapDispatchHandler before invoking the user's Setup function,
+// so that Setup can build a queries.Runner / Persister from the DB.
+func WithDB(ctx context.Context, db *sql.DB) context.Context {
+	return context.WithValue(ctx, dbContextKey{}, db)
+}
+
+// DBFromContext retrieves the *sql.DB from the context.
+// Returns nil if no DB is present (e.g., in tests without a database).
+func DBFromContext(ctx context.Context) *sql.DB {
+	db, _ := ctx.Value(dbContextKey{}).(*sql.DB)
+	return db
+}
+
+// WithAccountID injects the account ID into the context.
+func WithAccountID(ctx context.Context, id int64) context.Context {
+	return context.WithValue(ctx, accountIDKey{}, id)
+}
+
+// AccountIDFromContext retrieves the account ID from the context.
+// Returns 0 if not present (e.g., public channels).
+func AccountIDFromContext(ctx context.Context) int64 {
+	id, _ := ctx.Value(accountIDKey{}).(int64)
+	return id
+}
+
+// WithOrgID injects the org ID into the context.
+func WithOrgID(ctx context.Context, id int64) context.Context {
+	return context.WithValue(ctx, orgIDKey{}, id)
+}
+
+// OrgIDFromContext retrieves the org ID from the context.
+// Returns 0 if not present.
+func OrgIDFromContext(ctx context.Context) int64 {
+	id, _ := ctx.Value(orgIDKey{}).(int64)
+	return id
 }
 
 // Send publishes a typed message to all subscribers of this channel.
