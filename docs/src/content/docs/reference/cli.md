@@ -391,6 +391,35 @@ Performs only codegen steps: channel discovery, typed channels, worker main, Cen
 
 ---
 
+## LLM
+
+### `shipq llm compile`
+
+Compile LLM tool registrations and generate all LLM artifacts.
+
+```sh
+shipq llm compile
+```
+
+**Prerequisites:** `shipq workers` must have been run first (LLM tools build on the channel/worker infrastructure).
+
+**What it does:**
+1. Reads the `[llm]` section from `shipq.ini` to discover tool packages
+2. Performs static analysis on each tool package to find `Register(app *llm.App)` functions and `app.Tool(...)` calls
+3. Generates and runs a temporary compile program to extract runtime metadata (JSON Schemas, function signatures) via reflection
+4. Generates all downstream artifacts
+
+**Output:**
+- `tools/<pkg>/zz_generated_registry.go` — typed tool dispatchers + `Registry()` function per package
+- `shipq/lib/llmpersist/zz_generated_persister.go` — persister adapter wrapping `queries.Runner` → `llm.Persister`
+- `migrations/*_llm_tables.go` — migration for `llm_conversations` + `llm_messages` tables
+- `querydefs/` — querydefs for LLM persistence (insert/update/list conversations and messages)
+- LLM stream message types (`LLMTextDelta`, `LLMToolCallStart`, `LLMToolCallResult`, `LLMDone`) injected as `FromServer` types on LLM-enabled channels
+
+**Note:** After the first compile, run `shipq migrate up` to apply the generated migration.
+
+---
+
 ## Services
 
 ### `shipq start`

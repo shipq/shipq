@@ -33,6 +33,7 @@ export default defineConfig({
             { label: 'Multi-Tenancy', slug: 'guides/multi-tenancy' },
             { label: 'File Uploads', slug: 'guides/file-uploads' },
             { label: 'Workers & Channels', slug: 'guides/workers' },
+            { label: 'LLM Tools', slug: 'guides/llm-tools' },
             { label: 'TypeScript Clients', slug: 'guides/typescript' },
             { label: 'Deployment', slug: 'guides/deployment' },
           ],

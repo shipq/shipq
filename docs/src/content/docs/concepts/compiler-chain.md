@@ -1,9 +1,9 @@
 ---
 title: The Compiler Chain
-description: How ShipQ's three compilers feed each other to produce a complete, typed backend stack.
+description: How ShipQ's four compilers feed each other to produce a complete, typed backend stack.
 ---
 
-ShipQ is best understood as **three compilers that feed each other**. Each compiler takes a specific kind of input, produces typed artifacts, and hands them off to the next stage.
+ShipQ is best understood as **four compilers that feed each other**. Each compiler takes a specific kind of input, produces typed artifacts, and hands them off to the next stage.
 
 ## Overview
 
@@ -22,6 +22,19 @@ API Handler Packages ───────────────────�
                                                     │ HTTP test client + harness      │
                                                     │ Integration tests (RBAC/tenancy)│
                                                     │ TypeScript HTTP clients         │
+                                                    └─────────────────────────────────┘
+
+LLM Tool Packages (Go) ───────────────────────────────────────→ LLM Compiler
+                                                                        │
+                                                                        ▼
+                                                    ┌─────────────────────────────────┐
+                                                    │ Tool registries + JSON Schemas   │
+                                                    │ Typed tool dispatchers           │
+                                                    │ Persister adapter (llmpersist)   │
+                                                    │ llm_conversations migration      │
+                                                    │ llm_messages migration           │
+                                                    │ LLM querydefs                   │
+                                                    │ LLM stream types on channels    │
                                                     └─────────────────────────────────┘
 ```
 
@@ -81,6 +94,28 @@ API Handler Packages ───────────────────�
 - HTTP test client + harness used by generated specs and integration tests
 - TypeScript HTTP client codegen (and optional framework helpers for React/Svelte)
 
+## Compiler 4: LLM Compiler
+
+**Trigger:** `shipq llm compile`
+
+**Input:** LLM tool packages listed in `[llm] tool_pkgs` in `shipq.ini` — Go packages that export a `Register(app *llm.App)` function registering plain Go functions as LLM tools.
+
+**Process:**
+1. Reads the `[llm]` section from `shipq.ini` to discover tool packages.
+2. Performs static analysis (AST walking) on each tool package to find `Register(app *llm.App)` functions and `app.Tool(...)` calls.
+3. Generates a temporary compile program that imports all tool packages, calls their `Register` functions, and uses reflection to extract input/output struct metadata and JSON Schemas.
+4. Builds and runs the temporary program, parsing its output as serialized tool definitions.
+5. Merges runtime metadata (schemas) with static data (function names, packages) and generates all downstream artifacts.
+
+**Output artifacts:**
+- `tools/<pkg>/zz_generated_registry.go` — per-package `Registry()` function with typed tool dispatchers and JSON Schemas
+- `shipq/lib/llmpersist/zz_generated_persister.go` — persister adapter wrapping `queries.Runner` → `llm.Persister`
+- `migrations/*_llm_tables.go` — migration for `llm_conversations` + `llm_messages` tables
+- `querydefs/` — querydefs for LLM persistence (insert/update/list conversations and messages)
+- LLM stream message types (`LLMTextDelta`, `LLMToolCallStart`, `LLMToolCallResult`, `LLMDone`) injected as `FromServer` types on LLM-enabled channels
+
+**Key point:** The LLM compiler follows the same temporary-compile-program pattern as the schema and query compilers — generate a Go program, build and run it, capture its output. Provider and model selection are **not** part of the compiler; they live in the user's hand-written `Setup` function as ordinary Go code.
+
 ## How They Connect
 
 The compilers form a directed pipeline:
@@ -91,6 +126,8 @@ The compilers form a directed pipeline:
 
 3. **Handlers → Everything Else:** The handler compiler reads your handler registrations and generates the full serving stack. It must run last because it needs to know about all your routes.
 
+4. **LLM → Channels:** The LLM compiler generates tool registries, persistence infrastructure, and stream message types that integrate with the existing channel/worker system. It depends on the workers/channels infrastructure being set up first, and its generated stream types are consumed by the channel compiler's TypeScript codegen.
+
 ## When to Re-Run Each Compiler
 
 | What changed?                     | Command to run          |
@@ -98,6 +135,7 @@ The compilers form a directed pipeline:
 | Migration files added or modified | `shipq migrate up`      |
 | Query definitions added or modified | `shipq db compile`    |
 | Handlers or routes changed        | `shipq handler compile` |
+| LLM tool functions added or modified | `shipq llm compile`  |
 
 :::tip
 `shipq resource <table> all` is a convenience command that generates querydefs, handlers, tests, and runs `handler compile` for you — touching all three stages at once.

@@ -74,6 +74,23 @@ Created by `shipq workers`. Configures the background job queue and realtime Web
 | `centrifugo_api_key` | API key for Centrifugo. | (auto-generated) |
 | `centrifugo_secret` | HMAC secret for signing Centrifugo WebSocket connection/subscription tokens. | (auto-generated) |
 
+### `[llm]` — LLM Tool Calling
+
+Added manually by the user. Tells `shipq llm compile` which Go packages contain LLM tool registrations.
+
+| Key | Description | Example |
+|-----|-------------|---------|
+| `tool_pkgs` | Comma-separated list of Go import paths for packages that export `Register(app *llm.App)` functions. | `myapp/tools/weather, myapp/tools/calendar` |
+
+```ini
+[llm]
+tool_pkgs = myapp/tools/weather, myapp/tools/calendar
+```
+
+Provider, model, and system prompt are **not** in `shipq.ini` — they live in the user's hand-written `Setup` function as ordinary Go code. This means provider choice, model selection, and multi-provider mixing are runtime decisions, not build-time config.
+
+The related environment variables (`OPENAI_API_KEY`, `ANTHROPIC_API_KEY`) are read by the user's `Setup` function at runtime and are never stored in `shipq.ini`.
+
 ### `[env]` — Environment Variable Validation
 
 Optionally declare additional environment variables that must be present when running in production. ShipQ's generated config loader will validate these at startup.
@@ -99,6 +116,8 @@ Different commands read and write different sections:
 | `shipq handler compile` | `[auth]`, `[typescript]` | — |
 | `shipq files` | `[db]` | `[files]` |
 | `shipq workers` | `[db]`, `[auth]` | `[workers]` |
+| `shipq workers compile` | `[db]`, `[auth]`, `[workers]` | — |
+| `shipq llm compile` | `[db]`, `[workers]`, `[llm]` | — |
 | `shipq resource` | `[db]`, `[auth]` | — |
 
 ## The `.shipq/` Directory

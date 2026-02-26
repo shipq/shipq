@@ -125,6 +125,37 @@ centrifugo_api_key = auto-generated-value
 centrifugo_secret = auto-generated-value
 ```
 
+## `[llm]` — LLM Tool Calling
+
+Added by the user manually. Configures which Go packages contain LLM tool registrations for `shipq llm compile`.
+
+| Key | Type | Written by | Description |
+|-----|------|-----------|-------------|
+| `tool_pkgs` | string (comma-separated) | Manual | Comma-separated list of Go import paths for packages that export `Register(app *llm.App)` functions. |
+
+```ini
+[llm]
+tool_pkgs = myapp/tools/weather, myapp/tools/calendar
+```
+
+That is the only LLM-specific configuration. Provider, model, and system prompt are **not** in `shipq.ini` — they live in the user's `Setup` function as ordinary Go code. This means provider choice, model selection, and multi-provider mixing are all runtime decisions expressed in Go, not build-time config.
+
+### Parsing rules
+
+- `tool_pkgs` is a comma-separated list of Go import paths
+- Whitespace around commas is trimmed
+- Empty `tool_pkgs` is valid (no tools — just persistence/streaming)
+- Missing `[llm]` section means LLM is not enabled; `shipq llm compile` will report this clearly
+
+### Related environment variables
+
+| Variable | Description |
+|----------|-------------|
+| `OPENAI_API_KEY` | OpenAI API key (required if using the OpenAI provider in your `Setup` function) |
+| `ANTHROPIC_API_KEY` | Anthropic API key (required if using the Anthropic provider in your `Setup` function) |
+
+These are read by the user's `Setup` function at runtime. They are never stored in `shipq.ini` or generated code.
+
 ## `[env]` — Environment Variable Validation
 
 Optional. Declare additional environment variables that must be present when running in production. ShipQ's generated config loader validates these at startup and refuses to start if any are missing.
@@ -152,6 +183,7 @@ Each key under `[env]` is the name of an environment variable. The value should 
 | `[workers]` | `centrifugo_url` | No | `shipq workers` |
 | `[workers]` | `centrifugo_api_key` | No | `shipq workers` |
 | `[workers]` | `centrifugo_secret` | No | `shipq workers` |
+| `[llm]` | `tool_pkgs` | No | Manual |
 | `[env]` | *(any key)* | No | Manual |
 
 ## Which Commands Read/Write What
@@ -170,6 +202,7 @@ Each key under `[env]` is the name of an environment variable. The value should 
 | `shipq workers compile` | `[db]`, `[auth]`, `[workers]` | — |
 | `shipq resource` | `[db]`, `[auth]` | — |
 | `shipq handler compile` | `[auth]`, `[typescript]` | — |
+| `shipq llm compile` | `[db]`, `[workers]`, `[llm]` | — |
 | `shipq docker` | All sections | — |
 
 ## Best Practices
