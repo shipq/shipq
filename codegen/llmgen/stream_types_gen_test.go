@@ -1,10 +1,13 @@
 package llmgen
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/shipq/shipq/codegen/llmcompile"
 )
 
 func TestDetectLLMChannels_WithClient(t *testing.T) {
@@ -394,7 +397,7 @@ func TestDetectLLMChannels_NonexistentDirectory(t *testing.T) {
 // ── TypeScript generation tests ──────────────────────────────────────────────
 
 func TestGenerateLLMStreamTypeScript_ContainsAllInterfaces(t *testing.T) {
-	ts := GenerateLLMStreamTypeScript()
+	ts := GenerateLLMStreamTypeScript(nil)
 
 	interfaces := []string{
 		"export interface LLMTextDelta",
@@ -411,7 +414,7 @@ func TestGenerateLLMStreamTypeScript_ContainsAllInterfaces(t *testing.T) {
 }
 
 func TestGenerateLLMStreamTypeScript_LLMTextDeltaFields(t *testing.T) {
-	ts := GenerateLLMStreamTypeScript()
+	ts := GenerateLLMStreamTypeScript(nil)
 
 	if !strings.Contains(ts, "text: string;") {
 		t.Error("LLMTextDelta: expected 'text: string;' field")
@@ -419,7 +422,7 @@ func TestGenerateLLMStreamTypeScript_LLMTextDeltaFields(t *testing.T) {
 }
 
 func TestGenerateLLMStreamTypeScript_LLMToolCallStartFields(t *testing.T) {
-	ts := GenerateLLMStreamTypeScript()
+	ts := GenerateLLMStreamTypeScript(nil)
 
 	expectedFields := []string{
 		"tool_call_id: string;",
@@ -435,7 +438,7 @@ func TestGenerateLLMStreamTypeScript_LLMToolCallStartFields(t *testing.T) {
 }
 
 func TestGenerateLLMStreamTypeScript_LLMToolCallResultFields(t *testing.T) {
-	ts := GenerateLLMStreamTypeScript()
+	ts := GenerateLLMStreamTypeScript(nil)
 
 	expectedFields := []string{
 		"tool_call_id: string;",
@@ -453,7 +456,7 @@ func TestGenerateLLMStreamTypeScript_LLMToolCallResultFields(t *testing.T) {
 }
 
 func TestGenerateLLMStreamTypeScript_LLMDoneFields(t *testing.T) {
-	ts := GenerateLLMStreamTypeScript()
+	ts := GenerateLLMStreamTypeScript(nil)
 
 	expectedFields := []string{
 		"text: string;",
@@ -470,7 +473,7 @@ func TestGenerateLLMStreamTypeScript_LLMDoneFields(t *testing.T) {
 }
 
 func TestGenerateLLMStreamTypeScript_HasAutoInjectedComment(t *testing.T) {
-	ts := GenerateLLMStreamTypeScript()
+	ts := GenerateLLMStreamTypeScript(nil)
 
 	if !strings.Contains(ts, "auto-injected by shipq llm compile") {
 		t.Error("expected auto-injected comment in TypeScript output")
@@ -745,8 +748,8 @@ func TestWriteLLMChannelsMarker_FileContent(t *testing.T) {
 }
 
 func TestGenerateLLMStreamTypeScript_Deterministic(t *testing.T) {
-	ts1 := GenerateLLMStreamTypeScript()
-	ts2 := GenerateLLMStreamTypeScript()
+	ts1 := GenerateLLMStreamTypeScript(nil)
+	ts2 := GenerateLLMStreamTypeScript(nil)
 
 	if ts1 != ts2 {
 		t.Error("expected deterministic TypeScript output")
@@ -830,5 +833,393 @@ func DoStuff() {}
 	// Dot imports are not supported for detection — we skip them.
 	if len(result) != 0 {
 		t.Errorf("expected 0 LLM channels for dot import (not supported), got %d", len(result))
+	}
+}
+
+// ── WriteLLMToolsMarker / ReadLLMToolsMarker tests ──────────────────────────
+
+func TestWriteAndReadLLMToolsMarker_RoundTrip(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	tools := []llmcompile.SerializedToolInfo{
+		{
+			Name:        "get_weather",
+			Description: "Get the current weather for a city",
+			FuncName:    "GetWeather",
+			PackagePath: "myapp/tools/weather",
+			PackageName: "weather",
+			InputSchema: json.RawMessage(`{"type":"object","properties":{"city":{"type":"string"}},"required":["city"]}`),
+			InputType:   "WeatherInput",
+			OutputType:  "WeatherOutput",
+		},
+		{
+			Name:        "calculate",
+			Description: "Perform a calculation",
+			FuncName:    "Calculate",
+			PackagePath: "myapp/tools/calculator",
+			PackageName: "calculator",
+			InputSchema: json.RawMessage(`{"type":"object","properties":{"expression":{"type":"string"}},"required":["expression"]}`),
+			InputType:   "CalcInput",
+			OutputType:  "CalcOutput",
+		},
+	}
+
+	if err := WriteLLMToolsMarker(tmpDir, tools); err != nil {
+		t.Fatalf("WriteLLMToolsMarker failed: %v", err)
+	}
+
+	// Verify the file exists
+	markerPath := filepath.Join(tmpDir, ".shipq", "llm_tools.json")
+	if _, err := os.Stat(markerPath); os.IsNotExist(err) {
+		t.Fatal("expected llm_tools.json to exist")
+	}
+
+	// Read it back
+	got, err := ReadLLMToolsMarker(tmpDir)
+	if err != nil {
+		t.Fatalf("ReadLLMToolsMarker failed: %v", err)
+	}
+
+	if len(got) != len(tools) {
+		t.Fatalf("expected %d tools, got %d", len(tools), len(got))
+	}
+
+	for i, tool := range tools {
+		if got[i].Name != tool.Name {
+			t.Errorf("tool %d: expected name %q, got %q", i, tool.Name, got[i].Name)
+		}
+		if got[i].Description != tool.Description {
+			t.Errorf("tool %d: expected description %q, got %q", i, tool.Description, got[i].Description)
+		}
+		if got[i].FuncName != tool.FuncName {
+			t.Errorf("tool %d: expected func_name %q, got %q", i, tool.FuncName, got[i].FuncName)
+		}
+		if got[i].PackagePath != tool.PackagePath {
+			t.Errorf("tool %d: expected package_path %q, got %q", i, tool.PackagePath, got[i].PackagePath)
+		}
+		if got[i].PackageName != tool.PackageName {
+			t.Errorf("tool %d: expected package_name %q, got %q", i, tool.PackageName, got[i].PackageName)
+		}
+		if got[i].InputType != tool.InputType {
+			t.Errorf("tool %d: expected input_type %q, got %q", i, tool.InputType, got[i].InputType)
+		}
+		if got[i].OutputType != tool.OutputType {
+			t.Errorf("tool %d: expected output_type %q, got %q", i, tool.OutputType, got[i].OutputType)
+		}
+		// Compare InputSchema semantically (MarshalIndent reformats the raw JSON).
+		var expectedSchema, gotSchema interface{}
+		if err := json.Unmarshal(tool.InputSchema, &expectedSchema); err != nil {
+			t.Fatalf("tool %d: failed to parse expected input_schema: %v", i, err)
+		}
+		if err := json.Unmarshal(got[i].InputSchema, &gotSchema); err != nil {
+			t.Fatalf("tool %d: failed to parse got input_schema: %v", i, err)
+		}
+		expectedBytes, _ := json.Marshal(expectedSchema)
+		gotBytes, _ := json.Marshal(gotSchema)
+		if string(expectedBytes) != string(gotBytes) {
+			t.Errorf("tool %d: expected input_schema %s, got %s", i, string(expectedBytes), string(gotBytes))
+		}
+	}
+}
+
+func TestWriteAndReadLLMToolsMarker_EmptyList(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	if err := WriteLLMToolsMarker(tmpDir, []llmcompile.SerializedToolInfo{}); err != nil {
+		t.Fatalf("WriteLLMToolsMarker failed: %v", err)
+	}
+
+	got, err := ReadLLMToolsMarker(tmpDir)
+	if err != nil {
+		t.Fatalf("ReadLLMToolsMarker failed: %v", err)
+	}
+
+	if len(got) != 0 {
+		t.Errorf("expected 0 tools, got %d", len(got))
+	}
+}
+
+func TestWriteAndReadLLMToolsMarker_NilList(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	if err := WriteLLMToolsMarker(tmpDir, nil); err != nil {
+		t.Fatalf("WriteLLMToolsMarker failed: %v", err)
+	}
+
+	got, err := ReadLLMToolsMarker(tmpDir)
+	if err != nil {
+		t.Fatalf("ReadLLMToolsMarker failed: %v", err)
+	}
+
+	// nil marshals to "null" in JSON; ReadLLMToolsMarker should return nil
+	if got != nil {
+		t.Errorf("expected nil tools for nil input, got %d", len(got))
+	}
+}
+
+func TestReadLLMToolsMarker_NoFile(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	got, err := ReadLLMToolsMarker(tmpDir)
+	if err != nil {
+		t.Fatalf("ReadLLMToolsMarker should not error for missing file: %v", err)
+	}
+
+	if got != nil {
+		t.Errorf("expected nil tools when marker file does not exist, got %d", len(got))
+	}
+}
+
+func TestWriteLLMToolsMarker_CreatesShipqDir(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	tools := []llmcompile.SerializedToolInfo{
+		{Name: "test_tool", Description: "A test tool"},
+	}
+
+	if err := WriteLLMToolsMarker(tmpDir, tools); err != nil {
+		t.Fatalf("WriteLLMToolsMarker failed: %v", err)
+	}
+
+	shipqDir := filepath.Join(tmpDir, ".shipq")
+	info, err := os.Stat(shipqDir)
+	if err != nil {
+		t.Fatalf(".shipq directory should exist: %v", err)
+	}
+	if !info.IsDir() {
+		t.Error(".shipq should be a directory")
+	}
+}
+
+func TestWriteLLMToolsMarker_OverwritesExisting(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	tools1 := []llmcompile.SerializedToolInfo{
+		{Name: "tool_a", Description: "First"},
+	}
+	tools2 := []llmcompile.SerializedToolInfo{
+		{Name: "tool_b", Description: "Second"},
+		{Name: "tool_c", Description: "Third"},
+	}
+
+	if err := WriteLLMToolsMarker(tmpDir, tools1); err != nil {
+		t.Fatalf("first WriteLLMToolsMarker failed: %v", err)
+	}
+
+	if err := WriteLLMToolsMarker(tmpDir, tools2); err != nil {
+		t.Fatalf("second WriteLLMToolsMarker failed: %v", err)
+	}
+
+	got, err := ReadLLMToolsMarker(tmpDir)
+	if err != nil {
+		t.Fatalf("ReadLLMToolsMarker failed: %v", err)
+	}
+
+	if len(got) != 2 {
+		t.Fatalf("expected 2 tools after overwrite, got %d", len(got))
+	}
+	if got[0].Name != "tool_b" {
+		t.Errorf("expected first tool to be tool_b, got %s", got[0].Name)
+	}
+	if got[1].Name != "tool_c" {
+		t.Errorf("expected second tool to be tool_c, got %s", got[1].Name)
+	}
+}
+
+// ── Typed tool call TypeScript generation tests ─────────────────────────────
+
+func makeTestTools() []llmcompile.SerializedToolInfo {
+	return []llmcompile.SerializedToolInfo{
+		{
+			Name:        "get_weather",
+			Description: "Get the current weather for a city",
+			FuncName:    "GetWeather",
+			PackagePath: "myapp/tools/weather",
+			PackageName: "weather",
+			InputSchema: json.RawMessage(`{"type":"object","properties":{"city":{"type":"string"},"country":{"type":"string"}},"required":["city"]}`),
+			InputType:   "WeatherInput",
+			OutputType:  "WeatherOutput",
+		},
+		{
+			Name:        "calculate",
+			Description: "Perform a calculation",
+			FuncName:    "Calculate",
+			PackagePath: "myapp/tools/calculator",
+			PackageName: "calculator",
+			InputSchema: json.RawMessage(`{"type":"object","properties":{"expression":{"type":"string"}},"required":["expression"]}`),
+			InputType:   "CalcInput",
+			OutputType:  "CalcOutput",
+		},
+	}
+}
+
+func TestGenerateLLMStreamTypeScript_WithTools_HasPerToolInputInterfaces(t *testing.T) {
+	tools := makeTestTools()
+	ts := GenerateLLMStreamTypeScript(tools)
+
+	if !strings.Contains(ts, "export interface WeatherInput") {
+		t.Error("expected WeatherInput interface")
+	}
+	if !strings.Contains(ts, "export interface CalcInput") {
+		t.Error("expected CalcInput interface")
+	}
+}
+
+func TestGenerateLLMStreamTypeScript_WithTools_HasPerToolOutputInterfaces(t *testing.T) {
+	tools := makeTestTools()
+	ts := GenerateLLMStreamTypeScript(tools)
+
+	if !strings.Contains(ts, "export interface WeatherOutput") {
+		t.Error("expected WeatherOutput interface")
+	}
+	if !strings.Contains(ts, "export interface CalcOutput") {
+		t.Error("expected CalcOutput interface")
+	}
+}
+
+func TestGenerateLLMStreamTypeScript_WithTools_HasLLMToolNameUnion(t *testing.T) {
+	tools := makeTestTools()
+	ts := GenerateLLMStreamTypeScript(tools)
+
+	if !strings.Contains(ts, "export type LLMToolName =") {
+		t.Error("expected LLMToolName union type")
+	}
+	if !strings.Contains(ts, `"get_weather"`) {
+		t.Error("expected get_weather in LLMToolName union")
+	}
+	if !strings.Contains(ts, `"calculate"`) {
+		t.Error("expected calculate in LLMToolName union")
+	}
+}
+
+func TestGenerateLLMStreamTypeScript_WithTools_HasDiscriminatedToolCallStart(t *testing.T) {
+	tools := makeTestTools()
+	ts := GenerateLLMStreamTypeScript(tools)
+
+	if !strings.Contains(ts, "export type LLMToolCallStart =") {
+		t.Error("expected discriminated union type LLMToolCallStart")
+	}
+	if !strings.Contains(ts, `tool_name: "get_weather"; input: WeatherInput`) {
+		t.Error("expected get_weather variant in LLMToolCallStart")
+	}
+	if !strings.Contains(ts, `tool_name: "calculate"; input: CalcInput`) {
+		t.Error("expected calculate variant in LLMToolCallStart")
+	}
+}
+
+func TestGenerateLLMStreamTypeScript_WithTools_HasDiscriminatedToolCallResult(t *testing.T) {
+	tools := makeTestTools()
+	ts := GenerateLLMStreamTypeScript(tools)
+
+	if !strings.Contains(ts, "export type LLMToolCallResult =") {
+		t.Error("expected discriminated union type LLMToolCallResult")
+	}
+	if !strings.Contains(ts, `tool_name: "get_weather"; output?: WeatherOutput`) {
+		t.Error("expected get_weather variant in LLMToolCallResult")
+	}
+	if !strings.Contains(ts, `tool_name: "calculate"; output?: CalcOutput`) {
+		t.Error("expected calculate variant in LLMToolCallResult")
+	}
+	// Each result variant should include error and duration_ms
+	if !strings.Contains(ts, "error?: string; duration_ms: number") {
+		t.Error("expected error and duration_ms fields in LLMToolCallResult variants")
+	}
+}
+
+func TestGenerateLLMStreamTypeScript_WithTools_InputInterfaceHasFieldsFromSchema(t *testing.T) {
+	tools := makeTestTools()
+	ts := GenerateLLMStreamTypeScript(tools)
+
+	// WeatherInput should have city (required) and country (optional)
+	if !strings.Contains(ts, "city: string;") {
+		t.Error("expected city field in WeatherInput")
+	}
+	// country is not required, so it should have ?
+	if !strings.Contains(ts, "country?: string;") {
+		t.Error("expected optional country field in WeatherInput")
+	}
+}
+
+func TestGenerateLLMStreamTypeScript_WithTools_StillHasLLMTextDelta(t *testing.T) {
+	tools := makeTestTools()
+	ts := GenerateLLMStreamTypeScript(tools)
+
+	if !strings.Contains(ts, "export interface LLMTextDelta") {
+		t.Error("expected LLMTextDelta interface even with tools")
+	}
+}
+
+func TestGenerateLLMStreamTypeScript_WithTools_StillHasLLMDone(t *testing.T) {
+	tools := makeTestTools()
+	ts := GenerateLLMStreamTypeScript(tools)
+
+	if !strings.Contains(ts, "export interface LLMDone") {
+		t.Error("expected LLMDone interface even with tools")
+	}
+}
+
+func TestGenerateLLMStreamTypeScript_WithTools_NoGenericToolCallInterface(t *testing.T) {
+	tools := makeTestTools()
+	ts := GenerateLLMStreamTypeScript(tools)
+
+	// With tools, we should use discriminated unions instead of generic interfaces
+	if strings.Contains(ts, "export interface LLMToolCallStart") {
+		t.Error("with tools, LLMToolCallStart should be a type alias (discriminated union), not an interface")
+	}
+	if strings.Contains(ts, "export interface LLMToolCallResult") {
+		t.Error("with tools, LLMToolCallResult should be a type alias (discriminated union), not an interface")
+	}
+}
+
+func TestGenerateLLMStreamTypeScript_WithoutTools_UsesGenericInterfaces(t *testing.T) {
+	ts := GenerateLLMStreamTypeScript(nil)
+
+	// Without tools, should fall back to generic interfaces
+	if !strings.Contains(ts, "export interface LLMToolCallStart") {
+		t.Error("without tools, expected generic LLMToolCallStart interface")
+	}
+	if !strings.Contains(ts, "export interface LLMToolCallResult") {
+		t.Error("without tools, expected generic LLMToolCallResult interface")
+	}
+	if !strings.Contains(ts, "input: Record<string, unknown>") {
+		t.Error("without tools, expected Record<string, unknown> for input")
+	}
+	if !strings.Contains(ts, "output?: Record<string, unknown>") {
+		t.Error("without tools, expected Record<string, unknown> for output")
+	}
+}
+
+func TestGenerateLLMStreamTypeScript_WithoutTools_NoLLMToolNameUnion(t *testing.T) {
+	ts := GenerateLLMStreamTypeScript(nil)
+
+	if strings.Contains(ts, "LLMToolName") {
+		t.Error("without tools, should not generate LLMToolName union")
+	}
+}
+
+func TestGenerateLLMStreamTypeScript_SingleTool(t *testing.T) {
+	tools := []llmcompile.SerializedToolInfo{
+		{
+			Name:        "search",
+			Description: "Search the web",
+			InputSchema: json.RawMessage(`{"type":"object","properties":{"query":{"type":"string"}},"required":["query"]}`),
+			InputType:   "SearchInput",
+			OutputType:  "SearchOutput",
+		},
+	}
+	ts := GenerateLLMStreamTypeScript(tools)
+
+	if !strings.Contains(ts, "export interface SearchInput") {
+		t.Error("expected SearchInput interface")
+	}
+	if !strings.Contains(ts, "export type LLMToolName =") {
+		t.Error("expected LLMToolName union")
+	}
+	if !strings.Contains(ts, `"search"`) {
+		t.Error("expected search in LLMToolName")
+	}
+	// Single tool — union should end with semicolon
+	if !strings.Contains(ts, `| "search";`) {
+		t.Error("expected single-element LLMToolName union to end with semicolon")
 	}
 }

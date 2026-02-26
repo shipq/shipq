@@ -11,8 +11,11 @@ import (
 // It filters to frontend channels only and writes to <shipqRoot>/<tsOutputDir>/shipq-channels.ts.
 // If tsOutputDir is empty, it defaults to "." (project root).
 // Uses codegen.WriteFileIfChanged() for idempotency.
-func WriteTypeScriptChannelClient(channels []codegen.SerializedChannelInfo, shipqRoot, tsOutputDir string) error {
-	code, err := GenerateTypeScriptChannelClient(channels)
+//
+// If llmCfg is non-nil, LLM stream type definitions and handlers are injected
+// for LLM-enabled channels.
+func WriteTypeScriptChannelClient(channels []codegen.SerializedChannelInfo, shipqRoot, tsOutputDir string, llmCfg *LLMConfig) error {
+	code, err := GenerateTypeScriptChannelClient(channels, llmCfg)
 	if err != nil {
 		return fmt.Errorf("generate typescript channel client: %w", err)
 	}

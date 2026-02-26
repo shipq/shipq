@@ -11,8 +11,8 @@ import (
 // It writes to <shipqRoot>/<tsOutputDir>/react/shipq-channels.ts.
 // If tsOutputDir is empty, it defaults to "." (project root).
 // Uses codegen.WriteFileIfChanged() for idempotency.
-func WriteReactChannelHooks(channels []codegen.SerializedChannelInfo, shipqRoot, tsOutputDir string) error {
-	code, err := GenerateReactChannelHooks(channels)
+func WriteReactChannelHooks(channels []codegen.SerializedChannelInfo, shipqRoot, tsOutputDir string, llmCfg *LLMConfig) error {
+	code, err := GenerateReactChannelHooks(channels, llmCfg)
 	if err != nil {
 		return fmt.Errorf("generate react channel hooks: %w", err)
 	}

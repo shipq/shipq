@@ -8,7 +8,7 @@ import (
 )
 
 func TestGenerateReactChannelHooks_EmptyChannels(t *testing.T) {
-	result, err := GenerateReactChannelHooks(nil)
+	result, err := GenerateReactChannelHooks(nil, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -21,7 +21,7 @@ func TestGenerateReactChannelHooks_SkipsBackendChannels(t *testing.T) {
 	channels := []codegen.SerializedChannelInfo{
 		makeBackendBillingChannel(),
 	}
-	result, err := GenerateReactChannelHooks(channels)
+	result, err := GenerateReactChannelHooks(channels, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -34,7 +34,7 @@ func TestGenerateReactChannelHooks_Header(t *testing.T) {
 	channels := []codegen.SerializedChannelInfo{
 		makeUnidirectionalEmailChannel(),
 	}
-	result, err := GenerateReactChannelHooks(channels)
+	result, err := GenerateReactChannelHooks(channels, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -48,7 +48,7 @@ func TestGenerateReactChannelHooks_ReactImports(t *testing.T) {
 	channels := []codegen.SerializedChannelInfo{
 		makeUnidirectionalEmailChannel(),
 	}
-	result, err := GenerateReactChannelHooks(channels)
+	result, err := GenerateReactChannelHooks(channels, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -72,7 +72,7 @@ func TestGenerateReactChannelHooks_BaseChannelImports(t *testing.T) {
 	channels := []codegen.SerializedChannelInfo{
 		makeUnidirectionalEmailChannel(),
 	}
-	result, err := GenerateReactChannelHooks(channels)
+	result, err := GenerateReactChannelHooks(channels, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -96,7 +96,7 @@ func TestGenerateReactChannelHooks_UnidirectionalHookStructure(t *testing.T) {
 	channels := []codegen.SerializedChannelInfo{
 		makeUnidirectionalEmailChannel(),
 	}
-	result, err := GenerateReactChannelHooks(channels)
+	result, err := GenerateReactChannelHooks(channels, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -150,7 +150,7 @@ func TestGenerateReactChannelHooks_UnmountCleanup(t *testing.T) {
 	channels := []codegen.SerializedChannelInfo{
 		makeUnidirectionalEmailChannel(),
 	}
-	result, err := GenerateReactChannelHooks(channels)
+	result, err := GenerateReactChannelHooks(channels, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -168,7 +168,7 @@ func TestGenerateReactChannelHooks_DispatchCallback(t *testing.T) {
 	channels := []codegen.SerializedChannelInfo{
 		makeUnidirectionalEmailChannel(),
 	}
-	result, err := GenerateReactChannelHooks(channels)
+	result, err := GenerateReactChannelHooks(channels, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -194,7 +194,7 @@ func TestGenerateReactChannelHooks_ErrorHandling(t *testing.T) {
 	channels := []codegen.SerializedChannelInfo{
 		makeUnidirectionalEmailChannel(),
 	}
-	result, err := GenerateReactChannelHooks(channels)
+	result, err := GenerateReactChannelHooks(channels, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -217,7 +217,7 @@ func TestGenerateReactChannelHooks_DisconnectCallback(t *testing.T) {
 	channels := []codegen.SerializedChannelInfo{
 		makeUnidirectionalEmailChannel(),
 	}
-	result, err := GenerateReactChannelHooks(channels)
+	result, err := GenerateReactChannelHooks(channels, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -240,7 +240,7 @@ func TestGenerateReactChannelHooks_BidirectionalChannel(t *testing.T) {
 	channels := []codegen.SerializedChannelInfo{
 		makeBidirectionalChatbotChannel(),
 	}
-	result, err := GenerateReactChannelHooks(channels)
+	result, err := GenerateReactChannelHooks(channels, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -311,7 +311,7 @@ func TestGenerateReactChannelHooks_UnidirectionalNoSendMethods(t *testing.T) {
 	channels := []codegen.SerializedChannelInfo{
 		makeUnidirectionalEmailChannel(),
 	}
-	result, err := GenerateReactChannelHooks(channels)
+	result, err := GenerateReactChannelHooks(channels, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -329,7 +329,7 @@ func TestGenerateReactChannelHooks_MultipleChannels(t *testing.T) {
 		makeBidirectionalChatbotChannel(),
 		makeBackendBillingChannel(), // should be skipped
 	}
-	result, err := GenerateReactChannelHooks(channels)
+	result, err := GenerateReactChannelHooks(channels, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -353,7 +353,7 @@ func TestGenerateReactChannelHooks_HookNaming(t *testing.T) {
 	channels := []codegen.SerializedChannelInfo{
 		makeUnidirectionalEmailChannel(),
 	}
-	result, err := GenerateReactChannelHooks(channels)
+	result, err := GenerateReactChannelHooks(channels, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -375,7 +375,7 @@ func TestGenerateReactChannelHooks_StaleClosurePrevention(t *testing.T) {
 	channels := []codegen.SerializedChannelInfo{
 		makeUnidirectionalEmailChannel(),
 	}
-	result, err := GenerateReactChannelHooks(channels)
+	result, err := GenerateReactChannelHooks(channels, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -394,7 +394,7 @@ func TestGenerateReactChannelHooks_ReturnObject(t *testing.T) {
 	channels := []codegen.SerializedChannelInfo{
 		makeUnidirectionalEmailChannel(),
 	}
-	result, err := GenerateReactChannelHooks(channels)
+	result, err := GenerateReactChannelHooks(channels, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -409,7 +409,7 @@ func TestGenerateReactChannelHooks_BidirectionalReturnObject(t *testing.T) {
 	channels := []codegen.SerializedChannelInfo{
 		makeBidirectionalChatbotChannel(),
 	}
-	result, err := GenerateReactChannelHooks(channels)
+	result, err := GenerateReactChannelHooks(channels, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -424,7 +424,7 @@ func TestGenerateReactChannelHooks_DispatchResetsState(t *testing.T) {
 	channels := []codegen.SerializedChannelInfo{
 		makeUnidirectionalEmailChannel(),
 	}
-	result, err := GenerateReactChannelHooks(channels)
+	result, err := GenerateReactChannelHooks(channels, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -451,7 +451,7 @@ func TestGenerateReactChannelHooks_PublicChannel(t *testing.T) {
 	channels := []codegen.SerializedChannelInfo{
 		makePublicAssistantChannel(),
 	}
-	result, err := GenerateReactChannelHooks(channels)
+	result, err := GenerateReactChannelHooks(channels, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -473,7 +473,7 @@ func TestGenerateReactChannelHooks_UseCallbackEmptyDeps(t *testing.T) {
 	channels := []codegen.SerializedChannelInfo{
 		makeUnidirectionalEmailChannel(),
 	}
-	result, err := GenerateReactChannelHooks(channels)
+	result, err := GenerateReactChannelHooks(channels, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -495,5 +495,102 @@ func TestGenerateReactChannelHooks_UseCallbackEmptyDeps(t *testing.T) {
 	closedCallbacks := closedWithEmptyDeps - effectCount
 	if callbackCount != closedCallbacks {
 		t.Errorf("all useCallback calls should have empty deps []; got %d callbacks but %d closed with empty deps (after subtracting %d useEffect)", callbackCount, closedCallbacks, effectCount)
+	}
+}
+
+// ── LLM hook injection tests ────────────────────────────────────────────────
+
+func TestGenerateReactChannelHooks_LLMChannel_HasLLMHandlersInOptions(t *testing.T) {
+	channels := []codegen.SerializedChannelInfo{
+		makePublicAssistantChannel(),
+	}
+	llmCfg := &LLMConfig{
+		LLMChannelPkgs: map[string]bool{
+			"myapp/channels/assistant": true,
+		},
+	}
+
+	result, err := GenerateReactChannelHooks(channels, llmCfg)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	output := string(result)
+
+	mustContain := []string{
+		"onLLMTextDelta?: (msg: LLMTextDelta) => void;",
+		"onLLMToolCallStart?: (msg: LLMToolCallStart) => void;",
+		"onLLMToolCallResult?: (msg: LLMToolCallResult) => void;",
+		"onLLMDone?: (msg: LLMDone) => void;",
+	}
+	for _, s := range mustContain {
+		if !strings.Contains(output, s) {
+			t.Errorf("LLM channel options should contain %q", s)
+		}
+	}
+}
+
+func TestGenerateReactChannelHooks_LLMChannel_WiresUpLLMHandlers(t *testing.T) {
+	channels := []codegen.SerializedChannelInfo{
+		makePublicAssistantChannel(),
+	}
+	llmCfg := &LLMConfig{
+		LLMChannelPkgs: map[string]bool{
+			"myapp/channels/assistant": true,
+		},
+	}
+
+	result, err := GenerateReactChannelHooks(channels, llmCfg)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	output := string(result)
+
+	mustContain := []string{
+		"ch.onLLMTextDelta((msg) => optionsRef.current?.onLLMTextDelta?.(msg));",
+		"ch.onLLMToolCallStart((msg) => optionsRef.current?.onLLMToolCallStart?.(msg));",
+		"ch.onLLMToolCallResult((msg) => optionsRef.current?.onLLMToolCallResult?.(msg));",
+		"ch.onLLMDone((msg) => optionsRef.current?.onLLMDone?.(msg));",
+	}
+	for _, s := range mustContain {
+		if !strings.Contains(output, s) {
+			t.Errorf("LLM channel hook should wire up handler: %q", s)
+		}
+	}
+}
+
+func TestGenerateReactChannelHooks_NonLLMChannel_NoLLMHandlers(t *testing.T) {
+	channels := []codegen.SerializedChannelInfo{
+		makeUnidirectionalEmailChannel(),
+	}
+	llmCfg := &LLMConfig{
+		LLMChannelPkgs: map[string]bool{
+			"myapp/channels/some_other": true,
+		},
+	}
+
+	result, err := GenerateReactChannelHooks(channels, llmCfg)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	output := string(result)
+
+	if strings.Contains(output, "onLLMTextDelta") {
+		t.Error("non-LLM channel should not have LLM handlers")
+	}
+}
+
+func TestGenerateReactChannelHooks_NilLLMConfig_NoLLMHandlers(t *testing.T) {
+	channels := []codegen.SerializedChannelInfo{
+		makePublicAssistantChannel(),
+	}
+
+	result, err := GenerateReactChannelHooks(channels, nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	output := string(result)
+
+	if strings.Contains(output, "onLLMTextDelta") {
+		t.Error("nil LLM config should not produce LLM handlers")
 	}
 }

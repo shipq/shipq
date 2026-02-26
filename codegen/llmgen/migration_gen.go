@@ -13,12 +13,20 @@ import (
 //   - timestamp: the migration timestamp (e.g., "20260615120000")
 //   - modulePath: the user's Go module path (e.g., "myapp")
 //   - hasTenancy: if true, adds an organization_id column to llm_conversations
+//   - hasAuth: if true, adds a nullable author_account_id column to llm_conversations
+//     for author tracking (NULL for public/anonymous users)
 //
 // Returns the generated Go source code for the migration file.
-func GenerateLLMMigration(timestamp, modulePath string, hasTenancy bool) []byte {
+func GenerateLLMMigration(timestamp, modulePath string, hasTenancy bool, hasAuth bool) []byte {
 	orgColumn := ""
 	if hasTenancy {
 		orgColumn = `		tb.Bigint("organization_id").Nullable()
+`
+	}
+
+	authorColumn := ""
+	if hasAuth {
+		authorColumn = `		tb.Bigint("author_account_id").Nullable()
 `
 	}
 
@@ -41,7 +49,7 @@ func Migrate_%s_llm_tables(plan *migrate.MigrationPlan) error {
 		tb.String("job_id")
 		tb.String("channel_name")
 		tb.Bigint("account_id").Nullable()
-%s		tb.String("provider")
+%s%s		tb.String("provider")
 		tb.String("model")
 		tb.Text("system_prompt").Nullable()
 		tb.Integer("total_input_tokens").Default(0)
@@ -75,7 +83,7 @@ func Migrate_%s_llm_tables(plan *migrate.MigrationPlan) error {
 	})
 	return err
 }
-`, modulePath, modulePath, timestamp, orgColumn, messagesTimestamp))
+`, modulePath, modulePath, timestamp, orgColumn, authorColumn, messagesTimestamp))
 }
 
 // incrementTimestamp parses a 14-digit migration timestamp (YYYYMMDDHHMMSS)

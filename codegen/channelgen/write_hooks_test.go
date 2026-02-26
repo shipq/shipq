@@ -40,7 +40,7 @@ func TestWriteReactChannelHooks_WritesReactSubdirectory(t *testing.T) {
 	tmpDir := t.TempDir()
 	channels := makeFrontendChannels()
 
-	err := WriteReactChannelHooks(channels, tmpDir, "ts-output")
+	err := WriteReactChannelHooks(channels, tmpDir, "ts-output", nil)
 	if err != nil {
 		t.Fatalf("WriteReactChannelHooks failed: %v", err)
 	}
@@ -62,7 +62,7 @@ func TestWriteReactChannelHooks_ImportsFromParentShipqChannels(t *testing.T) {
 	tmpDir := t.TempDir()
 	channels := makeFrontendChannels()
 
-	err := WriteReactChannelHooks(channels, tmpDir, "ts-output")
+	err := WriteReactChannelHooks(channels, tmpDir, "ts-output", nil)
 	if err != nil {
 		t.Fatalf("WriteReactChannelHooks failed: %v", err)
 	}
@@ -79,7 +79,7 @@ func TestWriteReactChannelHooks_DefaultOutputDir(t *testing.T) {
 	channels := makeFrontendChannels()
 
 	// Empty tsOutputDir should default to "."
-	err := WriteReactChannelHooks(channels, tmpDir, "")
+	err := WriteReactChannelHooks(channels, tmpDir, "", nil)
 	if err != nil {
 		t.Fatalf("WriteReactChannelHooks failed: %v", err)
 	}
@@ -91,7 +91,7 @@ func TestWriteReactChannelHooks_NestedOutputDir(t *testing.T) {
 	tmpDir := t.TempDir()
 	channels := makeFrontendChannels()
 
-	err := WriteReactChannelHooks(channels, tmpDir, "deep/nested/output")
+	err := WriteReactChannelHooks(channels, tmpDir, "deep/nested/output", nil)
 	if err != nil {
 		t.Fatalf("WriteReactChannelHooks failed: %v", err)
 	}
@@ -103,7 +103,7 @@ func TestWriteReactChannelHooks_DoesNotWriteSvelte(t *testing.T) {
 	tmpDir := t.TempDir()
 	channels := makeFrontendChannels()
 
-	err := WriteReactChannelHooks(channels, tmpDir, "ts-output")
+	err := WriteReactChannelHooks(channels, tmpDir, "ts-output", nil)
 	if err != nil {
 		t.Fatalf("WriteReactChannelHooks failed: %v", err)
 	}
@@ -117,7 +117,7 @@ func TestWriteReactChannelHooks_IdempotentWrites(t *testing.T) {
 	tmpDir := t.TempDir()
 	channels := makeFrontendChannels()
 
-	err := WriteReactChannelHooks(channels, tmpDir, "ts-output")
+	err := WriteReactChannelHooks(channels, tmpDir, "ts-output", nil)
 	if err != nil {
 		t.Fatalf("first WriteReactChannelHooks failed: %v", err)
 	}
@@ -125,7 +125,7 @@ func TestWriteReactChannelHooks_IdempotentWrites(t *testing.T) {
 	path := filepath.Join(tmpDir, "ts-output", "react", "shipq-channels.ts")
 	content1, _ := os.ReadFile(path)
 
-	err = WriteReactChannelHooks(channels, tmpDir, "ts-output")
+	err = WriteReactChannelHooks(channels, tmpDir, "ts-output", nil)
 	if err != nil {
 		t.Fatalf("second WriteReactChannelHooks failed: %v", err)
 	}
@@ -143,7 +143,7 @@ func TestWriteReactChannelHooks_BackendOnlyChannels(t *testing.T) {
 		makeBackendBillingChannel(),
 	}
 
-	err := WriteReactChannelHooks(channels, tmpDir, "ts-output")
+	err := WriteReactChannelHooks(channels, tmpDir, "ts-output", nil)
 	if err != nil {
 		t.Fatalf("WriteReactChannelHooks failed: %v", err)
 	}
@@ -281,10 +281,10 @@ func TestWriteHooks_BothFrameworks(t *testing.T) {
 	tsDir := "ts-output"
 
 	// Simulate writing base + both frameworks
-	if err := WriteTypeScriptChannelClient(channels, tmpDir, tsDir); err != nil {
+	if err := WriteTypeScriptChannelClient(channels, tmpDir, tsDir, nil); err != nil {
 		t.Fatalf("WriteTypeScriptChannelClient failed: %v", err)
 	}
-	if err := WriteReactChannelHooks(channels, tmpDir, tsDir); err != nil {
+	if err := WriteReactChannelHooks(channels, tmpDir, tsDir, nil); err != nil {
 		t.Fatalf("WriteReactChannelHooks failed: %v", err)
 	}
 	if err := WriteSvelteChannelHooks(channels, tmpDir, tsDir); err != nil {
@@ -303,10 +303,10 @@ func TestWriteHooks_OnlyReact(t *testing.T) {
 	tsDir := "ts-output"
 
 	// Simulate writing base + react only
-	if err := WriteTypeScriptChannelClient(channels, tmpDir, tsDir); err != nil {
+	if err := WriteTypeScriptChannelClient(channels, tmpDir, tsDir, nil); err != nil {
 		t.Fatalf("WriteTypeScriptChannelClient failed: %v", err)
 	}
-	if err := WriteReactChannelHooks(channels, tmpDir, tsDir); err != nil {
+	if err := WriteReactChannelHooks(channels, tmpDir, tsDir, nil); err != nil {
 		t.Fatalf("WriteReactChannelHooks failed: %v", err)
 	}
 
@@ -322,7 +322,7 @@ func TestWriteHooks_OnlySvelte(t *testing.T) {
 	tsDir := "ts-output"
 
 	// Simulate writing base + svelte only
-	if err := WriteTypeScriptChannelClient(channels, tmpDir, tsDir); err != nil {
+	if err := WriteTypeScriptChannelClient(channels, tmpDir, tsDir, nil); err != nil {
 		t.Fatalf("WriteTypeScriptChannelClient failed: %v", err)
 	}
 	if err := WriteSvelteChannelHooks(channels, tmpDir, tsDir); err != nil {
@@ -340,7 +340,7 @@ func TestWriteHooks_ReactContentHasCorrectImportsAndHooks(t *testing.T) {
 	channels := makeFrontendChannels()
 	tsDir := "ts-output"
 
-	if err := WriteReactChannelHooks(channels, tmpDir, tsDir); err != nil {
+	if err := WriteReactChannelHooks(channels, tmpDir, tsDir, nil); err != nil {
 		t.Fatalf("WriteReactChannelHooks failed: %v", err)
 	}
 
@@ -428,7 +428,7 @@ func TestWriteHooks_MixedChannels_BackendSkipped(t *testing.T) {
 	}
 	tsDir := "ts-output"
 
-	if err := WriteReactChannelHooks(channels, tmpDir, tsDir); err != nil {
+	if err := WriteReactChannelHooks(channels, tmpDir, tsDir, nil); err != nil {
 		t.Fatalf("WriteReactChannelHooks failed: %v", err)
 	}
 	if err := WriteSvelteChannelHooks(channels, tmpDir, tsDir); err != nil {

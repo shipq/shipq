@@ -310,7 +310,7 @@ func writeReactFrontend(t *testing.T, projectDir string) {
     "preview": "vite preview"
   },
   "dependencies": {
-    "centrifuge": "^5.2.2",
+    "centrifuge": "^5.5.3",
     "react": "^18.3.1",
     "react-dom": "^18.3.1"
   },
@@ -347,6 +347,10 @@ func writeReactFrontend(t *testing.T, projectDir string) {
 }
 `)
 
+	// frontend/.gitignore
+	mustWriteFile(t, filepath.Join(frontendDir, ".gitignore"), `node_modules
+`)
+
 	// vite.config.ts — proxy API and Centrifugo WS to local services
 	mustWriteFile(t, filepath.Join(frontendDir, "vite.config.ts"), `import { defineConfig } from "vite";
 import react from "@vitejs/plugin-react";
@@ -356,13 +360,9 @@ export default defineConfig({
   server: {
     port: 3000,
     proxy: {
-      "/channels": {
+      "/api": {
         target: "http://localhost:8080",
-        changeOrigin: true,
-      },
-      "/auth": {
-        target: "http://localhost:8080",
-        changeOrigin: true,
+        rewrite: (path) => path.replace(/^\/api/, ""),
       },
     },
   },
@@ -398,13 +398,13 @@ ReactDOM.createRoot(document.getElementById("root")!).render(
 
 	// src/App.tsx — the chat UI with streaming LLM events
 	mustWriteFile(t, filepath.Join(frontendDir, "src", "App.tsx"), `import React, { useState, useRef, useEffect } from "react";
-import { configure, dispatchChatbot, type ChatbotChannel } from "../../shipq-channels";
+import { configure, dispatchChatbot, type ChatbotChannel } from "./shipq-channels";
 
 // Configure the channel client to talk to the local server.
-// The Vite proxy forwards /channels/* to localhost:8080.
+// The Vite proxy forwards /api/* to localhost:8080 with path rewrite.
 // Centrifugo WS is accessed directly (no proxy needed for WS).
 configure({
-  baseURL: "http://localhost:8080",
+  baseURL: "/api",
   centrifugoURL: "ws://localhost:8000/connection/websocket",
 });
 
@@ -843,6 +843,8 @@ func scenarioLLMBasic(t *testing.T, shipq string, db dbConfig) {
 	runWithEnv(t, proj.CleanDir, tEnv, "go", "test", "./...", "-v", "-count=1")
 
 	// Verify the generated TypeScript channel files exist (from workers compile).
+	// The default typescript_channel_output is "." (project root), so the files
+	// live at the project root unless overridden in shipq.ini.
 	tsFiles := []string{
 		"shipq-channels.ts",
 		"react/shipq-channels.ts",

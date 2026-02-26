@@ -177,7 +177,7 @@ func TestGenerateTS_SkipsBackendChannels(t *testing.T) {
 		makeBackendBillingChannel(),
 	}
 
-	output, err := GenerateTypeScriptChannelClient(channels)
+	output, err := GenerateTypeScriptChannelClient(channels, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -206,7 +206,7 @@ func TestGenerateTS_UnidirectionalChannel(t *testing.T) {
 		makeUnidirectionalEmailChannel(),
 	}
 
-	output, err := GenerateTypeScriptChannelClient(channels)
+	output, err := GenerateTypeScriptChannelClient(channels, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -261,7 +261,7 @@ func TestGenerateTS_BidirectionalChannel(t *testing.T) {
 		makeBidirectionalChatbotChannel(),
 	}
 
-	output, err := GenerateTypeScriptChannelClient(channels)
+	output, err := GenerateTypeScriptChannelClient(channels, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -317,7 +317,7 @@ func TestGenerateTS_PublicChannel_NoCredentials(t *testing.T) {
 		makePublicAssistantChannel(),
 	}
 
-	output, err := GenerateTypeScriptChannelClient(channels)
+	output, err := GenerateTypeScriptChannelClient(channels, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -340,7 +340,7 @@ func TestGenerateTS_AuthChannel_HasCredentials(t *testing.T) {
 		makeUnidirectionalEmailChannel(),
 	}
 
-	output, err := GenerateTypeScriptChannelClient(channels)
+	output, err := GenerateTypeScriptChannelClient(channels, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -450,7 +450,7 @@ func TestGenerateTS_OptionalFields(t *testing.T) {
 		},
 	}
 
-	output, err := GenerateTypeScriptChannelClient(channels)
+	output, err := GenerateTypeScriptChannelClient(channels, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -499,7 +499,7 @@ func TestGenerateTS_OmittedFields(t *testing.T) {
 		},
 	}
 
-	output, err := GenerateTypeScriptChannelClient(channels)
+	output, err := GenerateTypeScriptChannelClient(channels, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -521,7 +521,7 @@ func TestGenerateTS_PerChannelCentrifugeClient(t *testing.T) {
 		makeUnidirectionalEmailChannel(),
 	}
 
-	output, err := GenerateTypeScriptChannelClient(channels)
+	output, err := GenerateTypeScriptChannelClient(channels, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -553,7 +553,7 @@ func TestGenerateTS_ConfigureFunction(t *testing.T) {
 		makeUnidirectionalEmailChannel(),
 	}
 
-	output, err := GenerateTypeScriptChannelClient(channels)
+	output, err := GenerateTypeScriptChannelClient(channels, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -579,7 +579,7 @@ func TestGenerateTS_ImportsAndHeader(t *testing.T) {
 		makeUnidirectionalEmailChannel(),
 	}
 
-	output, err := GenerateTypeScriptChannelClient(channels)
+	output, err := GenerateTypeScriptChannelClient(channels, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -599,7 +599,7 @@ func TestGenerateTS_MapField(t *testing.T) {
 		makeBidirectionalChatbotChannel(),
 	}
 
-	output, err := GenerateTypeScriptChannelClient(channels)
+	output, err := GenerateTypeScriptChannelClient(channels, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -617,7 +617,7 @@ func TestGenerateTS_SliceField(t *testing.T) {
 		makePublicAssistantChannel(),
 	}
 
-	output, err := GenerateTypeScriptChannelClient(channels)
+	output, err := GenerateTypeScriptChannelClient(channels, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -658,7 +658,7 @@ func TestGenerateTS_UnidirectionalHasNoEchoFilter(t *testing.T) {
 		makeUnidirectionalEmailChannel(),
 	}
 
-	output, err := GenerateTypeScriptChannelClient(channels)
+	output, err := GenerateTypeScriptChannelClient(channels, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -678,7 +678,7 @@ func TestGenerateTS_MultipleChannels(t *testing.T) {
 		makeBidirectionalChatbotChannel(),
 	}
 
-	output, err := GenerateTypeScriptChannelClient(channels)
+	output, err := GenerateTypeScriptChannelClient(channels, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -712,7 +712,7 @@ func TestGenerateTS_Golden_MixedChannels(t *testing.T) {
 		makeBackendBillingChannel(),       // backend-only, should be excluded
 	}
 
-	output, err := GenerateTypeScriptChannelClient(channels)
+	output, err := GenerateTypeScriptChannelClient(channels, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -739,5 +739,181 @@ func TestGenerateTS_Golden_MixedChannels(t *testing.T) {
 
 	if string(output) != string(golden) {
 		t.Errorf("output does not match golden file %s\n\nGot:\n%s\n\nWant:\n%s", goldenPath, string(output), string(golden))
+	}
+}
+
+// ── LLM type injection tests ────────────────────────────────────────────────
+
+func makeLLMConfig(channelPkgPath string) *LLMConfig {
+	return &LLMConfig{
+		LLMChannelPkgs: map[string]bool{
+			channelPkgPath: true,
+		},
+	}
+}
+
+func TestGenerateTS_LLMChannel_HasLLMStreamTypes(t *testing.T) {
+	channels := []codegen.SerializedChannelInfo{
+		makePublicAssistantChannel(),
+	}
+	llmCfg := makeLLMConfig("myapp/channels/assistant")
+
+	output, err := GenerateTypeScriptChannelClient(channels, llmCfg)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	code := string(output)
+
+	// LLM stream type definitions should be prepended
+	mustContain := []string{
+		"export interface LLMTextDelta",
+		"export interface LLMToolCallStart",
+		"export interface LLMToolCallResult",
+		"export interface LLMDone",
+	}
+	for _, s := range mustContain {
+		if !strings.Contains(code, s) {
+			t.Errorf("LLM channel output should contain %q", s)
+		}
+	}
+}
+
+func TestGenerateTS_LLMChannel_HasOnLLMHandlers(t *testing.T) {
+	channels := []codegen.SerializedChannelInfo{
+		makePublicAssistantChannel(),
+	}
+	llmCfg := makeLLMConfig("myapp/channels/assistant")
+
+	output, err := GenerateTypeScriptChannelClient(channels, llmCfg)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	code := string(output)
+
+	// Channel interface should include LLM handlers
+	mustContain := []string{
+		"onLLMTextDelta(handler: (msg: LLMTextDelta) => void): void;",
+		"onLLMToolCallStart(handler: (msg: LLMToolCallStart) => void): void;",
+		"onLLMToolCallResult(handler: (msg: LLMToolCallResult) => void): void;",
+		"onLLMDone(handler: (msg: LLMDone) => void): void;",
+	}
+	for _, s := range mustContain {
+		if !strings.Contains(code, s) {
+			t.Errorf("LLM channel interface should contain %q", s)
+		}
+	}
+}
+
+func TestGenerateTS_LLMChannel_HasDemultiplexerCases(t *testing.T) {
+	channels := []codegen.SerializedChannelInfo{
+		makePublicAssistantChannel(),
+	}
+	llmCfg := makeLLMConfig("myapp/channels/assistant")
+
+	output, err := GenerateTypeScriptChannelClient(channels, llmCfg)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	code := string(output)
+
+	// Demultiplexer should include LLM type cases
+	mustContain := []string{
+		`case "LLMTextDelta":`,
+		`case "LLMToolCallStart":`,
+		`case "LLMToolCallResult":`,
+		`case "LLMDone":`,
+	}
+	for _, s := range mustContain {
+		if !strings.Contains(code, s) {
+			t.Errorf("LLM channel demultiplexer should contain %q", s)
+		}
+	}
+}
+
+func TestGenerateTS_NonLLMChannel_NoLLMTypes(t *testing.T) {
+	channels := []codegen.SerializedChannelInfo{
+		makeUnidirectionalEmailChannel(),
+	}
+	// LLM config exists but does NOT include the email channel
+	llmCfg := makeLLMConfig("myapp/channels/some_other_channel")
+
+	output, err := GenerateTypeScriptChannelClient(channels, llmCfg)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	code := string(output)
+
+	// Should NOT have LLM type definitions or handlers
+	if strings.Contains(code, "LLMTextDelta") {
+		t.Error("non-LLM channel should not contain LLMTextDelta")
+	}
+	if strings.Contains(code, "onLLMDone") {
+		t.Error("non-LLM channel should not contain onLLMDone handler")
+	}
+}
+
+func TestGenerateTS_NilLLMConfig_NoLLMTypes(t *testing.T) {
+	channels := []codegen.SerializedChannelInfo{
+		makePublicAssistantChannel(),
+	}
+
+	output, err := GenerateTypeScriptChannelClient(channels, nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	code := string(output)
+
+	if strings.Contains(code, "LLMTextDelta") {
+		t.Error("nil LLM config should not produce LLM types")
+	}
+}
+
+func TestGenerateTS_MixedChannels_OnlyLLMChannelGetsHandlers(t *testing.T) {
+	channels := []codegen.SerializedChannelInfo{
+		makeUnidirectionalEmailChannel(),
+		makePublicAssistantChannel(),
+	}
+	llmCfg := makeLLMConfig("myapp/channels/assistant")
+
+	output, err := GenerateTypeScriptChannelClient(channels, llmCfg)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	code := string(output)
+
+	// LLM types should be prepended (because at least one channel is LLM-enabled)
+	if !strings.Contains(code, "export interface LLMTextDelta") {
+		t.Error("expected LLM types to be prepended")
+	}
+
+	// Find the assistant channel interface — it should have LLM handlers
+	assistantIdx := strings.Index(code, "export interface AssistantChannel")
+	if assistantIdx < 0 {
+		t.Fatal("AssistantChannel interface not found")
+	}
+	assistantSection := code[assistantIdx:]
+	if !strings.Contains(assistantSection, "onLLMTextDelta") {
+		t.Error("AssistantChannel should have onLLMTextDelta handler")
+	}
+
+	// Find the email channel interface — it should NOT have LLM handlers
+	emailIdx := strings.Index(code, "export interface EmailNotificationChannel")
+	if emailIdx < 0 {
+		t.Fatal("EmailNotificationChannel interface not found")
+	}
+	// Get the section between EmailNotificationChannel and AssistantChannel
+	emailEnd := strings.Index(code[emailIdx:], "export interface AssistantChannel")
+	if emailEnd < 0 {
+		emailEnd = len(code) - emailIdx
+	}
+	emailSection := code[emailIdx : emailIdx+emailEnd]
+	if strings.Contains(emailSection, "onLLMTextDelta") {
+		t.Error("EmailNotificationChannel should NOT have onLLMTextDelta handler")
 	}
 }

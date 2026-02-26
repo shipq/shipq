@@ -1672,6 +1672,49 @@ func TestAddTable_MultipleUserTables_AllGetAuthorAccountID(t *testing.T) {
 	}
 }
 
+func TestAddTable_DoesNotAddAuthorAccountID_ToLLMTables(t *testing.T) {
+	// LLM tables (llm_conversations, llm_messages) are framework-managed and
+	// need author_account_id to be nullable (added explicitly in the migration
+	// template) so that public/anonymous conversations work. The auto-injection
+	// in AddTable must skip them.
+	plan := buildAuthSchema(t)
+
+	// Create llm_conversations — should NOT get author_account_id auto-injected
+	plan.SetCurrentMigration("20260102000000_create_llm_conversations")
+	_, err := plan.AddTable("llm_conversations", func(tb *ddl.TableBuilder) error {
+		tb.String("job_id")
+		tb.String("channel_name")
+		tb.Bigint("account_id").Nullable()
+		tb.String("provider")
+		tb.String("model")
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("AddTable llm_conversations failed: %v", err)
+	}
+
+	// Create llm_messages — should NOT get author_account_id auto-injected
+	plan.SetCurrentMigration("20260102000001_create_llm_messages")
+	_, err = plan.AddTable("llm_messages", func(tb *ddl.TableBuilder) error {
+		tb.Bigint("conversation_id")
+		tb.Integer("sequence")
+		tb.String("role")
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("AddTable llm_messages failed: %v", err)
+	}
+
+	for _, tableName := range []string{"llm_conversations", "llm_messages"} {
+		table := plan.Schema.Tables[tableName]
+		for _, col := range table.Columns {
+			if col.Name == "author_account_id" {
+				t.Errorf("LLM table %q should NOT have author_account_id auto-injected", tableName)
+			}
+		}
+	}
+}
+
 func TestAddTable_DoesNotAddAuthorAccountID_ToJunctionTables(t *testing.T) {
 	// Regression test: junction tables must have exactly 2 References columns.
 	// Auto-adding author_account_id would give them a 3rd reference and break

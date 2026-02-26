@@ -16,6 +16,7 @@ import (
 	"github.com/shipq/shipq/codegen/channelgen"
 	"github.com/shipq/shipq/codegen/embed"
 	configpkg "github.com/shipq/shipq/codegen/httpserver/config"
+	"github.com/shipq/shipq/codegen/llmgen"
 	"github.com/shipq/shipq/dburl"
 	"github.com/shipq/shipq/inifile"
 	"github.com/shipq/shipq/internal/commands/db"
@@ -425,7 +426,42 @@ func WorkersCmd() {
 			tsOutputDir = "."
 		}
 
-		if err := channelgen.WriteTypeScriptChannelClient(channels, roots.ShipqRoot, tsOutputDir); err != nil {
+		// Build LLM config for TypeScript generation.
+		// First try the marker file written by `llm compile`. If it's empty
+		// (e.g. because `llm compile` ran before channels were fully generated),
+		// fall back to live detection using the channel list we just compiled.
+		var llmCfg *channelgen.LLMConfig
+		llmChannelPkgs, _ := llmgen.ReadLLMChannelsMarker(roots.ShipqRoot)
+		if len(llmChannelPkgs) == 0 {
+			// Marker is empty/missing — try live detection from compiled channels.
+			var allPkgs []string
+			for _, ch := range channels {
+				if ch.PackagePath != "" {
+					allPkgs = append(allPkgs, ch.PackagePath)
+				}
+			}
+			if len(allPkgs) > 0 {
+				detected, detectErr := llmgen.DetectLLMChannels(roots.GoModRoot, importPrefix, allPkgs)
+				if detectErr == nil && len(detected) > 0 {
+					llmChannelPkgs = detected
+					// Update the marker file so subsequent runs don't need live detection.
+					_ = llmgen.WriteLLMChannelsMarker(roots.ShipqRoot, detected)
+				}
+			}
+		}
+		llmTools, _ := llmgen.ReadLLMToolsMarker(roots.ShipqRoot)
+		if len(llmChannelPkgs) > 0 {
+			pkgSet := make(map[string]bool, len(llmChannelPkgs))
+			for _, pkg := range llmChannelPkgs {
+				pkgSet[pkg] = true
+			}
+			llmCfg = &channelgen.LLMConfig{
+				LLMChannelPkgs: pkgSet,
+				Tools:          llmTools,
+			}
+		}
+
+		if err := channelgen.WriteTypeScriptChannelClient(channels, roots.ShipqRoot, tsOutputDir, llmCfg); err != nil {
 			cli.FatalErr("failed to generate TypeScript channel client", err)
 		}
 		fmt.Printf("  Generated %s/shipq-channels.ts\n", tsOutputDir)
@@ -434,7 +470,7 @@ func WorkersCmd() {
 		tsFrameworks := registry.ParseFrameworks(ini.Get("typescript", "framework"))
 
 		if registry.HasFramework(tsFrameworks, "react") {
-			if err := channelgen.WriteReactChannelHooks(channels, roots.ShipqRoot, tsOutputDir); err != nil {
+			if err := channelgen.WriteReactChannelHooks(channels, roots.ShipqRoot, tsOutputDir, llmCfg); err != nil {
 				cli.FatalErr("failed to generate React channel hooks", err)
 			}
 			fmt.Printf("  Generated %s/react/shipq-channels.ts\n", tsOutputDir)

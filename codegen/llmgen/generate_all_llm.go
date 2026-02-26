@@ -55,6 +55,11 @@ func GenerateAllLLM(cfg GenerateAllLLMConfig) error {
 		return fmt.Errorf("generate tool registries: %w", err)
 	}
 
+	// ── Step 1b: Write tool metadata marker file ─────────────────────
+	if err := generateToolsMarker(cfg); err != nil {
+		return fmt.Errorf("generate tools marker: %w", err)
+	}
+
 	// ── Step 2: Generate persister adapter ────────────────────────────
 	if err := generatePersisterAdapter(cfg); err != nil {
 		return fmt.Errorf("generate persister adapter: %w", err)
@@ -103,9 +108,21 @@ func generateToolRegistries(cfg GenerateAllLLMConfig) error {
 	return nil
 }
 
+// generateToolsMarker collects all tool metadata from the compiled tool
+// packages and writes the .shipq/llm_tools.json marker file. This marker
+// is consumed by `shipq workers compile` to generate typed TypeScript
+// interfaces for tool call inputs and outputs.
+func generateToolsMarker(cfg GenerateAllLLMConfig) error {
+	var allTools []llmcompile.SerializedToolInfo
+	for _, pkg := range cfg.ToolPackages {
+		allTools = append(allTools, pkg.Tools...)
+	}
+	return WriteLLMToolsMarker(cfg.ShipqRoot, allTools)
+}
+
 // generatePersisterAdapter generates the llmpersist adapter.
 func generatePersisterAdapter(cfg GenerateAllLLMConfig) error {
-	content, err := GeneratePersisterAdapter(cfg.ModulePath)
+	content, err := GeneratePersisterAdapter(cfg.ModulePath, cfg.HasAuth)
 	if err != nil {
 		return err
 	}
@@ -146,7 +163,7 @@ func generateMigration(cfg GenerateAllLLMConfig) error {
 	// timestamp and llm_messages at timestamp+1s), so we need 2 consecutive
 	// seconds of headroom.
 	timestamp := nextMigrationTimestamp(migrationsDir)
-	content := GenerateLLMMigration(timestamp, cfg.ModulePath, cfg.HasTenancy)
+	content := GenerateLLMMigration(timestamp, cfg.ModulePath, cfg.HasTenancy, cfg.HasAuth)
 
 	filename := fmt.Sprintf("%s_llm_tables.go", timestamp)
 	outputPath := filepath.Join(migrationsDir, filename)
@@ -227,7 +244,7 @@ func generateQuerydefs(cfg GenerateAllLLMConfig) error {
 		return fmt.Errorf("create querydefs/llm directory: %w", err)
 	}
 
-	content := GenerateLLMQuerydefs(cfg.ModulePath, cfg.HasTenancy)
+	content := GenerateLLMQuerydefs(cfg.ModulePath, cfg.HasTenancy, cfg.HasAuth)
 	outputPath := filepath.Join(querydefsDir, "queries.go")
 
 	if _, err := codegen.WriteFileIfChanged(outputPath, content); err != nil {

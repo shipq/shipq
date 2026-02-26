@@ -54,7 +54,7 @@ func runChannelGoldenTest(t *testing.T, name string, generate func() ([]byte, er
 func TestGolden_ReactChannelHooks(t *testing.T) {
 	channels := makeMultiChannelSet()
 	runChannelGoldenTest(t, "react-shipq-channels.ts", func() ([]byte, error) {
-		return GenerateReactChannelHooks(channels)
+		return GenerateReactChannelHooks(channels, nil)
 	})
 }
 

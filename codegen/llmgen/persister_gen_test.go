@@ -8,7 +8,7 @@ import (
 )
 
 func TestGeneratePersisterAdapter_CompilesAsValidGo(t *testing.T) {
-	src, err := GeneratePersisterAdapter("myapp")
+	src, err := GeneratePersisterAdapter("myapp", false)
 	if err != nil {
 		t.Fatalf("GeneratePersisterAdapter failed: %v", err)
 	}
@@ -21,7 +21,7 @@ func TestGeneratePersisterAdapter_CompilesAsValidGo(t *testing.T) {
 }
 
 func TestGeneratePersisterAdapter_HasGeneratedHeader(t *testing.T) {
-	src, err := GeneratePersisterAdapter("myapp")
+	src, err := GeneratePersisterAdapter("myapp", false)
 	if err != nil {
 		t.Fatalf("GeneratePersisterAdapter failed: %v", err)
 	}
@@ -34,7 +34,7 @@ func TestGeneratePersisterAdapter_HasGeneratedHeader(t *testing.T) {
 }
 
 func TestGeneratePersisterAdapter_PackageName(t *testing.T) {
-	src, err := GeneratePersisterAdapter("myapp")
+	src, err := GeneratePersisterAdapter("myapp", false)
 	if err != nil {
 		t.Fatalf("GeneratePersisterAdapter failed: %v", err)
 	}
@@ -47,7 +47,7 @@ func TestGeneratePersisterAdapter_PackageName(t *testing.T) {
 }
 
 func TestGeneratePersisterAdapter_ImportsLLMPackage(t *testing.T) {
-	src, err := GeneratePersisterAdapter("myapp")
+	src, err := GeneratePersisterAdapter("myapp", false)
 	if err != nil {
 		t.Fatalf("GeneratePersisterAdapter failed: %v", err)
 	}
@@ -60,7 +60,7 @@ func TestGeneratePersisterAdapter_ImportsLLMPackage(t *testing.T) {
 }
 
 func TestGeneratePersisterAdapter_ImportsQueriesPackage(t *testing.T) {
-	src, err := GeneratePersisterAdapter("myapp")
+	src, err := GeneratePersisterAdapter("myapp", false)
 	if err != nil {
 		t.Fatalf("GeneratePersisterAdapter failed: %v", err)
 	}
@@ -73,7 +73,7 @@ func TestGeneratePersisterAdapter_ImportsQueriesPackage(t *testing.T) {
 }
 
 func TestGeneratePersisterAdapter_ImportsContextAndTime(t *testing.T) {
-	src, err := GeneratePersisterAdapter("myapp")
+	src, err := GeneratePersisterAdapter("myapp", false)
 	if err != nil {
 		t.Fatalf("GeneratePersisterAdapter failed: %v", err)
 	}
@@ -89,7 +89,7 @@ func TestGeneratePersisterAdapter_ImportsContextAndTime(t *testing.T) {
 }
 
 func TestGeneratePersisterAdapter_HasPersisterStruct(t *testing.T) {
-	src, err := GeneratePersisterAdapter("myapp")
+	src, err := GeneratePersisterAdapter("myapp", false)
 	if err != nil {
 		t.Fatalf("GeneratePersisterAdapter failed: %v", err)
 	}
@@ -106,7 +106,7 @@ func TestGeneratePersisterAdapter_HasPersisterStruct(t *testing.T) {
 }
 
 func TestGeneratePersisterAdapter_HasNewConstructor(t *testing.T) {
-	src, err := GeneratePersisterAdapter("myapp")
+	src, err := GeneratePersisterAdapter("myapp", false)
 	if err != nil {
 		t.Fatalf("GeneratePersisterAdapter failed: %v", err)
 	}
@@ -119,7 +119,7 @@ func TestGeneratePersisterAdapter_HasNewConstructor(t *testing.T) {
 }
 
 func TestGeneratePersisterAdapter_HasInterfaceCheck(t *testing.T) {
-	src, err := GeneratePersisterAdapter("myapp")
+	src, err := GeneratePersisterAdapter("myapp", false)
 	if err != nil {
 		t.Fatalf("GeneratePersisterAdapter failed: %v", err)
 	}
@@ -132,7 +132,7 @@ func TestGeneratePersisterAdapter_HasInterfaceCheck(t *testing.T) {
 }
 
 func TestGeneratePersisterAdapter_HasInsertConversation(t *testing.T) {
-	src, err := GeneratePersisterAdapter("myapp")
+	src, err := GeneratePersisterAdapter("myapp", false)
 	if err != nil {
 		t.Fatalf("GeneratePersisterAdapter failed: %v", err)
 	}
@@ -174,7 +174,7 @@ func TestGeneratePersisterAdapter_HasInsertConversation(t *testing.T) {
 }
 
 func TestGeneratePersisterAdapter_InsertConversation_DefaultStartedAt(t *testing.T) {
-	src, err := GeneratePersisterAdapter("myapp")
+	src, err := GeneratePersisterAdapter("myapp", false)
 	if err != nil {
 		t.Fatalf("GeneratePersisterAdapter failed: %v", err)
 	}
@@ -191,7 +191,7 @@ func TestGeneratePersisterAdapter_InsertConversation_DefaultStartedAt(t *testing
 }
 
 func TestGeneratePersisterAdapter_HasUpdateConversation(t *testing.T) {
-	src, err := GeneratePersisterAdapter("myapp")
+	src, err := GeneratePersisterAdapter("myapp", false)
 	if err != nil {
 		t.Fatalf("GeneratePersisterAdapter failed: %v", err)
 	}
@@ -225,7 +225,7 @@ func TestGeneratePersisterAdapter_HasUpdateConversation(t *testing.T) {
 }
 
 func TestGeneratePersisterAdapter_UpdateConversation_NullableFields(t *testing.T) {
-	src, err := GeneratePersisterAdapter("myapp")
+	src, err := GeneratePersisterAdapter("myapp", false)
 	if err != nil {
 		t.Fatalf("GeneratePersisterAdapter failed: %v", err)
 	}
@@ -244,7 +244,7 @@ func TestGeneratePersisterAdapter_UpdateConversation_NullableFields(t *testing.T
 }
 
 func TestGeneratePersisterAdapter_HasInsertMessage(t *testing.T) {
-	src, err := GeneratePersisterAdapter("myapp")
+	src, err := GeneratePersisterAdapter("myapp", false)
 	if err != nil {
 		t.Fatalf("GeneratePersisterAdapter failed: %v", err)
 	}
@@ -276,7 +276,7 @@ func TestGeneratePersisterAdapter_HasInsertMessage(t *testing.T) {
 }
 
 func TestGeneratePersisterAdapter_InsertMessage_NullableFields(t *testing.T) {
-	src, err := GeneratePersisterAdapter("myapp")
+	src, err := GeneratePersisterAdapter("myapp", false)
 	if err != nil {
 		t.Fatalf("GeneratePersisterAdapter failed: %v", err)
 	}
@@ -300,7 +300,7 @@ func TestGeneratePersisterAdapter_InsertMessage_NullableFields(t *testing.T) {
 }
 
 func TestGeneratePersisterAdapter_MonorepoModulePath(t *testing.T) {
-	src, err := GeneratePersisterAdapter("github.com/company/monorepo/services/myservice")
+	src, err := GeneratePersisterAdapter("github.com/company/monorepo/services/myservice", false)
 	if err != nil {
 		t.Fatalf("GeneratePersisterAdapter failed: %v", err)
 	}
@@ -324,7 +324,7 @@ func TestGeneratePersisterAdapter_MonorepoModulePath(t *testing.T) {
 }
 
 func TestGeneratePersisterAdapter_AllThreeMethods(t *testing.T) {
-	src, err := GeneratePersisterAdapter("myapp")
+	src, err := GeneratePersisterAdapter("myapp", false)
 	if err != nil {
 		t.Fatalf("GeneratePersisterAdapter failed: %v", err)
 	}
@@ -345,17 +345,102 @@ func TestGeneratePersisterAdapter_AllThreeMethods(t *testing.T) {
 }
 
 func TestGeneratePersisterAdapter_Deterministic(t *testing.T) {
-	src1, err := GeneratePersisterAdapter("myapp")
+	src1, err := GeneratePersisterAdapter("myapp", false)
 	if err != nil {
 		t.Fatalf("first GeneratePersisterAdapter failed: %v", err)
 	}
 
-	src2, err := GeneratePersisterAdapter("myapp")
+	src2, err := GeneratePersisterAdapter("myapp", false)
 	if err != nil {
 		t.Fatalf("second GeneratePersisterAdapter failed: %v", err)
 	}
 
 	if string(src1) != string(src2) {
 		t.Error("expected deterministic output for same module path")
+	}
+}
+
+func TestGeneratePersisterAdapter_WithAuth_HasAuthorAccountIdConversion(t *testing.T) {
+	src, err := GeneratePersisterAdapter("myapp", true)
+	if err != nil {
+		t.Fatalf("GeneratePersisterAdapter failed: %v", err)
+	}
+
+	code := string(src)
+
+	// Should declare authorAccountId as *int64
+	if !strings.Contains(code, "var authorAccountId *int64") {
+		t.Error("expected var authorAccountId *int64 when hasAuth is true")
+	}
+
+	// Should check AccountID != 0 before taking pointer
+	if !strings.Contains(code, "if params.AccountID != 0") {
+		t.Error("expected AccountID != 0 check for nullable author_account_id")
+	}
+
+	// Should assign pointer when nonzero
+	if !strings.Contains(code, "authorAccountId = &params.AccountID") {
+		t.Error("expected authorAccountId = &params.AccountID when AccountID is nonzero")
+	}
+
+	// Should include AuthorAccountId in insert params
+	if !strings.Contains(code, "AuthorAccountId: authorAccountId,") {
+		t.Error("expected AuthorAccountId field in InsertLLMConversationParams")
+	}
+
+	// Should still compile as valid Go
+	fset := token.NewFileSet()
+	_, err = parser.ParseFile(fset, "zz_generated_persister.go", src, parser.AllErrors)
+	if err != nil {
+		t.Fatalf("generated code (with auth) does not parse as valid Go: %v\n\nSource:\n%s", err, string(src))
+	}
+}
+
+func TestGeneratePersisterAdapter_WithoutAuth_NoAuthorAccountId(t *testing.T) {
+	src, err := GeneratePersisterAdapter("myapp", false)
+	if err != nil {
+		t.Fatalf("GeneratePersisterAdapter failed: %v", err)
+	}
+
+	code := string(src)
+
+	if strings.Contains(code, "authorAccountId") {
+		t.Error("expected no authorAccountId logic when hasAuth is false")
+	}
+
+	if strings.Contains(code, "AuthorAccountId") {
+		t.Error("expected no AuthorAccountId field when hasAuth is false")
+	}
+}
+
+func TestGeneratePersisterAdapter_WithAuth_Deterministic(t *testing.T) {
+	src1, err := GeneratePersisterAdapter("myapp", true)
+	if err != nil {
+		t.Fatalf("first GeneratePersisterAdapter failed: %v", err)
+	}
+
+	src2, err := GeneratePersisterAdapter("myapp", true)
+	if err != nil {
+		t.Fatalf("second GeneratePersisterAdapter failed: %v", err)
+	}
+
+	if string(src1) != string(src2) {
+		t.Error("expected deterministic output for same parameters")
+	}
+}
+
+func TestGeneratePersisterAdapter_DifferentAuthProducesDifferentOutput(t *testing.T) {
+	src1, err := GeneratePersisterAdapter("myapp", false)
+	if err != nil {
+		t.Fatalf("GeneratePersisterAdapter (no auth) failed: %v", err)
+	}
+
+	src2, err := GeneratePersisterAdapter("myapp", true)
+	if err != nil {
+		t.Fatalf("GeneratePersisterAdapter (with auth) failed: %v", err)
+	}
+
+	if string(src1) == string(src2) {
+		t.Error("expected different output for different auth settings")
 	}
 }

@@ -2,6 +2,7 @@ package llmgen
 
 import (
 	"bytes"
+	"encoding/json"
 	"fmt"
 	"go/ast"
 	"go/parser"
@@ -9,6 +10,8 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+
+	"github.com/shipq/shipq/codegen/llmcompile"
 )
 
 // DetectLLMChannels scans channel package directories and returns the names
@@ -157,30 +160,96 @@ func findLLMImportAlias(file *ast.File) string {
 // LLM stream message types. These types are injected into the FromServer
 // union type for LLM-enabled channels.
 //
+// When tool metadata is provided, the function generates:
+//   - Per-tool input/output interfaces derived from JSON Schema
+//   - A LLMToolName union type of all tool name literals
+//   - Discriminated-union variants of LLMToolCallStart and LLMToolCallResult
+//     where tool_name narrows the input/output types
+//
+// When no tool metadata is provided, the function falls back to generic
+// Record<string, unknown> for input/output types.
+//
 // The returned string contains the TypeScript interface definitions and
 // a union type combining all LLM stream message types.
-func GenerateLLMStreamTypeScript() string {
+func GenerateLLMStreamTypeScript(tools []llmcompile.SerializedToolInfo) string {
 	var buf bytes.Buffer
 
 	buf.WriteString("// LLM stream message types (auto-injected by shipq llm compile)\n\n")
+
+	// If we have tool metadata, generate per-tool interfaces and discriminated unions.
+	hasTools := len(tools) > 0
+
+	if hasTools {
+		// Generate per-tool input/output interfaces from JSON Schemas
+		for _, tool := range tools {
+			inputName := toPascalCaseToolType(tool.InputType)
+			outputName := toPascalCaseToolType(tool.OutputType)
+
+			buf.WriteString(fmt.Sprintf("export interface %s ", inputName))
+			writeJSONSchemaAsTS(&buf, tool.InputSchema)
+			buf.WriteString("\n\n")
+
+			buf.WriteString(fmt.Sprintf("export interface %s ", outputName))
+			writeOutputInterfaceStub(&buf, outputName)
+			buf.WriteString("\n\n")
+		}
+
+		// LLMToolName union
+		buf.WriteString("export type LLMToolName =\n")
+		for i, tool := range tools {
+			buf.WriteString(fmt.Sprintf("  | %q", tool.Name))
+			if i < len(tools)-1 {
+				buf.WriteString("\n")
+			} else {
+				buf.WriteString(";\n\n")
+			}
+		}
+	}
 
 	buf.WriteString("export interface LLMTextDelta {\n")
 	buf.WriteString("  text: string;\n")
 	buf.WriteString("}\n\n")
 
-	buf.WriteString("export interface LLMToolCallStart {\n")
-	buf.WriteString("  tool_call_id: string;\n")
-	buf.WriteString("  tool_name: string;\n")
-	buf.WriteString("  input: Record<string, unknown>;\n")
-	buf.WriteString("}\n\n")
+	if hasTools {
+		// Discriminated union for LLMToolCallStart
+		buf.WriteString("export type LLMToolCallStart =\n")
+		for i, tool := range tools {
+			inputName := toPascalCaseToolType(tool.InputType)
+			buf.WriteString(fmt.Sprintf("  | { tool_call_id: string; tool_name: %q; input: %s }", tool.Name, inputName))
+			if i < len(tools)-1 {
+				buf.WriteString("\n")
+			} else {
+				buf.WriteString(";\n\n")
+			}
+		}
 
-	buf.WriteString("export interface LLMToolCallResult {\n")
-	buf.WriteString("  tool_call_id: string;\n")
-	buf.WriteString("  tool_name: string;\n")
-	buf.WriteString("  output?: Record<string, unknown>;\n")
-	buf.WriteString("  error?: string;\n")
-	buf.WriteString("  duration_ms: number;\n")
-	buf.WriteString("}\n\n")
+		// Discriminated union for LLMToolCallResult
+		buf.WriteString("export type LLMToolCallResult =\n")
+		for i, tool := range tools {
+			outputName := toPascalCaseToolType(tool.OutputType)
+			buf.WriteString(fmt.Sprintf("  | { tool_call_id: string; tool_name: %q; output?: %s; error?: string; duration_ms: number }", tool.Name, outputName))
+			if i < len(tools)-1 {
+				buf.WriteString("\n")
+			} else {
+				buf.WriteString(";\n\n")
+			}
+		}
+	} else {
+		// Fallback: generic tool call types
+		buf.WriteString("export interface LLMToolCallStart {\n")
+		buf.WriteString("  tool_call_id: string;\n")
+		buf.WriteString("  tool_name: string;\n")
+		buf.WriteString("  input: Record<string, unknown>;\n")
+		buf.WriteString("}\n\n")
+
+		buf.WriteString("export interface LLMToolCallResult {\n")
+		buf.WriteString("  tool_call_id: string;\n")
+		buf.WriteString("  tool_name: string;\n")
+		buf.WriteString("  output?: Record<string, unknown>;\n")
+		buf.WriteString("  error?: string;\n")
+		buf.WriteString("  duration_ms: number;\n")
+		buf.WriteString("}\n\n")
+	}
 
 	buf.WriteString("export interface LLMDone {\n")
 	buf.WriteString("  text: string;\n")
@@ -190,6 +259,112 @@ func GenerateLLMStreamTypeScript() string {
 	buf.WriteString("}\n")
 
 	return buf.String()
+}
+
+// toPascalCaseToolType converts a Go type name (e.g., "WeatherInput") to a
+// TypeScript-friendly PascalCase name. If the name is already PascalCase,
+// it is returned unchanged.
+func toPascalCaseToolType(name string) string {
+	if name == "" {
+		return "Record<string, unknown>"
+	}
+	return name
+}
+
+// writeJSONSchemaAsTS writes a TypeScript interface body from a JSON Schema
+// object. It handles simple "object" schemas with "properties" and "required".
+// For complex or unsupported schemas, it falls back to Record<string, unknown>.
+func writeJSONSchemaAsTS(buf *bytes.Buffer, schema json.RawMessage) {
+	if len(schema) == 0 {
+		buf.WriteString("{ [key: string]: unknown }")
+		return
+	}
+
+	var obj map[string]json.RawMessage
+	if err := json.Unmarshal(schema, &obj); err != nil {
+		buf.WriteString("{ [key: string]: unknown }")
+		return
+	}
+
+	// Extract properties
+	var props map[string]json.RawMessage
+	if propsRaw, ok := obj["properties"]; ok {
+		if err := json.Unmarshal(propsRaw, &props); err != nil {
+			buf.WriteString("{ [key: string]: unknown }")
+			return
+		}
+	}
+
+	if len(props) == 0 {
+		buf.WriteString("{ [key: string]: unknown }")
+		return
+	}
+
+	// Extract required fields
+	requiredSet := make(map[string]bool)
+	if reqRaw, ok := obj["required"]; ok {
+		var required []string
+		if err := json.Unmarshal(reqRaw, &required); err == nil {
+			for _, r := range required {
+				requiredSet[r] = true
+			}
+		}
+	}
+
+	buf.WriteString("{\n")
+	for propName, propSchema := range props {
+		tsType := jsonSchemaTypeToTS(propSchema)
+		optional := ""
+		if !requiredSet[propName] {
+			optional = "?"
+		}
+		fmt.Fprintf(buf, "  %s%s: %s;\n", propName, optional, tsType)
+	}
+	buf.WriteString("}")
+}
+
+// jsonSchemaTypeToTS converts a JSON Schema type definition to a TypeScript type string.
+func jsonSchemaTypeToTS(schema json.RawMessage) string {
+	var obj map[string]json.RawMessage
+	if err := json.Unmarshal(schema, &obj); err != nil {
+		return "unknown"
+	}
+
+	typeRaw, ok := obj["type"]
+	if !ok {
+		return "unknown"
+	}
+
+	var typeStr string
+	if err := json.Unmarshal(typeRaw, &typeStr); err != nil {
+		return "unknown"
+	}
+
+	switch typeStr {
+	case "string":
+		return "string"
+	case "number", "integer":
+		return "number"
+	case "boolean":
+		return "boolean"
+	case "array":
+		itemType := "unknown"
+		if items, ok := obj["items"]; ok {
+			itemType = jsonSchemaTypeToTS(items)
+		}
+		return itemType + "[]"
+	case "object":
+		return "Record<string, unknown>"
+	default:
+		return "unknown"
+	}
+}
+
+// writeOutputInterfaceStub writes a generic output interface body.
+// Output types don't have JSON Schema metadata from the compile step,
+// so we generate a permissive Record-based type.
+func writeOutputInterfaceStub(buf *bytes.Buffer, _ string) {
+	buf.WriteString("{ [key: string]: unknown }")
 }
 
 // LLMFromServerUnionMembers returns the TypeScript union type members for
@@ -236,6 +411,54 @@ func WriteLLMChannelsMarker(shipqRoot string, llmChannelPkgs []string) error {
 	}
 
 	return nil
+}
+
+// WriteLLMToolsMarker writes a JSON marker file containing serialized tool
+// metadata (names, descriptions, JSON Schemas, input/output types). This
+// marker is read by `shipq workers compile` to generate typed TypeScript
+// interfaces for tool call inputs and outputs.
+//
+// The marker file is written to .shipq/llm_tools.json.
+func WriteLLMToolsMarker(shipqRoot string, tools []llmcompile.SerializedToolInfo) error {
+	markerDir := filepath.Join(shipqRoot, ".shipq")
+	if err := os.MkdirAll(markerDir, 0755); err != nil {
+		return fmt.Errorf("failed to create .shipq directory: %w", err)
+	}
+
+	data, err := json.MarshalIndent(tools, "", "  ")
+	if err != nil {
+		return fmt.Errorf("failed to marshal tool metadata: %w", err)
+	}
+	data = append(data, '\n')
+
+	markerPath := filepath.Join(markerDir, "llm_tools.json")
+	if err := os.WriteFile(markerPath, data, 0644); err != nil {
+		return fmt.Errorf("failed to write llm_tools.json: %w", err)
+	}
+
+	return nil
+}
+
+// ReadLLMToolsMarker reads the .shipq/llm_tools.json marker file and returns
+// the list of serialized tool metadata.
+// Returns nil (not an error) if the marker file does not exist.
+func ReadLLMToolsMarker(shipqRoot string) ([]llmcompile.SerializedToolInfo, error) {
+	markerPath := filepath.Join(shipqRoot, ".shipq", "llm_tools.json")
+
+	data, err := os.ReadFile(markerPath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("failed to read llm_tools.json: %w", err)
+	}
+
+	var tools []llmcompile.SerializedToolInfo
+	if err := json.Unmarshal(data, &tools); err != nil {
+		return nil, fmt.Errorf("failed to parse llm_tools.json: %w", err)
+	}
+
+	return tools, nil
 }
 
 // ReadLLMChannelsMarker reads the .shipq/llm_channels.json marker file

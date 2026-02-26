@@ -18,7 +18,7 @@ import (
 //
 // The generated adapter translates between the llm.* param/result types and
 // the queries.* param/result types produced by the querydef compiler.
-func GeneratePersisterAdapter(modulePath string) ([]byte, error) {
+func GeneratePersisterAdapter(modulePath string, hasAuth bool) ([]byte, error) {
 	var buf bytes.Buffer
 
 	llmPkg := modulePath + "/shipq/lib/llm"
@@ -58,11 +58,23 @@ func GeneratePersisterAdapter(modulePath string) ([]byte, error) {
 	buf.WriteString("\tif startedAt.IsZero() {\n")
 	buf.WriteString("\t\tstartedAt = time.Now()\n")
 	buf.WriteString("\t}\n\n")
+	if hasAuth {
+		buf.WriteString("\t// Convert AccountID to *int64 for nullable author_account_id.\n")
+		buf.WriteString("\t// Public (unauthenticated) users have AccountID == 0 → NULL.\n")
+		buf.WriteString("\tvar authorAccountId *int64\n")
+		buf.WriteString("\tif params.AccountID != 0 {\n")
+		buf.WriteString("\t\tauthorAccountId = &params.AccountID\n")
+		buf.WriteString("\t}\n\n")
+	}
+
 	buf.WriteString("\tresult, err := p.runner.InsertLLMConversation(ctx, queries.InsertLLMConversationParams{\n")
 	buf.WriteString("\t\tPublicId:    params.PublicID,\n")
 	buf.WriteString("\t\tJobId:       params.JobID,\n")
 	buf.WriteString("\t\tChannelName: params.ChannelName,\n")
 	buf.WriteString("\t\tAccountId:   params.AccountID,\n")
+	if hasAuth {
+		buf.WriteString("\t\tAuthorAccountId: authorAccountId,\n")
+	}
 	buf.WriteString("\t\tProvider:    params.Provider,\n")
 	buf.WriteString("\t\tModel:       params.Model,\n")
 	buf.WriteString("\t\tStatus:      string(params.Status),\n")

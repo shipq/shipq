@@ -13,9 +13,11 @@ import (
 // Parameters:
 //   - modulePath: the user's Go module path (e.g., "myapp")
 //   - hasTenancy: if true, includes organization_id in relevant queries
+//   - hasAuth: if true, includes author_account_id (nullable *int64) in
+//     InsertLLMConversation for author tracking
 //
 // Returns the generated Go source code for the querydefs file.
-func GenerateLLMQuerydefs(modulePath string, hasTenancy bool) []byte {
+func GenerateLLMQuerydefs(modulePath string, hasTenancy bool, hasAuth bool) []byte {
 	var buf bytes.Buffer
 
 	schemaPkg := modulePath + "/shipq/db/schema"
@@ -39,6 +41,9 @@ func GenerateLLMQuerydefs(modulePath string, hasTenancy bool) []byte {
 	buf.WriteString("\t\t\t\tschema.LlmConversations.JobId(),\n")
 	buf.WriteString("\t\t\t\tschema.LlmConversations.ChannelName(),\n")
 	buf.WriteString("\t\t\t\tschema.LlmConversations.AccountId(),\n")
+	if hasAuth {
+		buf.WriteString("\t\t\t\tschema.LlmConversations.AuthorAccountId(),\n")
+	}
 	if hasTenancy {
 		buf.WriteString("\t\t\t\tschema.LlmConversations.OrganizationId(),\n")
 	}
@@ -52,6 +57,9 @@ func GenerateLLMQuerydefs(modulePath string, hasTenancy bool) []byte {
 	buf.WriteString("\t\t\t\tquery.Param[string](\"jobId\"),\n")
 	buf.WriteString("\t\t\t\tquery.Param[string](\"channelName\"),\n")
 	buf.WriteString("\t\t\t\tquery.Param[int64](\"accountId\"),\n")
+	if hasAuth {
+		buf.WriteString("\t\t\t\tquery.Param[*int64](\"authorAccountId\"),\n")
+	}
 	if hasTenancy {
 		buf.WriteString("\t\t\t\tquery.Param[int64](\"organizationId\"),\n")
 	}

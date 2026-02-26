@@ -12,7 +12,7 @@ import (
 // (react/shipq-channels.ts). It produces a React hook per frontend channel that
 // wraps the base dispatch function with useState, useRef, useEffect cleanup,
 // and useCallback for stable references.
-func GenerateReactChannelHooks(channels []codegen.SerializedChannelInfo) ([]byte, error) {
+func GenerateReactChannelHooks(channels []codegen.SerializedChannelInfo, llmCfg *LLMConfig) ([]byte, error) {
 	// Filter to frontend-only channels
 	var frontendChannels []codegen.SerializedChannelInfo
 	for _, ch := range channels {
@@ -42,7 +42,8 @@ func GenerateReactChannelHooks(channels []codegen.SerializedChannelInfo) ([]byte
 
 	// Generate per-channel hooks
 	for _, ch := range frontendChannels {
-		if err := generateReactChannelHook(&buf, ch); err != nil {
+		isLLM := llmCfg != nil && llmCfg.isLLMChannel(ch)
+		if err := generateReactChannelHook(&buf, ch, isLLM); err != nil {
 			return nil, fmt.Errorf("generate react hook for channel %q: %w", ch.Name, err)
 		}
 	}
@@ -68,7 +69,7 @@ func writeReactChannelImports(buf *bytes.Buffer, ch codegen.SerializedChannelInf
 }
 
 // generateReactChannelHook generates the React hook for a single channel.
-func generateReactChannelHook(buf *bytes.Buffer, ch codegen.SerializedChannelInfo) error {
+func generateReactChannelHook(buf *bytes.Buffer, ch codegen.SerializedChannelInfo, isLLM bool) error {
 	pascalName := tsutil.ToPascalCase(ch.Name)
 	camelName := tsutil.ToCamelCase(ch.Name)
 	hookName := "use" + pascalName
@@ -107,6 +108,13 @@ func generateReactChannelHook(buf *bytes.Buffer, ch codegen.SerializedChannelInf
 	for _, msg := range fromServerMsgs {
 		fmt.Fprintf(buf, "  /** Called when a %s message is received */\n", msg.TypeName)
 		fmt.Fprintf(buf, "  on%s?: (msg: %s) => void;\n", msg.TypeName, msg.TypeName)
+	}
+	// LLM stream event handlers
+	if isLLM {
+		for _, llmType := range llmStreamTypeNames() {
+			fmt.Fprintf(buf, "  /** Called when a %s LLM event is received */\n", llmType)
+			fmt.Fprintf(buf, "  on%s?: (msg: %s) => void;\n", llmType, llmType)
+		}
 	}
 	buf.WriteString("}\n")
 
@@ -174,6 +182,12 @@ func generateReactChannelHook(buf *bytes.Buffer, ch codegen.SerializedChannelInf
 	buf.WriteString("      // Wire up FromServer handlers\n")
 	for _, msg := range fromServerMsgs {
 		fmt.Fprintf(buf, "      ch.on%s((msg) => optionsRef.current?.on%s?.(msg));\n", msg.TypeName, msg.TypeName)
+	}
+	// Wire up LLM stream handlers
+	if isLLM {
+		for _, llmType := range llmStreamTypeNames() {
+			fmt.Fprintf(buf, "      ch.on%s((msg) => optionsRef.current?.on%s?.(msg));\n", llmType, llmType)
+		}
 	}
 	buf.WriteString("\n")
 	buf.WriteString("      optionsRef.current?.onReady?.(ch);\n")
