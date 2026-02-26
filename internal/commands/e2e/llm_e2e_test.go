@@ -47,6 +47,7 @@ func TestPersistenceRoundtrip(t *testing.T) {
 			"job_id" TEXT NOT NULL,
 			"channel_name" TEXT NOT NULL,
 			"account_id" INTEGER,
+			"author_account_id" INTEGER,
 			"provider" TEXT NOT NULL,
 			"model" TEXT NOT NULL,
 			"system_prompt" TEXT,
@@ -95,7 +96,7 @@ func TestPersistenceRoundtrip(t *testing.T) {
 		AccountID:   0,
 		Provider:    "test-provider",
 		Model:       "test-model",
-		Status:      llm.StatusRunning,
+		Status:      llm.ConversationStatusRunning,
 		StartedAt:   time.Now(),
 	})
 	if err != nil {
@@ -112,7 +113,7 @@ func TestPersistenceRoundtrip(t *testing.T) {
 	err = persister.InsertMessage(ctx, llm.InsertMessageParams{
 		PublicID:       "msg-1",
 		ConversationID: row.ID,
-		Role:           llm.RoleUser,
+		Role:           llm.MessageRoleUser,
 		Content:        "Hello, world!",
 	})
 	if err != nil {
@@ -123,7 +124,7 @@ func TestPersistenceRoundtrip(t *testing.T) {
 	err = persister.InsertMessage(ctx, llm.InsertMessageParams{
 		PublicID:       "msg-2",
 		ConversationID: row.ID,
-		Role:           llm.RoleAssistant,
+		Role:           llm.MessageRoleAssistant,
 		Content:        "Hi there!",
 	})
 	if err != nil {
