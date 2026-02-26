@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"testing"
 	"time"
 
@@ -374,8 +375,11 @@ func TestNewTestClientWithDB(t *testing.T) {
 	client, db := NewTestClientWithDB(t, mock)
 
 	// Verify tables exist by querying them.
+	countConvSQL, _ := compileSQL(countConversationsAST)
+	countMsgSQL, _ := compileSQL(countAllMessagesAST)
+
 	var count int
-	err := db.QueryRow(`SELECT COUNT(*) FROM llm_conversations`).Scan(&count)
+	err := db.QueryRow(countConvSQL).Scan(&count)
 	if err != nil {
 		t.Fatalf("llm_conversations table not accessible: %v", err)
 	}
@@ -383,7 +387,7 @@ func TestNewTestClientWithDB(t *testing.T) {
 		t.Errorf("expected 0 conversations initially, got %d", count)
 	}
 
-	err = db.QueryRow(`SELECT COUNT(*) FROM llm_messages`).Scan(&count)
+	err = db.QueryRow(countMsgSQL).Scan(&count)
 	if err != nil {
 		t.Fatalf("llm_messages table not accessible: %v", err)
 	}
@@ -404,7 +408,7 @@ func TestNewTestClientWithDB(t *testing.T) {
 	}
 
 	// Verify conversation row was created.
-	err = db.QueryRow(`SELECT COUNT(*) FROM llm_conversations`).Scan(&count)
+	err = db.QueryRow(countConvSQL).Scan(&count)
 	if err != nil {
 		t.Fatalf("query conversations: %v", err)
 	}
@@ -413,7 +417,7 @@ func TestNewTestClientWithDB(t *testing.T) {
 	}
 
 	// Verify messages were persisted (user + assistant = 2).
-	err = db.QueryRow(`SELECT COUNT(*) FROM llm_messages`).Scan(&count)
+	err = db.QueryRow(countMsgSQL).Scan(&count)
 	if err != nil {
 		t.Fatalf("query messages: %v", err)
 	}
@@ -450,8 +454,12 @@ func TestNewTestClientWithDB_WithToolCalls(t *testing.T) {
 	AssertConversationPersisted(t, db, resp.ConversationID, "completed")
 
 	// Get the conversation's internal ID.
+	convIDSQL, convIDParamOrder := compileSQL(selectConversationByPublicIDAST)
+	convIDArgs := mapParams(convIDParamOrder, map[string]any{
+		"public_id": resp.ConversationID,
+	})
 	var convID int64
-	err = db.QueryRow(`SELECT id FROM llm_conversations WHERE public_id = ?`, resp.ConversationID).Scan(&convID)
+	err = db.QueryRow(convIDSQL, convIDArgs...).Scan(&convID)
 	if err != nil {
 		t.Fatalf("query conversation id: %v", err)
 	}
@@ -473,8 +481,12 @@ func TestNewTestClientWithDB_ConversationStatus(t *testing.T) {
 	}
 
 	// Verify the final status is "completed".
+	statusSQL, statusParamOrder := compileSQL(selectConversationStatusByPublicIDAST)
+	statusArgs := mapParams(statusParamOrder, map[string]any{
+		"public_id": resp.ConversationID,
+	})
 	var status string
-	err = db.QueryRow(`SELECT status FROM llm_conversations WHERE public_id = ?`, resp.ConversationID).Scan(&status)
+	err = db.QueryRow(statusSQL, statusArgs...).Scan(&status)
 	if err != nil {
 		t.Fatalf("query status: %v", err)
 	}
@@ -494,11 +506,12 @@ func TestNewTestClientWithDB_TokenCounts(t *testing.T) {
 		t.Fatalf("Chat: %v", err)
 	}
 
+	tokensSQL, tokensParamOrder := compileSQL(selectConversationTokensByPublicIDAST)
+	tokensArgs := mapParams(tokensParamOrder, map[string]any{
+		"public_id": resp.ConversationID,
+	})
 	var inputTokens, outputTokens int
-	err = db.QueryRow(
-		`SELECT total_input_tokens, total_output_tokens FROM llm_conversations WHERE public_id = ?`,
-		resp.ConversationID,
-	).Scan(&inputTokens, &outputTokens)
+	err = db.QueryRow(tokensSQL, tokensArgs...).Scan(&inputTokens, &outputTokens)
 	if err != nil {
 		t.Fatalf("query tokens: %v", err)
 	}
@@ -515,13 +528,15 @@ func TestNewTestClientWithDB_TokenCounts(t *testing.T) {
 func TestAssertConversationPersisted_Found(t *testing.T) {
 	db := openTestDB(t)
 
-	// Insert a conversation manually.
-	_, err := db.Exec(
-		`INSERT INTO llm_conversations (public_id, provider, model, status, started_at)
-		 VALUES (?, ?, ?, ?, ?)`,
-		"conv_test_123", "mock", "mock-model", "completed",
-		time.Now().Format(time.RFC3339),
-	)
+	// Insert a conversation using compiled AST.
+	insertConvTestSQL, insertConvTestParamOrder := compileSQL(insertTestConversationAST)
+	_, err := db.Exec(insertConvTestSQL, mapParams(insertConvTestParamOrder, map[string]any{
+		"public_id":  "conv_test_123",
+		"provider":   "mock",
+		"model":      "mock-model",
+		"status":     "completed",
+		"started_at": time.Now().Format("2006-01-02T15:04:05.000Z07:00"),
+	})...)
 	if err != nil {
 		t.Fatalf("insert: %v", err)
 	}
@@ -532,12 +547,14 @@ func TestAssertConversationPersisted_Found(t *testing.T) {
 func TestAssertConversationPersisted_Running(t *testing.T) {
 	db := openTestDB(t)
 
-	_, err := db.Exec(
-		`INSERT INTO llm_conversations (public_id, provider, model, status, started_at)
-		 VALUES (?, ?, ?, ?, ?)`,
-		"conv_running", "mock", "mock-model", "running",
-		time.Now().Format(time.RFC3339),
-	)
+	insertConvTestSQL, insertConvTestParamOrder := compileSQL(insertTestConversationAST)
+	_, err := db.Exec(insertConvTestSQL, mapParams(insertConvTestParamOrder, map[string]any{
+		"public_id":  "conv_running",
+		"provider":   "mock",
+		"model":      "mock-model",
+		"status":     "running",
+		"started_at": time.Now().Format("2006-01-02T15:04:05.000Z07:00"),
+	})...)
 	if err != nil {
 		t.Fatalf("insert: %v", err)
 	}
@@ -548,12 +565,16 @@ func TestAssertConversationPersisted_Running(t *testing.T) {
 func TestAssertConversationPersisted_Failed(t *testing.T) {
 	db := openTestDB(t)
 
-	_, err := db.Exec(
-		`INSERT INTO llm_conversations (public_id, provider, model, status, started_at, error_message)
-		 VALUES (?, ?, ?, ?, ?, ?)`,
-		"conv_failed", "mock", "mock-model", "failed",
-		time.Now().Format(time.RFC3339), "something went wrong",
-	)
+	insertConvErrSQL, insertConvErrParamOrder := compileSQL(insertTestConversationWithErrorAST)
+	errMsg := "something went wrong"
+	_, err := db.Exec(insertConvErrSQL, mapParams(insertConvErrParamOrder, map[string]any{
+		"public_id":     "conv_failed",
+		"provider":      "mock",
+		"model":         "mock-model",
+		"status":        "failed",
+		"started_at":    time.Now().Format("2006-01-02T15:04:05.000Z07:00"),
+		"error_message": &errMsg,
+	})...)
 	if err != nil {
 		t.Fatalf("insert: %v", err)
 	}
@@ -567,9 +588,9 @@ func TestAssertMessageCount_Correct(t *testing.T) {
 	db := openTestDB(t)
 	convID := insertTestConversation(t, db, "conv_mc")
 
-	insertTestMessage(t, db, convID, 0, "user")
-	insertTestMessage(t, db, convID, 1, "assistant")
-	insertTestMessage(t, db, convID, 2, "tool_call")
+	insertTestMessage(t, db, convID, "user")
+	insertTestMessage(t, db, convID, "assistant")
+	insertTestMessage(t, db, convID, "tool_call")
 
 	AssertMessageCount(t, db, convID, 3)
 }
@@ -590,7 +611,7 @@ func TestAssertMessageCount_Many(t *testing.T) {
 		if i%2 == 1 {
 			role = "assistant"
 		}
-		insertTestMessage(t, db, convID, i, role)
+		insertTestMessage(t, db, convID, role)
 	}
 
 	AssertMessageCount(t, db, convID, 10)
@@ -602,11 +623,11 @@ func TestAssertMessageSequence_Correct(t *testing.T) {
 	db := openTestDB(t)
 	convID := insertTestConversation(t, db, "conv_ms")
 
-	insertTestMessage(t, db, convID, 0, "user")
-	insertTestMessage(t, db, convID, 1, "assistant")
-	insertTestMessage(t, db, convID, 2, "tool_call")
-	insertTestMessage(t, db, convID, 3, "tool_result")
-	insertTestMessage(t, db, convID, 4, "assistant")
+	insertTestMessage(t, db, convID, "user")
+	insertTestMessage(t, db, convID, "assistant")
+	insertTestMessage(t, db, convID, "tool_call")
+	insertTestMessage(t, db, convID, "tool_result")
+	insertTestMessage(t, db, convID, "assistant")
 
 	AssertMessageSequence(t, db, convID, "user", "assistant", "tool_call", "tool_result", "assistant")
 }
@@ -615,8 +636,8 @@ func TestAssertMessageSequence_SimpleConversation(t *testing.T) {
 	db := openTestDB(t)
 	convID := insertTestConversation(t, db, "conv_ms_simple")
 
-	insertTestMessage(t, db, convID, 0, "user")
-	insertTestMessage(t, db, convID, 1, "assistant")
+	insertTestMessage(t, db, convID, "user")
+	insertTestMessage(t, db, convID, "assistant")
 
 	AssertMessageSequence(t, db, convID, "user", "assistant")
 }
@@ -625,28 +646,28 @@ func TestAssertMessageSequence_MultipleToolCalls(t *testing.T) {
 	db := openTestDB(t)
 	convID := insertTestConversation(t, db, "conv_ms_multi")
 
-	insertTestMessage(t, db, convID, 0, "user")
-	insertTestMessage(t, db, convID, 1, "assistant")
-	insertTestMessage(t, db, convID, 2, "tool_call")
-	insertTestMessage(t, db, convID, 3, "tool_result")
-	insertTestMessage(t, db, convID, 4, "tool_call")
-	insertTestMessage(t, db, convID, 5, "tool_result")
-	insertTestMessage(t, db, convID, 6, "assistant")
+	insertTestMessage(t, db, convID, "user")
+	insertTestMessage(t, db, convID, "assistant")
+	insertTestMessage(t, db, convID, "tool_call")
+	insertTestMessage(t, db, convID, "tool_result")
+	insertTestMessage(t, db, convID, "tool_call")
+	insertTestMessage(t, db, convID, "tool_result")
+	insertTestMessage(t, db, convID, "assistant")
 
 	AssertMessageSequence(t, db, convID,
 		"user", "assistant", "tool_call", "tool_result",
 		"tool_call", "tool_result", "assistant")
 }
 
-func TestAssertMessageSequence_OrderedBySequence(t *testing.T) {
+func TestAssertMessageSequence_OrderedByCreatedAt(t *testing.T) {
 	db := openTestDB(t)
 	convID := insertTestConversation(t, db, "conv_ms_order")
 
-	// Insert in reverse order — the assertion should still pass because
-	// it orders by sequence ASC.
-	insertTestMessage(t, db, convID, 2, "assistant")
-	insertTestMessage(t, db, convID, 0, "user")
-	insertTestMessage(t, db, convID, 1, "assistant")
+	// Messages are ordered by created_at ASC. Sequential insertions
+	// with incrementing timestamps ensure deterministic ordering.
+	insertTestMessage(t, db, convID, "user")
+	insertTestMessage(t, db, convID, "assistant")
+	insertTestMessage(t, db, convID, "assistant")
 
 	AssertMessageSequence(t, db, convID, "user", "assistant", "assistant")
 }
@@ -691,8 +712,12 @@ func TestFullConversationWithDBPersistence(t *testing.T) {
 	// Verify DB persistence.
 	AssertConversationPersisted(t, db, resp.ConversationID, "completed")
 
+	convIDSQL, convIDParamOrder := compileSQL(selectConversationByPublicIDAST)
+	convIDArgs := mapParams(convIDParamOrder, map[string]any{
+		"public_id": resp.ConversationID,
+	})
 	var convID int64
-	err = db.QueryRow(`SELECT id FROM llm_conversations WHERE public_id = ?`, resp.ConversationID).Scan(&convID)
+	err = db.QueryRow(convIDSQL, convIDArgs...).Scan(&convID)
 	if err != nil {
 		t.Fatalf("query conv id: %v", err)
 	}
@@ -702,11 +727,12 @@ func TestFullConversationWithDBPersistence(t *testing.T) {
 	AssertMessageCount(t, db, convID, 5)
 
 	// Verify token counts were persisted.
+	tokensSQL, tokensParamOrder := compileSQL(selectConversationTokensAST)
+	tokensArgs := mapParams(tokensParamOrder, map[string]any{
+		"id": convID,
+	})
 	var inputTokens, outputTokens, toolCallCount int
-	err = db.QueryRow(
-		`SELECT total_input_tokens, total_output_tokens, tool_call_count
-		 FROM llm_conversations WHERE id = ?`, convID,
-	).Scan(&inputTokens, &outputTokens, &toolCallCount)
+	err = db.QueryRow(tokensSQL, tokensArgs...).Scan(&inputTokens, &outputTokens, &toolCallCount)
 	if err != nil {
 		t.Fatalf("query token counts: %v", err)
 	}
@@ -721,10 +747,12 @@ func TestFullConversationWithDBPersistence(t *testing.T) {
 	}
 
 	// Verify provider and model were recorded.
+	pmSQL, pmParamOrder := compileSQL(selectConversationProviderModelAST)
+	pmArgs := mapParams(pmParamOrder, map[string]any{
+		"id": convID,
+	})
 	var provider, model string
-	err = db.QueryRow(
-		`SELECT provider, model FROM llm_conversations WHERE id = ?`, convID,
-	).Scan(&provider, &model)
+	err = db.QueryRow(pmSQL, pmArgs...).Scan(&provider, &model)
 	if err != nil {
 		t.Fatalf("query provider/model: %v", err)
 	}
@@ -756,12 +784,14 @@ func openTestDB(t *testing.T) *sql.DB {
 // insertTestConversation inserts a conversation row and returns its ID.
 func insertTestConversation(t *testing.T, db *sql.DB, publicID string) int64 {
 	t.Helper()
-	result, err := db.Exec(
-		`INSERT INTO llm_conversations (public_id, provider, model, status, started_at)
-		 VALUES (?, ?, ?, ?, ?)`,
-		publicID, "mock", "mock-model", "running",
-		time.Now().Format(time.RFC3339),
-	)
+	sqlStr, paramOrder := compileSQL(insertTestConversationAST)
+	result, err := db.Exec(sqlStr, mapParams(paramOrder, map[string]any{
+		"public_id":  publicID,
+		"provider":   "mock",
+		"model":      "mock-model",
+		"status":     "running",
+		"started_at": time.Now().Format("2006-01-02T15:04:05.000Z07:00"),
+	})...)
 	if err != nil {
 		t.Fatalf("insert conversation: %v", err)
 	}
@@ -772,15 +802,27 @@ func insertTestConversation(t *testing.T, db *sql.DB, publicID string) int64 {
 	return id
 }
 
+// testMsgCounter is a package-level counter used to generate unique,
+// monotonically increasing timestamps for insertTestMessage. This ensures
+// deterministic ordering by created_at even when messages are inserted
+// within the same millisecond.
+var testMsgCounter int64
+
 // insertTestMessage inserts a message row for testing.
-func insertTestMessage(t *testing.T, db *sql.DB, conversationID int64, sequence int, role string) {
+func insertTestMessage(t *testing.T, db *sql.DB, conversationID int64, role string) {
 	t.Helper()
-	_, err := db.Exec(
-		`INSERT INTO llm_messages (conversation_id, sequence, role, content, created_at)
-		 VALUES (?, ?, ?, ?, ?)`,
-		conversationID, sequence, role, "test content",
-		time.Now().Format(time.RFC3339),
-	)
+	testMsgCounter++
+	// Use a monotonically increasing base time so that created_at ordering
+	// is deterministic regardless of wall-clock resolution.
+	ts := time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC).Add(time.Duration(testMsgCounter) * time.Millisecond)
+	sqlStr, paramOrder := compileSQL(insertTestMessageAST)
+	_, err := db.Exec(sqlStr, mapParams(paramOrder, map[string]any{
+		"public_id":       fmt.Sprintf("msg_%d_%d", conversationID, testMsgCounter),
+		"conversation_id": conversationID,
+		"role":            role,
+		"content":         "test content",
+		"created_at":      ts.Format("2006-01-02T15:04:05.000Z07:00"),
+	})...)
 	if err != nil {
 		t.Fatalf("insert message: %v", err)
 	}

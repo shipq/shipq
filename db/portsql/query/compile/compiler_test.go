@@ -452,8 +452,8 @@ func TestDialect_NowFunc(t *testing.T) {
 		expected string
 	}{
 		{Postgres, "NOW()"},
-		{MySQL, "NOW()"},
-		{SQLite, "datetime('now')"},
+		{MySQL, "NOW(3)"},
+		{SQLite, "strftime('%Y-%m-%dT%H:%M:%fZ','now')"},
 	}
 
 	for _, tt := range tests {

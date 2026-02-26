@@ -263,10 +263,10 @@ func TestSQLiteIntegration_InsertWithDatetimeNow(t *testing.T) {
 		t.Fatalf("failed to query: %v", err)
 	}
 
-	// Should be ISO8601 format
-	_, err = time.Parse("2006-01-02 15:04:05", createdAt)
+	// Should be ISO8601 format with millisecond precision (from strftime)
+	_, err = time.Parse("2006-01-02T15:04:05.000Z", createdAt)
 	if err != nil {
-		t.Errorf("created_at should be valid datetime: %s (error: %v)", createdAt, err)
+		t.Errorf("created_at should be valid ISO8601 datetime with ms precision: %s (error: %v)", createdAt, err)
 	}
 	t.Logf("created_at was set to: %s", createdAt)
 }
@@ -747,7 +747,7 @@ func TestSQLiteIntegration_ComplexQuery(t *testing.T) {
 			quantity INTEGER NOT NULL,
 			FOREIGN KEY (order_id) REFERENCES test_complex_orders(id)
 		);
-		INSERT INTO test_complex_orders (id, public_id, status) VALUES 
+		INSERT INTO test_complex_orders (id, public_id, status) VALUES
 			(1, 'ord1', 'pending'),
 			(2, 'ord2', 'processing'),
 			(3, 'ord3', 'shipped');

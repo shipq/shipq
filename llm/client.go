@@ -163,6 +163,7 @@ func (c *Client) run(ctx context.Context, history []ProviderMessage) (*Response,
 		last := history[len(history)-1]
 		if last.Role == RoleUser {
 			if err := c.persister.InsertMessage(ctx, InsertMessageParams{
+				PublicID:       generatePublicID(),
 				ConversationID: convID,
 				Role:           MessageRoleUser,
 				Content:        last.Text,
@@ -201,6 +202,7 @@ func (c *Client) run(ctx context.Context, history []ProviderMessage) (*Response,
 		// ── 3b. Persist assistant message ─────────────────────────────────────
 		if c.persister != nil {
 			if err := c.persister.InsertMessage(ctx, InsertMessageParams{
+				PublicID:       generatePublicID(),
 				ConversationID: convID,
 				Role:           MessageRoleAssistant,
 				Content:        provResp.Text,
@@ -428,6 +430,7 @@ func (c *Client) executeOne(ctx context.Context, convID int64, tc ToolCall) (Too
 	// Persist tool_call message.
 	if c.persister != nil {
 		if err := c.persister.InsertMessage(ctx, InsertMessageParams{
+			PublicID:       generatePublicID(),
 			ConversationID: convID,
 			Role:           MessageRoleToolCall,
 			Content:        string(tc.ArgsJSON),
@@ -511,6 +514,7 @@ func (c *Client) executeOne(ctx context.Context, convID int64, tc ToolCall) (Too
 			resultContent = execErr.Error()
 		}
 		if err := c.persister.InsertMessage(ctx, InsertMessageParams{
+			PublicID:       generatePublicID(),
 			ConversationID: convID,
 			Role:           MessageRoleToolResult,
 			Content:        resultContent,

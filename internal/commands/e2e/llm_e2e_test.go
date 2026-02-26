@@ -8,6 +8,163 @@ import (
 	"testing"
 )
 
+// writePersistenceRoundtripTest writes a Go test file into the generated project
+// that exercises InsertConversation + InsertMessage against a real SQLite DB.
+// This test is picked up by `go test ./...` in the E2E scenario.
+func writePersistenceRoundtripTest(t *testing.T, projectDir string) {
+	t.Helper()
+	mod := readModulePath(t, projectDir)
+	dir := filepath.Join(projectDir, "llmpersist_test")
+	mustMkdirAll(t, dir)
+	mustWriteFile(t, filepath.Join(dir, "persist_roundtrip_test.go"), `package llmpersist_test
+
+import (
+	"context"
+	"database/sql"
+	"testing"
+	"time"
+
+	"`+mod+`/shipq/lib/llm"
+	"`+mod+`/shipq/lib/llmpersist"
+	dbrunner "`+mod+`/shipq/queries/sqlite"
+
+	_ "modernc.org/sqlite"
+)
+
+func TestPersistenceRoundtrip(t *testing.T) {
+	db, err := sql.Open("sqlite", ":memory:")
+	if err != nil {
+		t.Fatalf("open sqlite: %v", err)
+	}
+	defer db.Close()
+
+	// Run migrations via the schema embedded in the migration files.
+	// We apply the DDL directly since we know the SQLite schema.
+	for _, ddl := range []string{
+		`+"`"+`CREATE TABLE "llm_conversations" (
+			"id" INTEGER PRIMARY KEY,
+			"public_id" TEXT NOT NULL UNIQUE,
+			"job_id" TEXT NOT NULL,
+			"channel_name" TEXT NOT NULL,
+			"account_id" INTEGER,
+			"provider" TEXT NOT NULL,
+			"model" TEXT NOT NULL,
+			"system_prompt" TEXT,
+			"total_input_tokens" INTEGER NOT NULL DEFAULT 0,
+			"total_output_tokens" INTEGER NOT NULL DEFAULT 0,
+			"tool_call_count" INTEGER NOT NULL DEFAULT 0,
+			"status" TEXT NOT NULL DEFAULT 'running',
+			"error_message" TEXT,
+			"started_at" TEXT NOT NULL,
+			"completed_at" TEXT,
+			"created_at" TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+			"updated_at" TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+		)`+"`"+`,
+		`+"`"+`CREATE TABLE "llm_messages" (
+			"id" INTEGER PRIMARY KEY,
+			"public_id" TEXT NOT NULL UNIQUE,
+			"conversation_id" INTEGER NOT NULL,
+			"role" TEXT NOT NULL,
+			"content" TEXT,
+			"tool_name" TEXT,
+			"tool_call_id" TEXT,
+			"tool_input" TEXT,
+			"tool_output" TEXT,
+			"tool_error" TEXT,
+			"tool_duration_ms" INTEGER,
+			"input_tokens" INTEGER NOT NULL DEFAULT 0,
+			"output_tokens" INTEGER NOT NULL DEFAULT 0,
+			"created_at" TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+			"updated_at" TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+		)`+"`"+`,
+	} {
+		if _, err := db.Exec(ddl); err != nil {
+			t.Fatalf("exec DDL: %v", err)
+		}
+	}
+
+	runner := dbrunner.NewQueryRunner(db)
+	persister := llmpersist.New(runner)
+	ctx := context.Background()
+
+	// 1. InsertConversation
+	row, err := persister.InsertConversation(ctx, llm.InsertConversationParams{
+		PublicID:    "conv-roundtrip-1",
+		JobID:       "job-1",
+		ChannelName: "chatbot",
+		AccountID:   0,
+		Provider:    "test-provider",
+		Model:       "test-model",
+		Status:      llm.StatusRunning,
+		StartedAt:   time.Now(),
+	})
+	if err != nil {
+		t.Fatalf("InsertConversation: %v", err)
+	}
+	if row.ID == 0 {
+		t.Fatal("InsertConversation returned zero ID")
+	}
+	if row.PublicID != "conv-roundtrip-1" {
+		t.Fatalf("InsertConversation PublicID = %q, want %q", row.PublicID, "conv-roundtrip-1")
+	}
+
+	// 2. InsertMessage (user)
+	err = persister.InsertMessage(ctx, llm.InsertMessageParams{
+		PublicID:       "msg-1",
+		ConversationID: row.ID,
+		Role:           llm.RoleUser,
+		Content:        "Hello, world!",
+	})
+	if err != nil {
+		t.Fatalf("InsertMessage (user): %v", err)
+	}
+
+	// 3. InsertMessage (assistant)
+	err = persister.InsertMessage(ctx, llm.InsertMessageParams{
+		PublicID:       "msg-2",
+		ConversationID: row.ID,
+		Role:           llm.RoleAssistant,
+		Content:        "Hi there!",
+	})
+	if err != nil {
+		t.Fatalf("InsertMessage (assistant): %v", err)
+	}
+
+	// 4. Verify messages exist with correct roles, ordered by created_at
+	rows, err := db.Query(
+		"SELECT role FROM llm_messages WHERE conversation_id = ? ORDER BY created_at ASC",
+		row.ID,
+	)
+	if err != nil {
+		t.Fatalf("query messages: %v", err)
+	}
+	defer rows.Close()
+
+	var roles []string
+	for rows.Next() {
+		var role string
+		if err := rows.Scan(&role); err != nil {
+			t.Fatalf("scan role: %v", err)
+		}
+		roles = append(roles, role)
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("rows error: %v", err)
+	}
+
+	if len(roles) != 2 {
+		t.Fatalf("expected 2 messages, got %d", len(roles))
+	}
+	if roles[0] != "user" {
+		t.Errorf("message[0] role = %q, want %q", roles[0], "user")
+	}
+	if roles[1] != "assistant" {
+		t.Errorf("message[1] role = %q, want %q", roles[1], "assistant")
+	}
+}
+`)
+}
+
 // ── Helper functions ─────────────────────────────────────────────────────────
 
 // readModulePath reads the Go module path from go.mod in projectDir.
@@ -837,8 +994,15 @@ func scenarioLLMBasic(t *testing.T, shipq string, db dbConfig) {
 	t.Log("Compiling cmd/worker...")
 	runWithEnv(t, proj.CleanDir, tEnv, "go", "build", "./cmd/worker")
 
+	// Step 10b: Write a persistence round-trip test into the generated project.
+	// This test exercises InsertConversation + InsertMessage against a real SQLite DB,
+	// catching bugs like the NOT NULL constraint on sequence that the mock tests miss.
+	t.Log("Writing persistence round-trip test...")
+	writePersistenceRoundtripTest(t, proj.CleanDir)
+
 	// Step 11: Run generated tests — these use mock infrastructure and a
 	// MockProvider; no real API keys or running services required.
+	// The persistence round-trip test is also included via go test ./...
 	t.Log("Running go test ./... (mock provider, no real API keys)...")
 	runWithEnv(t, proj.CleanDir, tEnv, "go", "test", "./...", "-v", "-count=1")
 

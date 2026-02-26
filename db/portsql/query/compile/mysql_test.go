@@ -262,8 +262,8 @@ func TestMySQL_InsertWithNow(t *testing.T) {
 		t.Fatalf("Compile failed: %v", err)
 	}
 
-	if !containsStr(sql, "NOW()") {
-		t.Errorf("SQL should contain NOW(): %s", sql)
+	if !containsStr(sql, "NOW(3)") {
+		t.Errorf("SQL should contain NOW(3): %s", sql)
 	}
 }
 

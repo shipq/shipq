@@ -140,7 +140,7 @@ func TestUpdate_OnlyChangesUpdatedAt(t *testing.T) {
 	}
 
 	_, err = dbs.SQLite.Exec(
-		`UPDATE test_authors SET name = ?, updated_at = datetime('now') WHERE public_id = ?`,
+		`UPDATE test_authors SET name = ?, updated_at = strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE public_id = ?`,
 		"Updated Name", publicID)
 	if err != nil {
 		t.Fatalf("sqlite update failed: %v", err)
@@ -494,7 +494,7 @@ func TestUpdateExcludesSoftDeleted(t *testing.T) {
 
 	// Try to update with deleted_at IS NULL condition
 	result, err := dbs.Postgres.Exec(ctx,
-		`UPDATE test_authors SET name = $1, updated_at = NOW() 
+		`UPDATE test_authors SET name = $1, updated_at = NOW()
 		 WHERE public_id = $2 AND deleted_at IS NULL`,
 		"Should Not Update", publicID)
 	if err != nil {
@@ -551,7 +551,7 @@ func TestSoftDeleteIdempotent(t *testing.T) {
 
 	// Second soft delete attempt (should not change deleted_at due to IS NULL check)
 	_, err = dbs.Postgres.Exec(ctx,
-		`UPDATE test_authors SET deleted_at = NOW() 
+		`UPDATE test_authors SET deleted_at = NOW()
 		 WHERE public_id = $1 AND deleted_at IS NULL`, publicID)
 	if err != nil {
 		t.Fatalf("second soft delete failed: %v", err)

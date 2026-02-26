@@ -133,6 +133,9 @@ type UpdateConversationParams struct {
 
 // InsertMessageParams carries all the data for a single message row.
 type InsertMessageParams struct {
+	// PublicID is the externally visible identifier (e.g. a nanoid).
+	PublicID string
+
 	// ConversationID is the surrogate primary key of the parent conversation.
 	ConversationID int64
 

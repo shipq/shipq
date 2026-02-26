@@ -96,8 +96,8 @@ func insertTestData(t *testing.T, db *sql.DB) {
 	// Insert categories
 	_, err := db.Exec(`
 		INSERT INTO categories (id, public_id, name, created_at, updated_at) VALUES
-		(1, 'cat-1', 'Dogs', datetime('now'), datetime('now')),
-		(2, 'cat-2', 'Cats', datetime('now'), datetime('now'))
+		(1, 'cat-1', 'Dogs', strftime('%Y-%m-%dT%H:%M:%fZ','now'), strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+		(2, 'cat-2', 'Cats', strftime('%Y-%m-%dT%H:%M:%fZ','now'), strftime('%Y-%m-%dT%H:%M:%fZ','now'))
 	`)
 	if err != nil {
 		t.Fatalf("failed to insert categories: %v", err)
@@ -106,9 +106,9 @@ func insertTestData(t *testing.T, db *sql.DB) {
 	// Insert pets
 	_, err = db.Exec(`
 		INSERT INTO pets (id, public_id, category_id, name, status, created_at, updated_at) VALUES
-		(1, 'pet-1', 1, 'Buddy', 'available', datetime('now'), datetime('now')),
-		(2, 'pet-2', 1, 'Max', 'pending', datetime('now'), datetime('now')),
-		(3, 'pet-3', 2, 'Whiskers', 'available', datetime('now'), datetime('now'))
+		(1, 'pet-1', 1, 'Buddy', 'available', strftime('%Y-%m-%dT%H:%M:%fZ','now'), strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+		(2, 'pet-2', 1, 'Max', 'pending', strftime('%Y-%m-%dT%H:%M:%fZ','now'), strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+		(3, 'pet-3', 2, 'Whiskers', 'available', strftime('%Y-%m-%dT%H:%M:%fZ','now'), strftime('%Y-%m-%dT%H:%M:%fZ','now'))
 	`)
 	if err != nil {
 		t.Fatalf("failed to insert pets: %v", err)
@@ -117,8 +117,8 @@ func insertTestData(t *testing.T, db *sql.DB) {
 	// Insert tags
 	_, err = db.Exec(`
 		INSERT INTO tags (id, public_id, name, created_at, updated_at) VALUES
-		(1, 'tag-1', 'Friendly', datetime('now'), datetime('now')),
-		(2, 'tag-2', 'Trained', datetime('now'), datetime('now'))
+		(1, 'tag-1', 'Friendly', strftime('%Y-%m-%dT%H:%M:%fZ','now'), strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+		(2, 'tag-2', 'Trained', strftime('%Y-%m-%dT%H:%M:%fZ','now'), strftime('%Y-%m-%dT%H:%M:%fZ','now'))
 	`)
 	if err != nil {
 		t.Fatalf("failed to insert tags: %v", err)
@@ -345,7 +345,7 @@ func TestRelationQuery_HasMany_EmptyResult_SQLite(t *testing.T) {
 	// Insert a category with NO pets
 	_, err := db.Exec(`
 		INSERT INTO categories (id, public_id, name, created_at, updated_at) VALUES
-		(99, 'cat-99', 'Birds', datetime('now'), datetime('now'))
+		(99, 'cat-99', 'Birds', strftime('%Y-%m-%dT%H:%M:%fZ','now'), strftime('%Y-%m-%dT%H:%M:%fZ','now'))
 	`)
 	if err != nil {
 		t.Fatalf("failed to insert category: %v", err)

@@ -210,7 +210,7 @@ func TestMySQL_CreateTable_Datetime(t *testing.T) {
 
 	sql := generateMySQLCreateTable(table)
 
-	if !strings.Contains(sql, "`created_at` DATETIME NOT NULL") {
+	if !strings.Contains(sql, "`created_at` DATETIME(3) NOT NULL") {
 		t.Errorf("expected DATETIME column, got:\n%s", sql)
 	}
 }

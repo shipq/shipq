@@ -43,7 +43,7 @@ func mysqlType(col *ddl.ColumnDefinition) string {
 	case ddl.FloatType:
 		return "DOUBLE"
 	case ddl.DatetimeType:
-		return "DATETIME"
+		return "DATETIME(3)"
 	case ddl.TimestampType:
 		return "TIMESTAMP"
 	case ddl.BinaryType:
@@ -71,7 +71,7 @@ func formatMySQLDefault(col *ddl.ColumnDefinition) string {
 	// CURRENT_TIMESTAMP is a special sentinel for auto-managed timestamp columns.
 	// MySQL supports CURRENT_TIMESTAMP as an unquoted keyword for DATETIME/TIMESTAMP defaults.
 	if defaultVal == "CURRENT_TIMESTAMP" {
-		return "CURRENT_TIMESTAMP"
+		return "CURRENT_TIMESTAMP(3)"
 	}
 
 	switch col.Type {
@@ -291,7 +291,7 @@ func mysqlTypeFromString(ddlType string) string {
 	case ddl.FloatType:
 		return "DOUBLE"
 	case ddl.DatetimeType:
-		return "DATETIME"
+		return "DATETIME(3)"
 	case ddl.TimestampType:
 		return "TIMESTAMP"
 	case ddl.BinaryType:

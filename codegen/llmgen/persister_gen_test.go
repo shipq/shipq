@@ -257,6 +257,7 @@ func TestGeneratePersisterAdapter_HasInsertMessage(t *testing.T) {
 
 	// Should map relevant fields
 	expectedFields := []string{
+		"params.PublicID",
 		"params.ConversationID",
 		"params.Role",
 		"params.Content",

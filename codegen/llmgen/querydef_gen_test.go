@@ -238,6 +238,7 @@ func TestGenerateLLMQuerydefs_InsertLLMMessage_Columns(t *testing.T) {
 	code := string(src)
 
 	expectedColumns := []string{
+		"LlmMessages.PublicId()",
 		"LlmMessages.ConversationId()",
 		"LlmMessages.Role()",
 		"LlmMessages.Content()",
@@ -255,6 +256,11 @@ func TestGenerateLLMQuerydefs_InsertLLMMessage_Columns(t *testing.T) {
 func TestGenerateLLMQuerydefs_InsertLLMMessage_NullableParams(t *testing.T) {
 	src := GenerateLLMQuerydefs("myapp", false, false)
 	code := string(src)
+
+	// PublicId should be a non-nullable string param.
+	if !strings.Contains(code, `query.Param[string]("publicId")`) {
+		t.Error("expected non-nullable publicId param (string)")
+	}
 
 	// Content, ToolName, ToolCallId should be nullable.
 	if !strings.Contains(code, `query.Param[*string]("content")`) {
@@ -348,12 +354,12 @@ func TestGenerateLLMQuerydefs_ListLLMMessagesByConversation_WhereConversationId(
 	}
 }
 
-func TestGenerateLLMQuerydefs_ListLLMMessagesByConversation_OrderBySequence(t *testing.T) {
+func TestGenerateLLMQuerydefs_ListLLMMessagesByConversation_OrderByCreatedAt(t *testing.T) {
 	src := GenerateLLMQuerydefs("myapp", false, false)
 	code := string(src)
 
-	if !strings.Contains(code, "LlmMessages.Sequence().Asc()") {
-		t.Error("expected ListLLMMessagesByConversation ORDER BY sequence ASC")
+	if !strings.Contains(code, "LlmMessages.CreatedAt().Asc()") {
+		t.Error("expected ListLLMMessagesByConversation ORDER BY created_at ASC")
 	}
 }
 
@@ -364,7 +370,6 @@ func TestGenerateLLMQuerydefs_ListLLMMessagesByConversation_SelectsAllColumns(t 
 	expectedSelects := []string{
 		"LlmMessages.Id()",
 		"LlmMessages.ConversationId()",
-		"LlmMessages.Sequence()",
 		"LlmMessages.Role()",
 		"LlmMessages.Content()",
 		"LlmMessages.ToolName()",

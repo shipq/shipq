@@ -60,7 +60,7 @@ func formatSQLiteDefault(col *ddl.ColumnDefinition) string {
 	// CURRENT_TIMESTAMP is a special sentinel for auto-managed timestamp columns.
 	// SQLite needs datetime('now') wrapped in parentheses for expression defaults.
 	if defaultVal == "CURRENT_TIMESTAMP" {
-		return "(datetime('now'))"
+		return "(strftime('%Y-%m-%dT%H:%M:%fZ','now'))"
 	}
 
 	switch col.Type {

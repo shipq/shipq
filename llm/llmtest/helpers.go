@@ -10,10 +10,286 @@ import (
 	"testing"
 	"time"
 
+	"github.com/shipq/shipq/db/portsql/ddl"
+	"github.com/shipq/shipq/db/portsql/migrate"
+	"github.com/shipq/shipq/db/portsql/query"
+	"github.com/shipq/shipq/db/portsql/query/compile"
 	"github.com/shipq/shipq/llm"
-
-	_ "modernc.org/sqlite"
 )
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// Table type and column definitions (local, no dependency on generated code)
+// ═══════════════════════════════════════════════════════════════════════════════
+
+type simpleTable string
+
+func (t simpleTable) TableName() string { return string(t) }
+
+var (
+	// ── llm_conversations ─────────────────────────────────────────────────
+	convTable             = simpleTable("llm_conversations")
+	convID                = query.Int64Column{Table: "llm_conversations", Name: "id"}
+	convPublicID          = query.StringColumn{Table: "llm_conversations", Name: "public_id"}
+	convJobID             = query.StringColumn{Table: "llm_conversations", Name: "job_id"}
+	convChannelName       = query.StringColumn{Table: "llm_conversations", Name: "channel_name"}
+	convAccountID         = query.NullInt64Column{Table: "llm_conversations", Name: "account_id"}
+	convProvider          = query.StringColumn{Table: "llm_conversations", Name: "provider"}
+	convModel             = query.StringColumn{Table: "llm_conversations", Name: "model"}
+	convStatus            = query.StringColumn{Table: "llm_conversations", Name: "status"}
+	convTotalInputTokens  = query.Int64Column{Table: "llm_conversations", Name: "total_input_tokens"}
+	convTotalOutputTokens = query.Int64Column{Table: "llm_conversations", Name: "total_output_tokens"}
+	convToolCallCount     = query.Int64Column{Table: "llm_conversations", Name: "tool_call_count"}
+	convErrorMessage      = query.NullStringColumn{Table: "llm_conversations", Name: "error_message"}
+	convStartedAt         = query.StringColumn{Table: "llm_conversations", Name: "started_at"}
+	convCompletedAt       = query.NullStringColumn{Table: "llm_conversations", Name: "completed_at"}
+
+	// ── llm_messages ──────────────────────────────────────────────────────
+	msgTable          = simpleTable("llm_messages")
+	msgPublicID       = query.StringColumn{Table: "llm_messages", Name: "public_id"}
+	msgConversationID = query.Int64Column{Table: "llm_messages", Name: "conversation_id"}
+	msgRole           = query.StringColumn{Table: "llm_messages", Name: "role"}
+	msgContent        = query.NullStringColumn{Table: "llm_messages", Name: "content"}
+	msgToolName       = query.NullStringColumn{Table: "llm_messages", Name: "tool_name"}
+	msgToolCallID     = query.NullStringColumn{Table: "llm_messages", Name: "tool_call_id"}
+	msgIsError        = query.Int64Column{Table: "llm_messages", Name: "is_error"}
+	msgCreatedAt      = query.StringColumn{Table: "llm_messages", Name: "created_at"}
+)
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// Query ASTs (package-level, compiled on demand via compileSQL)
+// ═══════════════════════════════════════════════════════════════════════════════
+
+// insertConversationAST inserts a full conversation row (8 columns).
+var insertConversationAST = query.InsertInto(convTable).
+	Columns(convPublicID, convJobID, convChannelName, convAccountID,
+		convProvider, convModel, convStatus, convStartedAt).
+	Values(
+		query.Param[string]("public_id"),
+		query.Param[string]("job_id"),
+		query.Param[string]("channel_name"),
+		query.Param[*int64]("account_id"),
+		query.Param[string]("provider"),
+		query.Param[string]("model"),
+		query.Param[string]("status"),
+		query.Param[string]("started_at"),
+	).Build()
+
+// updateConversationAST updates status, tokens, tool_call_count, completed_at, error_message WHERE id = ?.
+var updateConversationAST = query.Update(convTable).
+	Set(convStatus, query.Param[string]("status")).
+	Set(convTotalInputTokens, query.Param[int64]("total_input_tokens")).
+	Set(convTotalOutputTokens, query.Param[int64]("total_output_tokens")).
+	Set(convToolCallCount, query.Param[int64]("tool_call_count")).
+	Set(convCompletedAt, query.Param[*string]("completed_at")).
+	Set(convErrorMessage, query.Param[*string]("error_message")).
+	Where(convID.Eq(query.Param[int64]("id"))).
+	Build()
+
+// insertMessageAST inserts a message row (8 columns).
+var insertMessageAST = query.InsertInto(msgTable).
+	Columns(msgPublicID, msgConversationID, msgRole, msgContent,
+		msgToolName, msgToolCallID, msgIsError, msgCreatedAt).
+	Values(
+		query.Param[string]("public_id"),
+		query.Param[int64]("conversation_id"),
+		query.Param[string]("role"),
+		query.Param[*string]("content"),
+		query.Param[*string]("tool_name"),
+		query.Param[*string]("tool_call_id"),
+		query.Param[bool]("is_error"),
+		query.Param[string]("created_at"),
+	).Build()
+
+// selectConversationStatusAST: SELECT status FROM llm_conversations WHERE public_id = ?
+var selectConversationStatusAST = query.From(convTable).
+	Select(convStatus).
+	Where(convPublicID.Eq(query.Param[string]("public_id"))).
+	Build()
+
+// countMessagesAST: SELECT COUNT(*) FROM llm_messages WHERE conversation_id = ?
+var countMessagesAST = query.From(msgTable).
+	SelectCount().
+	Where(msgConversationID.Eq(query.Param[int64]("conversation_id"))).
+	Build()
+
+// selectMessageRolesAST: SELECT role FROM llm_messages WHERE conversation_id = ? ORDER BY created_at ASC
+var selectMessageRolesAST = query.From(msgTable).
+	Select(msgRole).
+	Where(msgConversationID.Eq(query.Param[int64]("conversation_id"))).
+	OrderBy(query.OrderByExpr{Expr: query.ColumnExpr{Column: msgCreatedAt}, Desc: false}).
+	Build()
+
+// selectConversationByPublicIDAST: SELECT id FROM llm_conversations WHERE public_id = ?
+var selectConversationByPublicIDAST = query.From(convTable).
+	Select(convID).
+	Where(convPublicID.Eq(query.Param[string]("public_id"))).
+	Build()
+
+// selectConversationTokensAST: SELECT total_input_tokens, total_output_tokens, tool_call_count FROM llm_conversations WHERE id = ?
+var selectConversationTokensAST = query.From(convTable).
+	Select(convTotalInputTokens, convTotalOutputTokens, convToolCallCount).
+	Where(convID.Eq(query.Param[int64]("id"))).
+	Build()
+
+// selectConversationProviderModelAST: SELECT provider, model FROM llm_conversations WHERE id = ?
+var selectConversationProviderModelAST = query.From(convTable).
+	Select(convProvider, convModel).
+	Where(convID.Eq(query.Param[int64]("id"))).
+	Build()
+
+// countConversationsAST: SELECT COUNT(*) FROM llm_conversations
+var countConversationsAST = query.From(convTable).
+	SelectCount().
+	Build()
+
+// countAllMessagesAST: SELECT COUNT(*) FROM llm_messages
+var countAllMessagesAST = query.From(msgTable).
+	SelectCount().
+	Build()
+
+// insertTestConversationAST: minimal INSERT for test infrastructure (5 columns).
+var insertTestConversationAST = query.InsertInto(convTable).
+	Columns(convPublicID, convProvider, convModel, convStatus, convStartedAt).
+	Values(
+		query.Param[string]("public_id"),
+		query.Param[string]("provider"),
+		query.Param[string]("model"),
+		query.Param[string]("status"),
+		query.Param[string]("started_at"),
+	).Build()
+
+// insertTestConversationWithErrorAST: INSERT with error_message for failed conversation tests (6 columns).
+var insertTestConversationWithErrorAST = query.InsertInto(convTable).
+	Columns(convPublicID, convProvider, convModel, convStatus, convStartedAt, convErrorMessage).
+	Values(
+		query.Param[string]("public_id"),
+		query.Param[string]("provider"),
+		query.Param[string]("model"),
+		query.Param[string]("status"),
+		query.Param[string]("started_at"),
+		query.Param[*string]("error_message"),
+	).Build()
+
+// insertTestMessageAST: minimal INSERT for test infrastructure (5 columns).
+var insertTestMessageAST = query.InsertInto(msgTable).
+	Columns(msgPublicID, msgConversationID, msgRole, msgContent, msgCreatedAt).
+	Values(
+		query.Param[string]("public_id"),
+		query.Param[int64]("conversation_id"),
+		query.Param[string]("role"),
+		query.Param[string]("content"),
+		query.Param[string]("created_at"),
+	).Build()
+
+// selectConversationStatusByPublicIDAST: SELECT status FROM llm_conversations WHERE public_id = ?
+// (same as selectConversationStatusAST — aliased for clarity in test usage)
+var selectConversationStatusByPublicIDAST = selectConversationStatusAST
+
+// selectConversationTokensByPublicIDAST: SELECT total_input_tokens, total_output_tokens FROM llm_conversations WHERE public_id = ?
+var selectConversationTokensByPublicIDAST = query.From(convTable).
+	Select(convTotalInputTokens, convTotalOutputTokens).
+	Where(convPublicID.Eq(query.Param[string]("public_id"))).
+	Build()
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// Compile helper
+// ═══════════════════════════════════════════════════════════════════════════════
+
+// compileSQL compiles a query AST to SQL using the SQLite dialect.
+// Panics on compile error because these are static, compile-time-known ASTs.
+func compileSQL(ast *query.AST) (sqlStr string, paramOrder []string) {
+	c := compile.NewCompiler(compile.SQLite)
+	s, p, err := c.Compile(ast)
+	if err != nil {
+		panic("llmtest: failed to compile query: " + err.Error())
+	}
+	return s, p
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// DDL: portable table creation
+// ═══════════════════════════════════════════════════════════════════════════════
+
+// createLLMTables creates the llm_conversations and llm_messages tables
+// in the given database using the DDL builder and migration system.
+func createLLMTables(db *sql.DB) error {
+	plan := &migrate.MigrationPlan{
+		Schema: migrate.Schema{
+			Tables: make(map[string]ddl.Table),
+		},
+	}
+
+	// Define llm_conversations table.
+	plan.SetCurrentMigration("00000000000001_create_llm_conversations")
+	_, err := plan.AddEmptyTable("llm_conversations", func(tb *ddl.TableBuilder) error {
+		tb.Bigint("id").PrimaryKey()
+		tb.String("public_id").Unique()
+		tb.String("job_id").Default("")
+		tb.String("channel_name").Default("")
+		tb.Bigint("account_id").Nullable()
+		tb.String("provider").Default("")
+		tb.String("model").Default("")
+		tb.Text("system_prompt").Nullable()
+		tb.Integer("total_input_tokens").Default(0)
+		tb.Integer("total_output_tokens").Default(0)
+		tb.Integer("tool_call_count").Default(0)
+		tb.String("status").Default("running")
+		tb.Text("error_message").Nullable()
+		tb.String("started_at")
+		tb.String("completed_at").Nullable()
+		tb.Datetime("created_at").Default("CURRENT_TIMESTAMP")
+		tb.Datetime("updated_at").Default("CURRENT_TIMESTAMP")
+		return nil
+	})
+	if err != nil {
+		return fmt.Errorf("llmtest: define llm_conversations: %w", err)
+	}
+
+	// Define llm_messages table.
+	plan.SetCurrentMigration("00000000000002_create_llm_messages")
+	_, err = plan.AddEmptyTable("llm_messages", func(tb *ddl.TableBuilder) error {
+		tb.Bigint("id").PrimaryKey()
+		tb.String("public_id").Unique()
+		tb.Integer("conversation_id")
+		tb.String("role")
+		tb.Text("content").Nullable()
+		tb.String("tool_name").Nullable()
+		tb.String("tool_call_id").Nullable()
+		tb.Text("tool_input").Nullable()
+		tb.Text("tool_output").Nullable()
+		tb.Text("tool_error").Nullable()
+		tb.Integer("tool_duration_ms").Nullable()
+		tb.Integer("is_error").Default(0)
+		tb.Integer("input_tokens").Default(0)
+		tb.Integer("output_tokens").Default(0)
+		tb.Datetime("created_at").Default("CURRENT_TIMESTAMP")
+		tb.Datetime("updated_at").Default("CURRENT_TIMESTAMP")
+		return nil
+	})
+	if err != nil {
+		return fmt.Errorf("llmtest: define llm_messages: %w", err)
+	}
+
+	// Execute each migration's SQLite DDL.
+	for _, m := range plan.Migrations {
+		stmts := strings.Split(m.Instructions.Sqlite, ";")
+		for _, stmt := range stmts {
+			stmt = strings.TrimSpace(stmt)
+			if stmt == "" {
+				continue
+			}
+			if _, err := db.Exec(stmt); err != nil {
+				return fmt.Errorf("llmtest: exec DDL %q: %w", stmt, err)
+			}
+		}
+	}
+
+	return nil
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// Pure assertion helpers (no DB, no raw SQL)
+// ═══════════════════════════════════════════════════════════════════════════════
 
 // AssertToolCalled asserts that a tool with the given name was called during
 // the conversation and returns its ToolCallLog entry for further inspection.
@@ -156,9 +432,13 @@ func NewTestClient(t *testing.T, mock *MockProvider, opts ...llm.Option) *llm.Cl
 	return llm.NewClient(mock, opts...)
 }
 
+// ═══════════════════════════════════════════════════════════════════════════════
+// testPersister — backed by compiled query ASTs
+// ═══════════════════════════════════════════════════════════════════════════════
+
 // testPersister is a simple Persister backed by a *sql.DB with the
-// llm_conversations and llm_messages tables. It uses raw SQL so it does not
-// depend on the generated querydef code.
+// llm_conversations and llm_messages tables. It uses compiled query ASTs
+// so it does not depend on generated querydef code and is dialect-portable.
 type testPersister struct {
 	db *sql.DB
 }
@@ -174,13 +454,19 @@ func (p *testPersister) InsertConversation(ctx context.Context, params llm.Inser
 		accountID = &params.AccountID
 	}
 
-	result, err := p.db.ExecContext(ctx,
-		`INSERT INTO llm_conversations (public_id, job_id, channel_name, account_id, provider, model, status, started_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-		params.PublicID, params.JobID, params.ChannelName, accountID,
-		params.Provider, params.Model, string(params.Status),
-		startedAt.Format(time.RFC3339),
-	)
+	sqlStr, paramOrder := compileSQL(insertConversationAST)
+	args := mapParams(paramOrder, map[string]any{
+		"public_id":    params.PublicID,
+		"job_id":       params.JobID,
+		"channel_name": params.ChannelName,
+		"account_id":   accountID,
+		"provider":     params.Provider,
+		"model":        params.Model,
+		"status":       string(params.Status),
+		"started_at":   startedAt.Format("2006-01-02T15:04:05.000Z07:00"),
+	})
+
+	result, err := p.db.ExecContext(ctx, sqlStr, args...)
 	if err != nil {
 		return llm.ConversationRow{}, fmt.Errorf("testPersister.InsertConversation: %w", err)
 	}
@@ -196,7 +482,7 @@ func (p *testPersister) InsertConversation(ctx context.Context, params llm.Inser
 func (p *testPersister) UpdateConversation(ctx context.Context, params llm.UpdateConversationParams) error {
 	var completedAt *string
 	if !params.CompletedAt.IsZero() {
-		s := params.CompletedAt.Format(time.RFC3339)
+		s := params.CompletedAt.Format("2006-01-02T15:04:05.000Z07:00")
 		completedAt = &s
 	}
 
@@ -205,15 +491,18 @@ func (p *testPersister) UpdateConversation(ctx context.Context, params llm.Updat
 		errorMessage = &params.ErrorMessage
 	}
 
-	_, err := p.db.ExecContext(ctx,
-		`UPDATE llm_conversations
-		 SET status = ?, total_input_tokens = ?, total_output_tokens = ?,
-		     tool_call_count = ?, completed_at = ?, error_message = ?
-		 WHERE id = ?`,
-		string(params.Status), params.InputTokens, params.OutputTokens,
-		params.ToolCallCount, completedAt, errorMessage,
-		params.ID,
-	)
+	sqlStr, paramOrder := compileSQL(updateConversationAST)
+	args := mapParams(paramOrder, map[string]any{
+		"status":              string(params.Status),
+		"total_input_tokens":  params.InputTokens,
+		"total_output_tokens": params.OutputTokens,
+		"tool_call_count":     params.ToolCallCount,
+		"completed_at":        completedAt,
+		"error_message":       errorMessage,
+		"id":                  params.ID,
+	})
+
+	_, err := p.db.ExecContext(ctx, sqlStr, args...)
 	if err != nil {
 		return fmt.Errorf("testPersister.UpdateConversation: %w", err)
 	}
@@ -221,16 +510,6 @@ func (p *testPersister) UpdateConversation(ctx context.Context, params llm.Updat
 }
 
 func (p *testPersister) InsertMessage(ctx context.Context, params llm.InsertMessageParams) error {
-	// Auto-assign sequence by counting existing messages for this conversation.
-	var seq int
-	row := p.db.QueryRowContext(ctx,
-		`SELECT COALESCE(MAX(sequence), -1) + 1 FROM llm_messages WHERE conversation_id = ?`,
-		params.ConversationID,
-	)
-	if err := row.Scan(&seq); err != nil {
-		return fmt.Errorf("testPersister.InsertMessage: sequence: %w", err)
-	}
-
 	var toolName, toolCallID, content *string
 	if params.ToolName != "" {
 		toolName = &params.ToolName
@@ -247,65 +526,42 @@ func (p *testPersister) InsertMessage(ctx context.Context, params llm.InsertMess
 		createdAt = time.Now()
 	}
 
-	_, err := p.db.ExecContext(ctx,
-		`INSERT INTO llm_messages (conversation_id, sequence, role, content, tool_name, tool_call_id, is_error, created_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-		params.ConversationID, seq, string(params.Role), content,
-		toolName, toolCallID, params.IsError,
-		createdAt.Format(time.RFC3339),
-	)
+	publicID := params.PublicID
+	if publicID == "" {
+		publicID = fmt.Sprintf("msg_%d", time.Now().UnixNano())
+	}
+
+	sqlStr, paramOrder := compileSQL(insertMessageAST)
+	args := mapParams(paramOrder, map[string]any{
+		"public_id":       publicID,
+		"conversation_id": params.ConversationID,
+		"role":            string(params.Role),
+		"content":         content,
+		"tool_name":       toolName,
+		"tool_call_id":    toolCallID,
+		"is_error":        params.IsError,
+		"created_at":      createdAt.Format("2006-01-02T15:04:05.000Z07:00"),
+	})
+
+	_, err := p.db.ExecContext(ctx, sqlStr, args...)
 	if err != nil {
 		return fmt.Errorf("testPersister.InsertMessage: %w", err)
 	}
 	return nil
 }
 
-// createLLMTables creates the llm_conversations and llm_messages tables
-// in the given database using raw DDL.
-func createLLMTables(db *sql.DB) error {
-	const ddl = `
-	CREATE TABLE IF NOT EXISTS llm_conversations (
-		id INTEGER PRIMARY KEY AUTOINCREMENT,
-		public_id TEXT UNIQUE NOT NULL,
-		job_id TEXT NOT NULL DEFAULT '',
-		channel_name TEXT NOT NULL DEFAULT '',
-		account_id INTEGER,
-		provider TEXT NOT NULL DEFAULT '',
-		model TEXT NOT NULL DEFAULT '',
-		system_prompt TEXT,
-		total_input_tokens INTEGER NOT NULL DEFAULT 0,
-		total_output_tokens INTEGER NOT NULL DEFAULT 0,
-		tool_call_count INTEGER NOT NULL DEFAULT 0,
-		status TEXT NOT NULL DEFAULT 'running',
-		error_message TEXT,
-		started_at TEXT NOT NULL,
-		completed_at TEXT,
-		created_at TEXT NOT NULL DEFAULT (datetime('now')),
-		updated_at TEXT NOT NULL DEFAULT (datetime('now'))
-	);
-
-	CREATE TABLE IF NOT EXISTS llm_messages (
-		id INTEGER PRIMARY KEY AUTOINCREMENT,
-		conversation_id INTEGER NOT NULL,
-		sequence INTEGER NOT NULL,
-		role TEXT NOT NULL,
-		content TEXT,
-		tool_name TEXT,
-		tool_call_id TEXT,
-		tool_input TEXT,
-		tool_output TEXT,
-		tool_error TEXT,
-		tool_duration_ms INTEGER,
-		is_error INTEGER NOT NULL DEFAULT 0,
-		input_tokens INTEGER NOT NULL DEFAULT 0,
-		output_tokens INTEGER NOT NULL DEFAULT 0,
-		created_at TEXT NOT NULL DEFAULT (datetime('now')),
-		updated_at TEXT NOT NULL DEFAULT (datetime('now'))
-	);
-	`
-	_, err := db.Exec(ddl)
-	return err
+// mapParams maps param names (as returned by the compiler) to values, preserving order.
+func mapParams(paramOrder []string, values map[string]any) []any {
+	args := make([]any, len(paramOrder))
+	for i, name := range paramOrder {
+		args[i] = values[name]
+	}
+	return args
 }
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// NewTestClientWithDB — wires MockProvider + in-memory SQLite + testPersister
+// ═══════════════════════════════════════════════════════════════════════════════
 
 // NewTestClientWithDB creates an llm.Client wired to a MockProvider and
 // an in-memory SQLite database with the LLM tables already migrated.
@@ -335,16 +591,22 @@ func NewTestClientWithDB(t *testing.T, mock *MockProvider, opts ...llm.Option) (
 	return client, db
 }
 
+// ═══════════════════════════════════════════════════════════════════════════════
+// DB assertion helpers — use compiled ASTs
+// ═══════════════════════════════════════════════════════════════════════════════
+
 // AssertConversationPersisted verifies that an llm_conversations row with
 // the given public_id exists in the database with the expected status.
 func AssertConversationPersisted(t *testing.T, db *sql.DB, conversationPublicID string, expectedStatus string) {
 	t.Helper()
 
+	sqlStr, paramOrder := compileSQL(selectConversationStatusAST)
+	args := mapParams(paramOrder, map[string]any{
+		"public_id": conversationPublicID,
+	})
+
 	var status string
-	err := db.QueryRow(
-		`SELECT status FROM llm_conversations WHERE public_id = ?`,
-		conversationPublicID,
-	).Scan(&status)
+	err := db.QueryRow(sqlStr, args...).Scan(&status)
 	if err == sql.ErrNoRows {
 		t.Fatalf("AssertConversationPersisted: no conversation found with public_id %q", conversationPublicID)
 	}
@@ -361,11 +623,13 @@ func AssertConversationPersisted(t *testing.T, db *sql.DB, conversationPublicID 
 func AssertMessageCount(t *testing.T, db *sql.DB, conversationID int64, expectedCount int) {
 	t.Helper()
 
+	sqlStr, paramOrder := compileSQL(countMessagesAST)
+	args := mapParams(paramOrder, map[string]any{
+		"conversation_id": conversationID,
+	})
+
 	var count int
-	err := db.QueryRow(
-		`SELECT COUNT(*) FROM llm_messages WHERE conversation_id = ?`,
-		conversationID,
-	).Scan(&count)
+	err := db.QueryRow(sqlStr, args...).Scan(&count)
 	if err != nil {
 		t.Fatalf("AssertMessageCount: query error: %v", err)
 	}
@@ -380,10 +644,12 @@ func AssertMessageCount(t *testing.T, db *sql.DB, conversationID int64, expected
 func AssertMessageSequence(t *testing.T, db *sql.DB, conversationID int64, expectedRoles ...string) {
 	t.Helper()
 
-	rows, err := db.Query(
-		`SELECT role FROM llm_messages WHERE conversation_id = ? ORDER BY sequence ASC`,
-		conversationID,
-	)
+	sqlStr, paramOrder := compileSQL(selectMessageRolesAST)
+	args := mapParams(paramOrder, map[string]any{
+		"conversation_id": conversationID,
+	})
+
+	rows, err := db.Query(sqlStr, args...)
 	if err != nil {
 		t.Fatalf("AssertMessageSequence: query error: %v", err)
 	}

@@ -168,7 +168,6 @@ func TestGenerateLLMMigration_MessagesColumns(t *testing.T) {
 
 	expectedColumns := []string{
 		`"conversation_id"`,
-		`"sequence"`,
 		`"role"`,
 		`"content"`,
 		`"tool_name"`,
@@ -289,7 +288,6 @@ func TestGenerateLLMMigration_ColumnTypes(t *testing.T) {
 		{"started_at is Datetime", `tb.Datetime("started_at")`},
 		{"completed_at is Datetime", `tb.Datetime("completed_at")`},
 		{"conversation_id is Bigint", `tb.Bigint("conversation_id")`},
-		{"sequence is Integer", `tb.Integer("sequence")`},
 		{"role is String", `tb.String("role")`},
 		{"content is Text", `tb.Text("content")`},
 		{"tool_input is JSON", `tb.JSON("tool_input")`},

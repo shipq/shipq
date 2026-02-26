@@ -92,6 +92,7 @@ func GenerateLLMQuerydefs(modulePath string, hasTenancy bool, hasAuth bool) []by
 	buf.WriteString("\tquery.MustDefineExec(\"InsertLLMMessage\",\n")
 	buf.WriteString("\t\tquery.InsertInto(schema.LlmMessages).\n")
 	buf.WriteString("\t\t\tColumns(\n")
+	buf.WriteString("\t\t\t\tschema.LlmMessages.PublicId(),\n")
 	buf.WriteString("\t\t\t\tschema.LlmMessages.ConversationId(),\n")
 	buf.WriteString("\t\t\t\tschema.LlmMessages.Role(),\n")
 	buf.WriteString("\t\t\t\tschema.LlmMessages.Content(),\n")
@@ -99,6 +100,7 @@ func GenerateLLMQuerydefs(modulePath string, hasTenancy bool, hasAuth bool) []by
 	buf.WriteString("\t\t\t\tschema.LlmMessages.ToolCallId(),\n")
 	buf.WriteString("\t\t\t).\n")
 	buf.WriteString("\t\t\tValues(\n")
+	buf.WriteString("\t\t\t\tquery.Param[string](\"publicId\"),\n")
 	buf.WriteString("\t\t\t\tquery.Param[int64](\"conversationId\"),\n")
 	buf.WriteString("\t\t\t\tquery.Param[string](\"role\"),\n")
 	buf.WriteString("\t\t\t\tquery.Param[*string](\"content\"),\n")
@@ -143,7 +145,6 @@ func GenerateLLMQuerydefs(modulePath string, hasTenancy bool, hasAuth bool) []by
 	buf.WriteString("\t\t\tSelect(\n")
 	buf.WriteString("\t\t\t\tschema.LlmMessages.Id(),\n")
 	buf.WriteString("\t\t\t\tschema.LlmMessages.ConversationId(),\n")
-	buf.WriteString("\t\t\t\tschema.LlmMessages.Sequence(),\n")
 	buf.WriteString("\t\t\t\tschema.LlmMessages.Role(),\n")
 	buf.WriteString("\t\t\t\tschema.LlmMessages.Content(),\n")
 	buf.WriteString("\t\t\t\tschema.LlmMessages.ToolName(),\n")
@@ -157,7 +158,7 @@ func GenerateLLMQuerydefs(modulePath string, hasTenancy bool, hasAuth bool) []by
 	buf.WriteString("\t\t\t\tschema.LlmMessages.CreatedAt(),\n")
 	buf.WriteString("\t\t\t).\n")
 	buf.WriteString("\t\t\tWhere(schema.LlmMessages.ConversationId().Eq(query.Param[int64](\"conversationId\"))).\n")
-	buf.WriteString("\t\t\tOrderBy(schema.LlmMessages.Sequence().Asc()).\n")
+	buf.WriteString("\t\t\tOrderBy(schema.LlmMessages.CreatedAt().Asc()).\n")
 	buf.WriteString("\t\t\tBuild())\n\n")
 
 	// ── ListLLMConversationsByJob ────────────────────────────────────────

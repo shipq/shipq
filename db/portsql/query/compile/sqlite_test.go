@@ -259,9 +259,9 @@ func TestSQLite_InsertWithNow(t *testing.T) {
 		t.Fatalf("Compile failed: %v", err)
 	}
 
-	// SQLite uses datetime('now')
-	if !containsStr(sql, "datetime('now')") {
-		t.Errorf("SQL should contain datetime('now'): %s", sql)
+	// SQLite uses strftime for ms-precision timestamps
+	if !containsStr(sql, "strftime('%Y-%m-%dT%H:%M:%fZ','now')") {
+		t.Errorf("SQL should contain strftime('%%Y-%%m-%%dT%%H:%%M:%%fZ','now'): %s", sql)
 	}
 	if containsStr(sql, "NOW()") {
 		t.Errorf("SQLite SQL should NOT contain NOW(): %s", sql)

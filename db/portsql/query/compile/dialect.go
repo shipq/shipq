@@ -187,7 +187,7 @@ func (d *MySQLDialect) BoolLiteral(val bool) string {
 }
 
 func (d *MySQLDialect) NowFunc() string {
-	return "NOW()"
+	return "NOW(3)"
 }
 
 func (d *MySQLDialect) WrapSetOpQueries() bool {
@@ -267,7 +267,7 @@ func (d *SQLiteDialect) BoolLiteral(val bool) string {
 }
 
 func (d *SQLiteDialect) NowFunc() string {
-	return "datetime('now')"
+	return "strftime('%Y-%m-%dT%H:%M:%fZ','now')"
 }
 
 func (d *SQLiteDialect) WrapSetOpQueries() bool {

@@ -68,7 +68,6 @@ func Migrate_%s_llm_tables(plan *migrate.MigrationPlan) error {
 	plan.SetCurrentMigration("%s_llm_messages")
 	_, err = plan.AddTable("llm_messages", func(tb *ddl.TableBuilder) error {
 		tb.Bigint("conversation_id")
-		tb.Integer("sequence")
 		tb.String("role")
 		tb.Text("content").Nullable()
 		tb.String("tool_name").Nullable()
