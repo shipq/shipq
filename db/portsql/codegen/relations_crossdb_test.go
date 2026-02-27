@@ -11,6 +11,7 @@ import (
 	"reflect"
 	"sort"
 	"testing"
+	"time"
 
 	_ "github.com/go-sql-driver/mysql"
 	"github.com/jackc/pgx/v5"
@@ -485,7 +486,8 @@ func TestCrossDB_HasMany_SemanticEquivalence(t *testing.T) {
 	t.Logf("SQLite SQL: %s", sqSQL)
 
 	// Execute on PostgreSQL
-	var pgPublicID, pgName, pgCreatedAt, pgUpdatedAt string
+	var pgPublicID, pgName string
+	var pgCreatedAt, pgUpdatedAt time.Time
 	var pgPetsJSON string
 	err := dbs.postgres.QueryRow(context.Background(), pgSQL, "cat-1").Scan(
 		&pgPublicID, &pgName, &pgCreatedAt, &pgUpdatedAt, &pgPetsJSON)

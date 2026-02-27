@@ -156,7 +156,16 @@ func (d *PostgresDialect) WriteJSONAgg(b *strings.Builder, cols []query.Column, 
 }
 
 func (d *PostgresDialect) WriteOrderByExpr(b *strings.Builder, expr query.Expr, writeExpr func(query.Expr) error, writeColumn func(query.Column)) error {
-	// Postgres: no special handling needed
+	// Postgres: Add COLLATE "C" to string columns for binary ordering
+	// that matches MySQL (COLLATE utf8mb4_bin) and SQLite (binary by default).
+	if colExpr, ok := expr.(query.ColumnExpr); ok {
+		goType := colExpr.Column.GoType()
+		if goType == "string" || goType == "*string" {
+			writeColumn(colExpr.Column)
+			b.WriteString(` COLLATE "C"`)
+			return nil
+		}
+	}
 	return writeExpr(expr)
 }
 

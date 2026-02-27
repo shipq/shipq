@@ -4,11 +4,29 @@ package testing
 
 import (
 	"context"
+	"fmt"
 	"testing"
 	"time"
 
 	"github.com/shipq/shipq/nanoid"
 )
+
+// parseMySQLTimestamp tries multiple time formats to parse a MySQL timestamp string.
+// The go-mysql-driver with parseTime=true may return RFC3339 ("2006-01-02T15:04:05Z")
+// while without parseTime it returns "2006-01-02 15:04:05".
+func parseMySQLTimestamp(s string) (time.Time, error) {
+	for _, layout := range []string{
+		"2006-01-02 15:04:05",
+		time.RFC3339,
+		"2006-01-02T15:04:05Z",
+		"2006-01-02T15:04:05",
+	} {
+		if t, err := time.Parse(layout, s); err == nil {
+			return t, nil
+		}
+	}
+	return time.Time{}, fmt.Errorf("cannot parse MySQL timestamp %q", s)
+}
 
 // =============================================================================
 // Auto-Filled Column Integration Tests
@@ -64,7 +82,7 @@ func TestInsert_SetsTimestamps(t *testing.T) {
 		t.Error("mysql updated_at should not be empty")
 	}
 
-	myCreatedAt, err := time.Parse("2006-01-02 15:04:05", myCreatedAtStr)
+	myCreatedAt, err := parseMySQLTimestamp(myCreatedAtStr)
 	if err != nil {
 		t.Fatalf("failed to parse mysql created_at %q: %v", myCreatedAtStr, err)
 	}
@@ -389,7 +407,7 @@ func TestCrossDatabase_TimestampConsistency(t *testing.T) {
 	if myCreatedAtStr == "" {
 		t.Error("mysql created_at should not be empty")
 	}
-	myCreatedAt, err := time.Parse("2006-01-02 15:04:05", myCreatedAtStr)
+	myCreatedAt, err := parseMySQLTimestamp(myCreatedAtStr)
 	if err != nil {
 		t.Fatalf("failed to parse mysql timestamp: %v", err)
 	}
