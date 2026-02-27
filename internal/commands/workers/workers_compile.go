@@ -206,7 +206,7 @@ func WorkersCompileCmd() {
 				}
 			}
 			if len(allPkgs) > 0 {
-				detected, detectErr := llmgen.DetectLLMChannels(roots.GoModRoot, importPrefix, allPkgs)
+				detected, detectErr := llmgen.DetectLLMChannels(roots.ShipqRoot, importPrefix, allPkgs)
 				if detectErr == nil && len(detected) > 0 {
 					llmChannelPkgs = detected
 					// Update the marker file so subsequent runs don't need live detection.

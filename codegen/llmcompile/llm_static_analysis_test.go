@@ -667,3 +667,174 @@ func Register(app *llm.App) {
 		t.Errorf("expected 0 tools for too-few args, got %d", len(tools))
 	}
 }
+
+// TestFindToolRegistrations_MonorepoLayout verifies that FindToolRegistrations
+// correctly locates tool source files in a monorepo layout where the first
+// argument (rootDir) is the shipq project root and modulePath is the full
+// import prefix (including the subpath from go.mod root to shipq root).
+//
+// This is a regression test for a bug where the function would strip the full
+// import prefix from the package path, then join the remainder with goModRoot,
+// producing an incorrect filesystem path. The fix is to pass shipqRoot (not
+// goModRoot) as the first argument when modulePath is the full import prefix.
+func TestFindToolRegistrations_MonorepoLayout(t *testing.T) {
+	goModRoot := t.TempDir()
+	shipqRoot := filepath.Join(goModRoot, "services", "myservice")
+
+	rawModulePath := "github.com/company/monorepo"
+	importPrefix := rawModulePath + "/services/myservice"
+	importPath := importPrefix + "/tools/weather"
+
+	// Create the package directory under shipqRoot (where the files actually live).
+	pkgDir := filepath.Join(shipqRoot, "tools", "weather")
+	if err := os.MkdirAll(pkgDir, 0755); err != nil {
+		t.Fatalf("failed to create package dir: %v", err)
+	}
+
+	content := `package weather
+
+import "` + importPrefix + `/shipq/lib/llm"
+
+type WeatherInput struct {
+	City string
+}
+
+type WeatherOutput struct {
+	Temp float64
+}
+
+func GetWeather(input *WeatherInput) (*WeatherOutput, error) {
+	return nil, nil
+}
+
+func Register(app *llm.App) {
+	app.Tool("get_weather", "Get the current weather for a city", GetWeather)
+}
+`
+	if err := os.WriteFile(filepath.Join(pkgDir, "register.go"), []byte(content), 0644); err != nil {
+		t.Fatalf("failed to write register.go: %v", err)
+	}
+
+	// When modulePath is the full import prefix, rootDir must be shipqRoot
+	// so that TrimPrefix + Join produces the correct filesystem path.
+	tools, err := FindToolRegistrations(shipqRoot, importPrefix, importPath)
+	if err != nil {
+		t.Fatalf("FindToolRegistrations failed: %v", err)
+	}
+
+	if len(tools) != 1 {
+		t.Fatalf("expected 1 tool, got %d", len(tools))
+	}
+
+	if tools[0].Name != "get_weather" {
+		t.Errorf("expected tool name 'get_weather', got %q", tools[0].Name)
+	}
+	if tools[0].FuncName != "GetWeather" {
+		t.Errorf("expected func name 'GetWeather', got %q", tools[0].FuncName)
+	}
+}
+
+// TestFindToolRegistrations_MonorepoDeeplyNested verifies correct behaviour
+// when the shipq root is several levels deep inside the monorepo.
+func TestFindToolRegistrations_MonorepoDeeplyNested(t *testing.T) {
+	goModRoot := t.TempDir()
+	shipqRoot := filepath.Join(goModRoot, "packages", "services", "api", "backend")
+
+	rawModulePath := "github.com/bigcorp/platform"
+	importPrefix := rawModulePath + "/packages/services/api/backend"
+	importPath := importPrefix + "/tools/analyze"
+
+	pkgDir := filepath.Join(shipqRoot, "tools", "analyze")
+	if err := os.MkdirAll(pkgDir, 0755); err != nil {
+		t.Fatalf("failed to create package dir: %v", err)
+	}
+
+	content := `package analyze
+
+import "` + importPrefix + `/shipq/lib/llm"
+
+type AnalysisInput struct {
+	Query string
+}
+
+type AnalysisOutput struct {
+	Result string
+}
+
+func RunAnalysis(input *AnalysisInput) (*AnalysisOutput, error) {
+	return nil, nil
+}
+
+func Register(app *llm.App) {
+	app.Tool("run_analysis", "Run analysis", RunAnalysis)
+}
+`
+	if err := os.WriteFile(filepath.Join(pkgDir, "register.go"), []byte(content), 0644); err != nil {
+		t.Fatalf("failed to write register.go: %v", err)
+	}
+
+	tools, err := FindToolRegistrations(shipqRoot, importPrefix, importPath)
+	if err != nil {
+		t.Fatalf("FindToolRegistrations failed: %v", err)
+	}
+
+	if len(tools) != 1 {
+		t.Fatalf("expected 1 tool, got %d", len(tools))
+	}
+
+	if tools[0].Name != "run_analysis" {
+		t.Errorf("expected tool name 'run_analysis', got %q", tools[0].Name)
+	}
+}
+
+// TestFindToolRegistrations_MonorepoMultiplePackages verifies that multiple
+// tool packages are correctly resolved in a monorepo layout.
+func TestFindToolRegistrations_MonorepoMultiplePackages(t *testing.T) {
+	goModRoot := t.TempDir()
+	shipqRoot := filepath.Join(goModRoot, "apps", "backend")
+
+	rawModulePath := "github.com/org/repo"
+	importPrefix := rawModulePath + "/apps/backend"
+
+	toolNames := []string{"weather", "calendar"}
+	for _, name := range toolNames {
+		pkgDir := filepath.Join(shipqRoot, "tools", name)
+		if err := os.MkdirAll(pkgDir, 0755); err != nil {
+			t.Fatalf("failed to create package dir for %s: %v", name, err)
+		}
+
+		content := `package ` + name + `
+
+import "` + importPrefix + `/shipq/lib/llm"
+
+type Input struct{ Data string }
+type Output struct{ Result string }
+
+func Do(input *Input) (*Output, error) { return nil, nil }
+
+func Register(app *llm.App) {
+	app.Tool("do_` + name + `", "Do ` + name + `", Do)
+}
+`
+		if err := os.WriteFile(filepath.Join(pkgDir, "register.go"), []byte(content), 0644); err != nil {
+			t.Fatalf("failed to write register.go for %s: %v", name, err)
+		}
+	}
+
+	for _, name := range toolNames {
+		importPath := importPrefix + "/tools/" + name
+		tools, err := FindToolRegistrations(shipqRoot, importPrefix, importPath)
+		if err != nil {
+			t.Fatalf("FindToolRegistrations for %s failed: %v", name, err)
+		}
+
+		if len(tools) != 1 {
+			t.Fatalf("tool %s: expected 1 tool, got %d", name, len(tools))
+		}
+
+		expectedName := "do_" + name
+		if tools[0].Name != expectedName {
+			t.Errorf("tool %s: expected name %q, got %q", name, expectedName, tools[0].Name)
+		}
+	}
+}

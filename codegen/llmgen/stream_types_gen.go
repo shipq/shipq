@@ -20,16 +20,20 @@ import (
 // llm.WithClient or llm.WithNamedClient.
 //
 // Parameters:
-//   - goModRoot: filesystem path to the directory containing go.mod
-//   - modulePath: the Go module path (e.g., "myapp")
+//   - rootDir: the filesystem directory that modulePath maps to. When modulePath
+//     is the full import prefix (including any monorepo subpath), this must be
+//     shipqRoot (the directory containing shipq.ini), NOT goModRoot.
+//   - modulePath: the Go import prefix used to strip package paths down to
+//     filesystem-relative paths. This should be the full import prefix
+//     (e.g., "github.com/company/monorepo/services/myservice").
 //   - channelPkgs: import paths of all channel packages
 //
 // Returns a list of import paths for LLM-enabled channel packages.
-func DetectLLMChannels(goModRoot, modulePath string, channelPkgs []string) ([]string, error) {
+func DetectLLMChannels(rootDir, modulePath string, channelPkgs []string) ([]string, error) {
 	var llmChannels []string
 
 	for _, importPath := range channelPkgs {
-		enabled, err := isLLMEnabledChannel(goModRoot, modulePath, importPath)
+		enabled, err := isLLMEnabledChannel(rootDir, modulePath, importPath)
 		if err != nil {
 			return nil, fmt.Errorf("detect llm channel %s: %w", importPath, err)
 		}
@@ -44,9 +48,15 @@ func DetectLLMChannels(goModRoot, modulePath string, channelPkgs []string) ([]st
 // isLLMEnabledChannel checks whether a channel package imports and uses
 // llm.WithClient or llm.WithNamedClient. It scans all non-test, non-generated
 // Go files in the package directory.
-func isLLMEnabledChannel(goModRoot, modulePath, importPath string) (bool, error) {
+//
+// rootDir is the filesystem directory that modulePath maps to. When modulePath
+// is the full import prefix (including any monorepo subpath), this must be
+// shipqRoot, not goModRoot.
+func isLLMEnabledChannel(rootDir, modulePath, importPath string) (bool, error) {
+	// modulePath is the full import prefix, so stripping it yields a path
+	// relative to rootDir (which should be shipqRoot in a monorepo setup).
 	relImport := strings.TrimPrefix(importPath, modulePath+"/")
-	dirPath := filepath.Join(goModRoot, relImport)
+	dirPath := filepath.Join(rootDir, relImport)
 
 	entries, err := os.ReadDir(dirPath)
 	if err != nil {

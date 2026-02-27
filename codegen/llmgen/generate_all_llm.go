@@ -92,8 +92,10 @@ func generateToolRegistries(cfg GenerateAllLLMConfig) error {
 		}
 
 		// Convert import path to filesystem path.
+		// ModulePath is the full import prefix (including any monorepo subpath),
+		// so after stripping it the remainder is relative to ShipqRoot, not GoModRoot.
 		relImport := strings.TrimPrefix(pkg.PackagePath, cfg.ModulePath+"/")
-		outputDir := filepath.Join(cfg.GoModRoot, relImport)
+		outputDir := filepath.Join(cfg.ShipqRoot, relImport)
 		outputPath := filepath.Join(outputDir, "zz_generated_registry.go")
 
 		if err := codegen.EnsureDir(outputDir); err != nil {
@@ -262,7 +264,9 @@ func generateStreamTypesMarker(cfg GenerateAllLLMConfig) error {
 		return WriteLLMChannelsMarker(cfg.ShipqRoot, nil)
 	}
 
-	llmChannels, err := DetectLLMChannels(cfg.GoModRoot, cfg.ModulePath, cfg.ChannelPkgs)
+	// ModulePath is the full import prefix (including any monorepo subpath),
+	// so after stripping it the remainder is relative to ShipqRoot, not GoModRoot.
+	llmChannels, err := DetectLLMChannels(cfg.ShipqRoot, cfg.ModulePath, cfg.ChannelPkgs)
 	if err != nil {
 		return fmt.Errorf("detect llm channels: %w", err)
 	}

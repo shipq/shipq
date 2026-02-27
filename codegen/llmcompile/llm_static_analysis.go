@@ -49,10 +49,21 @@ type StaticToolInfo struct {
 //   - Function reference name (third argument, must be an identifier or selector)
 //
 // This is analogous to channel_static_analysis.go's findChannelHandlerFuncs.
-func FindToolRegistrations(goModRoot, modulePath, importPath string) ([]StaticToolInfo, error) {
+//
+// Parameters:
+//   - rootDir: the filesystem directory that modulePath maps to. When modulePath
+//     is the full import prefix (including any monorepo subpath), this must be
+//     shipqRoot (the directory containing shipq.ini), NOT goModRoot.
+//   - modulePath: the Go import prefix used to strip package paths down to
+//     filesystem-relative paths. This should be the full import prefix
+//     (e.g., "github.com/company/monorepo/services/myservice").
+//   - importPath: the full import path of the tool package to scan.
+func FindToolRegistrations(rootDir, modulePath, importPath string) ([]StaticToolInfo, error) {
 	// Convert import path to filesystem directory.
+	// modulePath is the full import prefix, so stripping it yields a path
+	// relative to rootDir (which should be shipqRoot in a monorepo setup).
 	relImport := strings.TrimPrefix(importPath, modulePath+"/")
-	dirPath := filepath.Join(goModRoot, relImport)
+	dirPath := filepath.Join(rootDir, relImport)
 
 	entries, err := os.ReadDir(dirPath)
 	if err != nil {

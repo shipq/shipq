@@ -18,9 +18,11 @@ func GenerateAllTypedChannels(channels []codegen.SerializedChannelInfo, goModRoo
 			return fmt.Errorf("generate typed channel %q: %w", ch.Name, err)
 		}
 
-		// Convert import path back to filesystem path relative to goModRoot
+		// Convert import path back to filesystem path relative to shipqRoot.
+		// modulePath is the full import prefix (including any monorepo subpath),
+		// so after stripping it the remainder is relative to shipqRoot, not goModRoot.
 		relImport := strings.TrimPrefix(ch.PackagePath, modulePath+"/")
-		outputDir := filepath.Join(goModRoot, relImport)
+		outputDir := filepath.Join(shipqRoot, relImport)
 		outputPath := filepath.Join(outputDir, "zz_generated_channel.go")
 
 		// Ensure the directory exists

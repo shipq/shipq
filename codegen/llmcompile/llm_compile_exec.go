@@ -56,7 +56,9 @@ func CompileLLM(cfg CompileLLMConfig) ([]SerializedToolPackage, error) {
 	staticByPkg := make(map[string][]StaticToolInfo)
 
 	for _, importPath := range cfg.ToolPkgs {
-		tools, err := FindToolRegistrations(cfg.GoModRoot, cfg.ModulePath, importPath)
+		// ModulePath is the full import prefix (including any monorepo subpath),
+		// so after stripping it the remainder is relative to ShipqRoot, not GoModRoot.
+		tools, err := FindToolRegistrations(cfg.ShipqRoot, cfg.ModulePath, importPath)
 		if err != nil {
 			return nil, fmt.Errorf("static analysis for %s: %w", importPath, err)
 		}
