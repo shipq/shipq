@@ -536,6 +536,11 @@ func TestGenerateHelpers_ContainsExpectedFunctions(t *testing.T) {
 
 	codeStr := string(code)
 
+	// Should import database/sql for sql.ErrNoRows classification
+	if !strings.Contains(codeStr, `"database/sql"`) {
+		t.Error("missing import: database/sql (needed for sql.ErrNoRows in TryGetCurrentSession)")
+	}
+
 	// Should have getCurrentSession helper (other DB operations go through the query runner)
 	if !strings.Contains(codeStr, "func getCurrentSession") {
 		t.Error("missing helper: func getCurrentSession")
@@ -556,11 +561,12 @@ func TestGenerateHelpers_ContainsExpectedFunctions(t *testing.T) {
 		t.Error("missing sentinel: ErrNoValidSession")
 	}
 
-	// TryGetCurrentSession should handle http.ErrNoCookie, crypto errors, and nil session
+	// TryGetCurrentSession should handle http.ErrNoCookie, crypto errors, sql.ErrNoRows, and nil session
 	expectedChecks := []string{
 		"http.ErrNoCookie",
 		"crypto.ErrInvalidCookie",
 		"crypto.ErrInvalidSignature",
+		"sql.ErrNoRows",
 		"session == nil",
 	}
 	for _, check := range expectedChecks {
@@ -1048,6 +1054,105 @@ func TestGenerateSignupFiles_ValidGo(t *testing.T) {
 	}
 	if !strings.Contains(registerCode, `app.Get("/me", Me).Auth()`) {
 		t.Error("signup register.go should include /me route")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Bug 4: TryGetCurrentSession must classify sql.ErrNoRows as ErrNoValidSession
+// ---------------------------------------------------------------------------
+
+// TestGenerateHelpers_TryGetCurrentSession_ClassifiesSqlErrNoRows is a targeted
+// regression test for Bug 4. When a user has a validly-signed session cookie but
+// the session row no longer exists in the database (expired, soft-deleted, or
+// manually removed), FindActiveSession returns sql.ErrNoRows. TryGetCurrentSession
+// must classify this as ErrNoValidSession so that WrapOptionalAuthHandler proceeds
+// unauthenticated instead of returning 500 Internal Server Error.
+func TestGenerateHelpers_TryGetCurrentSession_ClassifiesSqlErrNoRows(t *testing.T) {
+	cfg := AuthGenConfig{
+		ModulePath: "example.com/myapp",
+	}
+
+	code, err := GenerateHelpers(cfg)
+	if err != nil {
+		t.Fatalf("GenerateHelpers() error = %v", err)
+	}
+
+	codeStr := string(code)
+
+	// The generated TryGetCurrentSession must include sql.ErrNoRows in the
+	// error classification block alongside http.ErrNoCookie and crypto errors.
+	// Without this, expired sessions produce 500s on optional-auth routes.
+	if !strings.Contains(codeStr, "sql.ErrNoRows") {
+		t.Fatal("TryGetCurrentSession must classify sql.ErrNoRows as ErrNoValidSession")
+	}
+
+	// Verify sql.ErrNoRows appears in the same errors.Is block as the other
+	// session-related errors (not in a separate, unrelated block).
+	lines := strings.Split(codeStr, "\n")
+	inClassificationBlock := false
+	foundInBlock := false
+	for _, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		// The classification block starts with the first errors.Is check
+		if strings.Contains(trimmed, "errors.Is(err, http.ErrNoCookie)") {
+			inClassificationBlock = true
+		}
+		if inClassificationBlock && strings.Contains(trimmed, "sql.ErrNoRows") {
+			foundInBlock = true
+			break
+		}
+		// The block ends at the closing brace + return
+		if inClassificationBlock && strings.Contains(trimmed, "return nil, ErrNoValidSession") {
+			break
+		}
+	}
+	if !foundInBlock {
+		t.Error("sql.ErrNoRows must be in the same errors.Is classification block as http.ErrNoCookie and crypto errors")
+	}
+
+	// Must import database/sql for sql.ErrNoRows
+	if !strings.Contains(codeStr, `"database/sql"`) {
+		t.Error("helpers.go must import database/sql for sql.ErrNoRows")
+	}
+
+	// Verify it's valid Go
+	_, parseErr := parser.ParseFile(token.NewFileSet(), "helpers.go", code, parser.AllErrors)
+	if parseErr != nil {
+		t.Errorf("generated helpers.go is not valid Go: %v\n%s", parseErr, string(code))
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Bug 1: Centrifugo tokens must use account public ID, not session public ID
+// ---------------------------------------------------------------------------
+
+func TestGenerateAuthQueryDefs_FindActiveSession_SelectsAccountPublicId(t *testing.T) {
+	cfg := AuthGenConfig{
+		ModulePath: "example.com/myapp",
+	}
+
+	code, err := GenerateAuthQueryDefs(cfg)
+	if err != nil {
+		t.Fatalf("GenerateAuthQueryDefs() error = %v", err)
+	}
+
+	codeStr := string(code)
+
+	// FindActiveSession must select the account's public_id with an alias
+	// to disambiguate it from sessions.public_id.
+	if !strings.Contains(codeStr, `SelectAs(schema.Accounts.PublicId(), "account_public_id")`) {
+		t.Error("FindActiveSession must select schema.Accounts.PublicId() with alias \"account_public_id\"")
+	}
+
+	// It should still select the session's public_id as well (for cookie lookup)
+	if !strings.Contains(codeStr, "schema.Sessions.PublicId()") {
+		t.Error("FindActiveSession must still select schema.Sessions.PublicId()")
+	}
+
+	// Verify it's valid Go
+	_, parseErr := parser.ParseFile(token.NewFileSet(), "queries.go", code, parser.AllErrors)
+	if parseErr != nil {
+		t.Errorf("generated queries.go is not valid Go: %v\n%s", parseErr, string(code))
 	}
 }
 

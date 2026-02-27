@@ -133,7 +133,7 @@ func GenerateJobResultsQuerydefs(modulePath string, hasTenancy bool, hasAuth boo
 	buf.WriteString("\tquery.MustDefineExec(\"UpdateJobStatus\",\n")
 	buf.WriteString("\t\tquery.Update(schema.JobResults).\n")
 	buf.WriteString("\t\t\tSet(schema.JobResults.Status(), query.Param[string](\"status\")).\n")
-	buf.WriteString("\t\t\tSet(schema.JobResults.StartedAt(), query.Param[*string](\"startedAt\")).\n")
+	buf.WriteString("\t\t\tSet(schema.JobResults.StartedAt(), query.Coalesce(query.Param[*string](\"startedAt\"), query.ColumnExpr{Column: schema.JobResults.StartedAt()})).\n")
 	buf.WriteString("\t\t\tSet(schema.JobResults.CompletedAt(), query.Param[*string](\"completedAt\")).\n")
 	buf.WriteString("\t\t\tSet(schema.JobResults.ErrorMessage(), query.Param[*string](\"errorMessage\")).\n")
 	buf.WriteString("\t\t\tSet(schema.JobResults.ResultPayload(), query.Param[*string](\"resultPayload\")).\n")

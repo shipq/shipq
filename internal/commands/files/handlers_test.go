@@ -5,6 +5,100 @@ import (
 	"testing"
 )
 
+// ---------------------------------------------------------------------------
+// Bug 2: File access checks must distinguish sql.ErrNoRows from real DB errors
+// ---------------------------------------------------------------------------
+
+// TestGenerateFileHelpers_CheckDownloadAccess_DistinguishesSqlErrors verifies
+// that the generated checkDownloadAccess function uses errors.Is(err, sql.ErrNoRows)
+// to distinguish "no permission row" (403) from real database failures (500).
+func TestGenerateFileHelpers_CheckDownloadAccess_DistinguishesSqlErrors(t *testing.T) {
+	output := string(generateFileHelpers(testModulePath))
+
+	// Must import database/sql and errors for error classification
+	if !strings.Contains(output, `"database/sql"`) {
+		t.Error("helpers must import database/sql for sql.ErrNoRows check")
+	}
+	if !strings.Contains(output, `"errors"`) {
+		t.Error("helpers must import errors for errors.Is check")
+	}
+
+	// checkDownloadAccess must check for sql.ErrNoRows explicitly
+	if !strings.Contains(output, "sql.ErrNoRows") {
+		t.Error("checkDownloadAccess must check for sql.ErrNoRows to distinguish no-permission from DB failure")
+	}
+
+	// Must return a 500 for real database errors, not a 403
+	if !strings.Contains(output, `httperror.Wrap(500, "access check failed"`) {
+		t.Error("checkDownloadAccess must return 500 for real database errors, not mask them as 403")
+	}
+}
+
+// TestGenerateSoftDeleteHandler_DistinguishesSqlErrors verifies that the
+// soft-delete handler distinguishes sql.ErrNoRows from real DB errors when
+// checking FilesCheckAccess.
+func TestGenerateSoftDeleteHandler_DistinguishesSqlErrors(t *testing.T) {
+	output := string(generateSoftDeleteHandler(testModulePath))
+
+	if !strings.Contains(output, `"database/sql"`) {
+		t.Error("soft-delete handler must import database/sql")
+	}
+	if !strings.Contains(output, `"errors"`) {
+		t.Error("soft-delete handler must import errors")
+	}
+	if !strings.Contains(output, "sql.ErrNoRows") {
+		t.Error("soft-delete handler must check sql.ErrNoRows in access check")
+	}
+	if !strings.Contains(output, `httperror.Wrap(500, "access check failed"`) {
+		t.Error("soft-delete handler must return 500 for real DB errors in access check")
+	}
+}
+
+// TestGenerateVisibilityHandler_DistinguishesSqlErrors verifies that the
+// visibility handler distinguishes sql.ErrNoRows from real DB errors.
+func TestGenerateVisibilityHandler_DistinguishesSqlErrors(t *testing.T) {
+	output := string(generateVisibilityHandler(testModulePath))
+
+	if !strings.Contains(output, `"database/sql"`) {
+		t.Error("visibility handler must import database/sql")
+	}
+	if !strings.Contains(output, `"errors"`) {
+		t.Error("visibility handler must import errors")
+	}
+	if !strings.Contains(output, "sql.ErrNoRows") {
+		t.Error("visibility handler must check sql.ErrNoRows in access check")
+	}
+	if !strings.Contains(output, `httperror.Wrap(500, "access check failed"`) {
+		t.Error("visibility handler must return 500 for real DB errors in access check")
+	}
+}
+
+// TestGenerateAccessHandlers_DistinguishesSqlErrors verifies that the
+// grant, revoke, and list access handlers all distinguish sql.ErrNoRows
+// from real DB errors.
+func TestGenerateAccessHandlers_DistinguishesSqlErrors(t *testing.T) {
+	output := string(generateAccessHandlers(testModulePath))
+
+	if !strings.Contains(output, `"database/sql"`) {
+		t.Error("access handlers must import database/sql")
+	}
+	if !strings.Contains(output, `"errors"`) {
+		t.Error("access handlers must import errors")
+	}
+
+	// There are 3 FilesCheckAccess call sites (grant, revoke, list) — each
+	// must check sql.ErrNoRows independently.
+	count := strings.Count(output, "sql.ErrNoRows")
+	if count < 3 {
+		t.Errorf("expected at least 3 sql.ErrNoRows checks (grant, revoke, list), got %d", count)
+	}
+
+	wrapCount := strings.Count(output, `httperror.Wrap(500, "access check failed"`)
+	if wrapCount < 3 {
+		t.Errorf("expected at least 3 httperror.Wrap(500, ...) calls (grant, revoke, list), got %d", wrapCount)
+	}
+}
+
 const testModulePath = "example.com/myapp"
 
 // TestGenerateFileRegister_UsesColonParamSyntax verifies that the generated

@@ -163,7 +163,7 @@ func generateMainFuncWithChannels(buf *bytes.Buffer, cfg HTTPMainGenConfig) {
 	buf.WriteString("\t\tif session.DefaultOrganizationId != nil {\n")
 	buf.WriteString("\t\t\tdefaultOrgID = *session.DefaultOrganizationId\n")
 	buf.WriteString("\t\t}\n")
-	buf.WriteString("\t\treturn session.AccountId, defaultOrgID, session.PublicId, nil\n")
+	buf.WriteString("\t\treturn session.AccountId, defaultOrgID, session.AccountPublicId, nil\n")
 	buf.WriteString("\t}\n\n")
 
 	buf.WriteString("\tcheckRBAC := func(r *http.Request, accountID int64, orgID int64, routePath, method string) error {\n")

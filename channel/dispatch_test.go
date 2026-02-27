@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"testing"
 	"time"
 
@@ -20,6 +21,9 @@ type testRequest struct {
 }
 
 // setupTestDB creates an in-memory SQLite database with the job_results table.
+// NOTE: Test-only raw SQL below is intentional and SQLite-specific. These helpers
+// exist only for unit testing the dispatch runtime and are not used in production
+// or generated code.
 func setupTestDB(t *testing.T) *sql.DB {
 	t.Helper()
 	db, err := sql.Open("sqlite", ":memory:")
@@ -796,6 +800,139 @@ func TestWrapDispatchHandler_BackwardsCompatible(t *testing.T) {
 	status, _, _, _ := getJobStatus(t, db, "compat-job-1")
 	if status != "completed" {
 		t.Errorf("expected job status 'completed', got %q", status)
+	}
+}
+
+// TestWrapDispatchHandlerWithUpdater_UsesInjectedUpdateFunc verifies that
+// WrapDispatchHandlerWithUpdater calls the injected UpdateJobFunc instead of
+// using raw SQL. This is the preferred API for PostgreSQL compatibility.
+func TestWrapDispatchHandlerWithUpdater_UsesInjectedUpdateFunc(t *testing.T) {
+	transport := NewTestRecorder()
+
+	// Track which statuses the update function was called with.
+	var updateCalls []string
+	updateFn := func(publicID, status string, startedAt, completedAt, errorMessage, resultPayload *string, retryCount int) error {
+		updateCalls = append(updateCalls, status)
+		return nil
+	}
+
+	handler := func(ctx context.Context, req *testRequest) error {
+		return nil
+	}
+
+	wrapped := WrapDispatchHandlerWithUpdater(handler, transport, updateFn, "testchan")
+
+	dp := DispatchPayload{
+		JobID:       "job-updater-001",
+		ChannelName: "testchan",
+		AccountID:   1,
+		OrgID:       0,
+		IsPublic:    false,
+		Request:     json.RawMessage(`{"prompt":"hello"}`),
+	}
+	payload, err := json.Marshal(dp)
+	if err != nil {
+		t.Fatalf("marshal dispatch payload: %v", err)
+	}
+
+	err = wrapped(string(payload))
+	if err != nil {
+		t.Fatalf("wrapped handler returned error: %v", err)
+	}
+
+	// The update function should have been called twice:
+	// 1. "running" (before handler execution)
+	// 2. "completed" (after successful handler execution)
+	if len(updateCalls) != 2 {
+		t.Fatalf("expected 2 update calls, got %d: %v", len(updateCalls), updateCalls)
+	}
+	if updateCalls[0] != "running" {
+		t.Errorf("expected first update to be 'running', got %q", updateCalls[0])
+	}
+	if updateCalls[1] != "completed" {
+		t.Errorf("expected second update to be 'completed', got %q", updateCalls[1])
+	}
+}
+
+// TestWrapDispatchHandlerWithUpdater_HandlerFailure_CallsUpdateWithFailed
+// verifies that when the handler returns an error, the injected UpdateJobFunc
+// is called with status "failed" and the error message.
+func TestWrapDispatchHandlerWithUpdater_HandlerFailure_CallsUpdateWithFailed(t *testing.T) {
+	transport := NewTestRecorder()
+
+	var updateCalls []string
+	var capturedErrMsg *string
+	updateFn := func(publicID, status string, startedAt, completedAt, errorMessage, resultPayload *string, retryCount int) error {
+		updateCalls = append(updateCalls, status)
+		if errorMessage != nil {
+			capturedErrMsg = errorMessage
+		}
+		return nil
+	}
+
+	handler := func(ctx context.Context, req *testRequest) error {
+		return fmt.Errorf("something went wrong")
+	}
+
+	wrapped := WrapDispatchHandlerWithUpdater(handler, transport, updateFn, "testchan")
+
+	dp := DispatchPayload{
+		JobID:       "job-fail-001",
+		ChannelName: "testchan",
+		AccountID:   1,
+		OrgID:       0,
+		IsPublic:    false,
+		Request:     json.RawMessage(`{"prompt":"hello"}`),
+	}
+	payload, _ := json.Marshal(dp)
+
+	err := wrapped(string(payload))
+	if err == nil {
+		t.Fatal("expected handler error to be propagated")
+	}
+
+	// Should have called update with "running" then "failed"
+	if len(updateCalls) != 2 {
+		t.Fatalf("expected 2 update calls, got %d: %v", len(updateCalls), updateCalls)
+	}
+	if updateCalls[0] != "running" {
+		t.Errorf("expected first update to be 'running', got %q", updateCalls[0])
+	}
+	if updateCalls[1] != "failed" {
+		t.Errorf("expected second update to be 'failed', got %q", updateCalls[1])
+	}
+	if capturedErrMsg == nil || *capturedErrMsg != "something went wrong" {
+		t.Errorf("expected error message 'something went wrong', got %v", capturedErrMsg)
+	}
+}
+
+// TestWrapDispatchHandlerWithUpdater_NilUpdateFunc_NilDB_ReturnsError verifies
+// that if neither an UpdateJobFunc nor a *sql.DB is provided, the handler
+// returns an error immediately.
+func TestWrapDispatchHandlerWithUpdater_NilUpdateFunc_NilDB_ReturnsError(t *testing.T) {
+	transport := NewTestRecorder()
+
+	handler := func(ctx context.Context, req *testRequest) error {
+		return nil
+	}
+
+	// Pass nil for both db and updateJob via the internal path
+	wrapped := wrapDispatchHandlerInternal(handler, transport, nil, nil, "testchan")
+
+	dp := DispatchPayload{
+		JobID:       "job-nil-001",
+		ChannelName: "testchan",
+		AccountID:   1,
+		Request:     json.RawMessage(`{"prompt":"hello"}`),
+	}
+	payload, _ := json.Marshal(dp)
+
+	err := wrapped(string(payload))
+	if err == nil {
+		t.Fatal("expected error when no update function or db is provided")
+	}
+	if !strings.Contains(err.Error(), "no update function or db provided") {
+		t.Errorf("unexpected error message: %v", err)
 	}
 }
 

@@ -375,13 +375,13 @@ func TestGenerateJobStatusEndpoint(t *testing.T) {
 		t.Error("expected handleJobStatus function")
 	}
 
-	// Should query job_results
-	if !strings.Contains(code, "job_results") {
-		t.Error("expected job_results table query")
+	// Should use the query runner to look up job results
+	if !strings.Contains(code, "runner.GetJobResult(") {
+		t.Error("expected runner.GetJobResult() call in job status handler")
 	}
 
 	// Should check ownership for authenticated endpoints
-	if !strings.Contains(code, "jobAccountID != accountID") {
+	if !strings.Contains(code, "jobResult.AccountId != accountID") {
 		t.Error("expected ownership check in job status handler")
 	}
 }
@@ -630,7 +630,7 @@ func TestGenerateChannelHTTPRoutes_TokenOwnershipVerification(t *testing.T) {
 	}
 
 	// Should verify ownership somewhere in the token code
-	if !strings.Contains(code, "jobAccountID != accountID") {
+	if !strings.Contains(code, "jobResult.AccountId != accountID") {
 		t.Error("expected ownership check in token handler")
 	}
 
@@ -676,5 +676,102 @@ func TestGenerateChannelHTTPRoutes_NanoidForJobID(t *testing.T) {
 	// Should use nanoid for job ID generation
 	if !strings.Contains(code, "nanoid.New()") {
 		t.Error("expected nanoid.New() for job ID generation")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Bug 3: Generated channel handlers must not use raw SQL with ? placeholders.
+// All database access should go through the query runner.
+// ---------------------------------------------------------------------------
+
+func TestGenerateChannelHTTPRoutes_NoRawSQL_AuthChannel(t *testing.T) {
+	code := generateAndCheck(t, []codegen.SerializedChannelInfo{makeAuthChannel("chatbot")})
+
+	// The generated code must NOT contain raw db.QueryRow or db.Exec calls.
+	// All database access should go through the query runner (runner.GetJobResult, etc.).
+	if strings.Contains(code, "db.QueryRow(") {
+		t.Error("generated channel routes must not use raw db.QueryRow(); use runner.GetJobResult() instead")
+	}
+	if strings.Contains(code, "db.Exec(") {
+		t.Error("generated channel routes must not use raw db.Exec(); use query runner methods instead")
+	}
+	if strings.Contains(code, "db.Query(") {
+		t.Error("generated channel routes must not use raw db.Query(); use query runner methods instead")
+	}
+}
+
+func TestGenerateChannelHTTPRoutes_NoRawSQL_PublicChannel(t *testing.T) {
+	code := generateAndCheck(t, []codegen.SerializedChannelInfo{makePublicChannel("demo", 60, 10)})
+
+	if strings.Contains(code, "db.QueryRow(") {
+		t.Error("generated public channel routes must not use raw db.QueryRow()")
+	}
+	if strings.Contains(code, "db.Exec(") {
+		t.Error("generated public channel routes must not use raw db.Exec()")
+	}
+}
+
+func TestGenerateChannelHTTPRoutes_NoRawSQL_MixedChannels(t *testing.T) {
+	channels := []codegen.SerializedChannelInfo{
+		makeAuthChannel("chatbot"),
+		makePublicChannel("demo", 60, 10),
+	}
+	code := generateAndCheck(t, channels)
+
+	if strings.Contains(code, "db.QueryRow(") {
+		t.Error("generated mixed channel routes must not use raw db.QueryRow()")
+	}
+	if strings.Contains(code, "db.Exec(") {
+		t.Error("generated mixed channel routes must not use raw db.Exec()")
+	}
+}
+
+func TestGenerateChannelHTTPRoutes_TokenHandler_UsesQueryRunner(t *testing.T) {
+	code := generateAndCheck(t, []codegen.SerializedChannelInfo{makeAuthChannel("chatbot")})
+
+	// Token handler should use runner.GetJobResult for job lookup
+	if !strings.Contains(code, "runner.GetJobResult(") {
+		t.Error("token handler must use runner.GetJobResult() instead of raw SQL")
+	}
+
+	// Token handler should receive runner, not db
+	if strings.Contains(code, "func handleToken_chatbot(\n\tw http.ResponseWriter,\n\tr *http.Request,\n\ttransport channel.RealtimeTransport,\n\tdb *sql.DB,") {
+		t.Error("token handler must accept queries.Runner, not *sql.DB")
+	}
+	if !strings.Contains(code, "runner queries.Runner") {
+		t.Error("token handler must accept runner queries.Runner parameter")
+	}
+}
+
+func TestGenerateChannelHTTPRoutes_JobStatusHandler_UsesQueryRunner(t *testing.T) {
+	code := generateAndCheck(t, []codegen.SerializedChannelInfo{makeAuthChannel("chatbot")})
+
+	// Job status handler should reference jobResult struct fields, not local scan vars
+	if !strings.Contains(code, "jobResult.PublicId") {
+		t.Error("job status handler must use jobResult.PublicId from query runner result")
+	}
+	if !strings.Contains(code, "jobResult.Status") {
+		t.Error("job status handler must use jobResult.Status from query runner result")
+	}
+	if !strings.Contains(code, "jobResult.ChannelName") {
+		t.Error("job status handler must use jobResult.ChannelName from query runner result")
+	}
+}
+
+func TestGenerateChannelHTTPRoutes_NoQuestionMarkPlaceholders(t *testing.T) {
+	// Verify that the generated code contains zero raw SQL placeholders.
+	// The ? placeholder syntax works on SQLite and MySQL but NOT PostgreSQL.
+	channels := []codegen.SerializedChannelInfo{
+		makeAuthChannel("chatbot"),
+		makePublicChannel("demo", 60, 10),
+	}
+	code := generateAndCheck(t, channels)
+
+	// Check for raw SQL patterns with ? placeholders
+	if strings.Contains(code, "WHERE public_id = ?") {
+		t.Error("generated code must not contain raw SQL with ? placeholders; use query runner instead")
+	}
+	if strings.Contains(code, "SELECT ") && strings.Contains(code, " FROM job_results") {
+		t.Error("generated code must not contain raw SELECT FROM job_results; use runner.GetJobResult() instead")
 	}
 }

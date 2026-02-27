@@ -516,7 +516,9 @@ func generateSoftDeleteHandler(modulePath string) []byte {
 	buf.WriteString("package managed_files\n\n")
 
 	buf.WriteString("import (\n")
-	buf.WriteString("\t\"context\"\n\n")
+	buf.WriteString("\t\"context\"\n")
+	buf.WriteString("\t\"database/sql\"\n")
+	buf.WriteString("\t\"errors\"\n\n")
 	buf.WriteString("\t\"" + modulePath + "/shipq/lib/httperror\"\n")
 	buf.WriteString("\t\"" + modulePath + "/shipq/lib/httputil\"\n")
 	buf.WriteString("\t\"" + modulePath + "/shipq/queries\"\n")
@@ -558,7 +560,13 @@ func DeleteFile(ctx context.Context, req *DeleteFileRequest) (*DeleteFileRespons
 			ManagedFileId: file.Id,
 			AccountId:     accountID,
 		})
-		if err != nil || hasAccess.Role != "manager" {
+		if err != nil {
+			if errors.Is(err, sql.ErrNoRows) {
+				return nil, httperror.New(403, "forbidden: only the uploader or a manager can delete")
+			}
+			return nil, httperror.Wrap(500, "access check failed", err)
+		}
+		if hasAccess.Role != "manager" {
 			return nil, httperror.New(403, "forbidden: only the uploader or a manager can delete")
 		}
 	}
@@ -584,7 +592,9 @@ func generateVisibilityHandler(modulePath string) []byte {
 	buf.WriteString("package managed_files\n\n")
 
 	buf.WriteString("import (\n")
-	buf.WriteString("\t\"context\"\n\n")
+	buf.WriteString("\t\"context\"\n")
+	buf.WriteString("\t\"database/sql\"\n")
+	buf.WriteString("\t\"errors\"\n\n")
 	buf.WriteString("\t\"" + modulePath + "/shipq/lib/httperror\"\n")
 	buf.WriteString("\t\"" + modulePath + "/shipq/lib/httputil\"\n")
 	buf.WriteString("\t\"" + modulePath + "/shipq/queries\"\n")
@@ -632,7 +642,13 @@ func UpdateVisibility(ctx context.Context, req *UpdateVisibilityRequest) (*Updat
 			ManagedFileId: file.Id,
 			AccountId:     accountID,
 		})
-		if err != nil || hasAccess.Role != "manager" {
+		if err != nil {
+			if errors.Is(err, sql.ErrNoRows) {
+				return nil, httperror.New(403, "forbidden: only the uploader or a manager can change visibility")
+			}
+			return nil, httperror.Wrap(500, "access check failed", err)
+		}
+		if hasAccess.Role != "manager" {
 			return nil, httperror.New(403, "forbidden: only the uploader or a manager can change visibility")
 		}
 	}
@@ -662,7 +678,9 @@ func generateAccessHandlers(modulePath string) []byte {
 	buf.WriteString("package managed_files\n\n")
 
 	buf.WriteString("import (\n")
-	buf.WriteString("\t\"context\"\n\n")
+	buf.WriteString("\t\"context\"\n")
+	buf.WriteString("\t\"database/sql\"\n")
+	buf.WriteString("\t\"errors\"\n\n")
 	buf.WriteString("\t\"" + modulePath + "/shipq/lib/httperror\"\n")
 	buf.WriteString("\t\"" + modulePath + "/shipq/lib/httputil\"\n")
 	buf.WriteString("\t\"" + modulePath + "/shipq/lib/nanoid\"\n")
@@ -713,7 +731,13 @@ func GrantAccess(ctx context.Context, req *GrantAccessRequest) (*GrantAccessResp
 			ManagedFileId: file.Id,
 			AccountId:     accountID,
 		})
-		if err != nil || hasAccess.Role != "manager" {
+		if err != nil {
+			if errors.Is(err, sql.ErrNoRows) {
+				return nil, httperror.New(403, "forbidden: only the uploader or a manager can grant access")
+			}
+			return nil, httperror.Wrap(500, "access check failed", err)
+		}
+		if hasAccess.Role != "manager" {
 			return nil, httperror.New(403, "forbidden: only the uploader or a manager can grant access")
 		}
 	}
@@ -776,7 +800,13 @@ func RevokeAccess(ctx context.Context, req *RevokeAccessRequest) (*RevokeAccessR
 			ManagedFileId: file.Id,
 			AccountId:     accountID,
 		})
-		if err != nil || hasAccess.Role != "manager" {
+		if err != nil {
+			if errors.Is(err, sql.ErrNoRows) {
+				return nil, httperror.New(403, "forbidden: only the uploader or a manager can revoke access")
+			}
+			return nil, httperror.Wrap(500, "access check failed", err)
+		}
+		if hasAccess.Role != "manager" {
 			return nil, httperror.New(403, "forbidden: only the uploader or a manager can revoke access")
 		}
 	}
@@ -841,7 +871,13 @@ func ListAccess(ctx context.Context, req *ListAccessRequest) (*ListAccessRespons
 			ManagedFileId: file.Id,
 			AccountId:     accountID,
 		})
-		if err != nil || hasAccess.Role != "manager" {
+		if err != nil {
+			if errors.Is(err, sql.ErrNoRows) {
+				return nil, httperror.New(403, "forbidden: only the uploader or a manager can view access list")
+			}
+			return nil, httperror.Wrap(500, "access check failed", err)
+		}
+		if hasAccess.Role != "manager" {
 			return nil, httperror.New(403, "forbidden: only the uploader or a manager can view access list")
 		}
 	}
@@ -875,7 +911,9 @@ func generateFileHelpers(modulePath string) []byte {
 	buf.WriteString("package managed_files\n\n")
 
 	buf.WriteString("import (\n")
-	buf.WriteString("\t\"context\"\n\n")
+	buf.WriteString("\t\"context\"\n")
+	buf.WriteString("\t\"database/sql\"\n")
+	buf.WriteString("\t\"errors\"\n\n")
 	buf.WriteString("\t\"" + modulePath + "/config\"\n")
 	buf.WriteString("\t\"" + modulePath + "/shipq/lib/filestorage\"\n")
 	buf.WriteString("\t\"" + modulePath + "/shipq/lib/httperror\"\n")
@@ -955,8 +993,11 @@ func checkDownloadAccess(ctx context.Context, runner queries.Runner, file querie
 	if err == nil {
 		return nil
 	}
-
-	return httperror.New(403, "forbidden: you do not have access to this file")
+	if errors.Is(err, sql.ErrNoRows) {
+		return httperror.New(403, "forbidden: you do not have access to this file")
+	}
+	// Real database error — deny access but surface as 500
+	return httperror.Wrap(500, "access check failed", err)
 }
 `))
 

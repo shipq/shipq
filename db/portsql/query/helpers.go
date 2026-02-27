@@ -25,6 +25,17 @@ func Now() FuncExpr {
 	return FuncExpr{Name: "NOW", Args: nil}
 }
 
+// Coalesce returns a COALESCE(args...) expression that evaluates to the first
+// non-NULL argument. This is useful in UPDATE SET clauses to preserve existing
+// column values when a parameter is NULL, e.g.:
+//
+//	Set(col, Coalesce(Param[*string]("p"), ColumnExpr{col}))
+//
+// produces SET col = COALESCE(?, col) which keeps the old value when ? is NULL.
+func Coalesce(args ...Expr) FuncExpr {
+	return FuncExpr{Name: "COALESCE", Args: args}
+}
+
 // And combines expressions with AND.
 // Returns nil if no expressions are provided.
 // Returns the single expression if only one is provided.

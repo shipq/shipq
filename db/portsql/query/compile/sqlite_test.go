@@ -909,3 +909,52 @@ func TestSQLite_CTE(t *testing.T) {
 		t.Errorf("SQL should contain AS (SELECT: %s", sql)
 	}
 }
+
+func TestSQLite_UpdateWithCoalesce(t *testing.T) {
+	startedAt := query.NullStringColumn{Table: "job_results", Name: "started_at"}
+	publicID := query.StringColumn{Table: "job_results", Name: "public_id"}
+	status := query.StringColumn{Table: "job_results", Name: "status"}
+
+	ast := &query.AST{
+		Kind:      query.UpdateQuery,
+		FromTable: query.TableRef{Name: "job_results"},
+		SetClauses: []query.SetClause{
+			{Column: status, Value: query.ParamExpr{Name: "status", GoType: "string"}},
+			{Column: startedAt, Value: query.FuncExpr{
+				Name: "COALESCE",
+				Args: []query.Expr{
+					query.ParamExpr{Name: "startedAt", GoType: "*string"},
+					query.ColumnExpr{Column: startedAt},
+				},
+			}},
+		},
+		Where: query.BinaryExpr{
+			Left:  query.ColumnExpr{Column: publicID},
+			Op:    query.OpEq,
+			Right: query.ParamExpr{Name: "publicId", GoType: "string"},
+		},
+	}
+
+	sql, params, err := NewCompiler(SQLite).Compile(ast)
+	if err != nil {
+		t.Fatalf("Compile failed: %v", err)
+	}
+
+	expected := `UPDATE "job_results" SET "status" = ?, "started_at" = COALESCE(?, "job_results"."started_at") WHERE ("job_results"."public_id" = ?)`
+	if !containsStr(sql, "COALESCE(?, ") {
+		t.Errorf("SQL should contain COALESCE with param placeholder: %s", sql)
+	}
+	if !containsStr(sql, `"job_results"."started_at"`) {
+		t.Errorf("SQL should contain column reference in COALESCE fallback: %s", sql)
+	}
+	// Check full SQL (status SET + COALESCE SET + WHERE)
+	if sql != expected {
+		t.Errorf("expected SQL:\n%s\ngot:\n%s", expected, sql)
+	}
+	if len(params) != 3 {
+		t.Fatalf("expected 3 params, got %d: %v", len(params), params)
+	}
+	if params[0] != "status" || params[1] != "startedAt" || params[2] != "publicId" {
+		t.Errorf("expected params [status, startedAt, publicId], got %v", params)
+	}
+}

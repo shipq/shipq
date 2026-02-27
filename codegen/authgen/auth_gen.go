@@ -696,6 +696,7 @@ func GenerateHelpers(cfg AuthGenConfig) ([]byte, error) {
 	// Imports
 	buf.WriteString("import (\n")
 	buf.WriteString("\t\"context\"\n")
+	buf.WriteString("\t\"database/sql\"\n")
 	buf.WriteString("\t\"errors\"\n")
 	buf.WriteString("\t\"net/http\"\n\n")
 	buf.WriteString("\t\"" + cfg.ModulePath + "/shipq/lib/crypto\"\n")
@@ -744,7 +745,8 @@ func TryGetCurrentSession(ctx context.Context, runner queries.Runner) (*queries.
 	if err != nil {
 		if errors.Is(err, http.ErrNoCookie) ||
 			errors.Is(err, crypto.ErrInvalidCookie) ||
-			errors.Is(err, crypto.ErrInvalidSignature) {
+			errors.Is(err, crypto.ErrInvalidSignature) ||
+			errors.Is(err, sql.ErrNoRows) {
 			return nil, ErrNoValidSession
 		}
 		return nil, err
@@ -880,6 +882,7 @@ func GenerateAuthQueryDefs(cfg AuthGenConfig) ([]byte, error) {
 	buf.WriteString("\t\t\t\tschema.Sessions.ExpiresAt(),\n")
 	buf.WriteString("\t\t\t\tschema.Accounts.DefaultOrganizationId(),\n")
 	buf.WriteString("\t\t\t).\n")
+	buf.WriteString("\t\t\tSelectAs(schema.Accounts.PublicId(), \"account_public_id\").\n")
 	buf.WriteString("\t\t\tWhere(query.And(\n")
 	buf.WriteString("\t\t\t\tschema.Sessions.PublicId().Eq(query.Param[string](\"publicId\")),\n")
 	buf.WriteString("\t\t\t\tschema.Sessions.DeletedAt().IsNull(),\n")

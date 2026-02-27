@@ -183,7 +183,7 @@ func RegisterChannelRoutes(
 
 		// Token route
 		fmt.Fprintf(buf, "\tmux.HandleFunc(\"GET /channels/%s/token\", func(w http.ResponseWriter, r *http.Request) {\n", ch.Name)
-		fmt.Fprintf(buf, "\t\t%s(w, r, transport, db", tokenFn)
+		fmt.Fprintf(buf, "\t\t%s(w, r, transport, runner", tokenFn)
 		if !ch.IsPublic && hasAuth {
 			buf.WriteString(", checkAuth, checkRBAC")
 		}
@@ -194,7 +194,7 @@ func RegisterChannelRoutes(
 	// Job status route (shared across all channels)
 	buf.WriteString("\n\t// Job status endpoint (shared across all channels)\n")
 	buf.WriteString("\tmux.HandleFunc(\"GET /channels/jobs/{id}\", func(w http.ResponseWriter, r *http.Request) {\n")
-	buf.WriteString("\t\thandleJobStatus(w, r, db")
+	buf.WriteString("\t\thandleJobStatus(w, r, runner")
 	if hasAuth {
 		buf.WriteString(", checkAuth")
 	}
@@ -363,7 +363,7 @@ func generateTokenHandlers(buf *bytes.Buffer, cfg ChannelHTTPGenConfig) {
 		buf.WriteString("\tw http.ResponseWriter,\n")
 		buf.WriteString("\tr *http.Request,\n")
 		buf.WriteString("\ttransport channel.RealtimeTransport,\n")
-		buf.WriteString("\tdb *sql.DB,\n")
+		buf.WriteString("\trunner queries.Runner,\n")
 		if !ch.IsPublic && hasAuth {
 			buf.WriteString("\tcheckAuth func(r *http.Request) (accountID int64, orgID int64, accountPublicID string, err error),\n")
 			buf.WriteString("\tcheckRBAC func(r *http.Request, accountID int64, orgID int64, routePath, method string) error,\n")
@@ -397,14 +397,14 @@ func generateTokenHandlers(buf *bytes.Buffer, cfg ChannelHTTPGenConfig) {
 
 			// Look up job_results row and verify ownership
 			buf.WriteString("\t// Look up job and verify ownership\n")
-			buf.WriteString("\tvar jobAccountID int64\n")
-			buf.WriteString("\tvar jobChannelName string\n")
-			buf.WriteString("\terr = db.QueryRow(`SELECT account_id, channel_name FROM job_results WHERE public_id = ?`, jobID).Scan(&jobAccountID, &jobChannelName)\n")
+			buf.WriteString("\tjobResult, err := runner.GetJobResult(r.Context(), queries.GetJobResultParams{\n")
+			buf.WriteString("\t\tPublicId: jobID,\n")
+			buf.WriteString("\t})\n")
 			buf.WriteString("\tif err != nil {\n")
 			buf.WriteString("\t\thttputil.WriteError(w, httperror.NotFound(\"job not found\"))\n")
 			buf.WriteString("\t\treturn\n")
 			buf.WriteString("\t}\n")
-			buf.WriteString("\tif jobAccountID != accountID {\n")
+			buf.WriteString("\tif jobResult.AccountId != accountID {\n")
 			buf.WriteString("\t\thttputil.WriteError(w, httperror.Forbidden(\"you do not own this job\"))\n")
 			buf.WriteString("\t\treturn\n")
 			buf.WriteString("\t}\n\n")
@@ -437,12 +437,14 @@ func generateTokenHandlers(buf *bytes.Buffer, cfg ChannelHTTPGenConfig) {
 
 			// Look up job_results row (no ownership check for public)
 			buf.WriteString("\t// Look up job (no ownership verification for public channels)\n")
-			buf.WriteString("\tvar jobChannelName string\n")
-			buf.WriteString("\terr := db.QueryRow(`SELECT channel_name FROM job_results WHERE public_id = ?`, jobID).Scan(&jobChannelName)\n")
+			buf.WriteString("\tjobResult, err := runner.GetJobResult(r.Context(), queries.GetJobResultParams{\n")
+			buf.WriteString("\t\tPublicId: jobID,\n")
+			buf.WriteString("\t})\n")
 			buf.WriteString("\tif err != nil {\n")
 			buf.WriteString("\t\thttputil.WriteError(w, httperror.NotFound(\"job not found\"))\n")
 			buf.WriteString("\t\treturn\n")
-			buf.WriteString("\t}\n\n")
+			buf.WriteString("\t}\n")
+			buf.WriteString("\t_ = jobResult // fields available for future use\n\n")
 
 			// Compute scoped channel name for public
 			buf.WriteString("\t// [L3] CRITICAL: Channel name must exactly match the worker's channelID() computation.\n")
@@ -487,7 +489,7 @@ func generateJobStatusHandler(buf *bytes.Buffer, cfg ChannelHTTPGenConfig) {
 	buf.WriteString("func handleJobStatus(\n")
 	buf.WriteString("\tw http.ResponseWriter,\n")
 	buf.WriteString("\tr *http.Request,\n")
-	buf.WriteString("\tdb *sql.DB,\n")
+	buf.WriteString("\trunner queries.Runner,\n")
 	if hasAuth {
 		buf.WriteString("\tcheckAuth func(r *http.Request) (accountID int64, orgID int64, accountPublicID string, err error),\n")
 	}
@@ -508,29 +510,16 @@ func generateJobStatusHandler(buf *bytes.Buffer, cfg ChannelHTTPGenConfig) {
 		buf.WriteString("\t}\n\n")
 	}
 
-	// Look up job
-	buf.WriteString("\t// Look up job_results row\n")
-	buf.WriteString("\tvar (\n")
-	buf.WriteString("\t\tpublicID     string\n")
-	buf.WriteString("\t\tchannelName  string\n")
-	buf.WriteString("\t\tjobAccountID int64\n")
-	buf.WriteString("\t\tstatus       string\n")
-	buf.WriteString("\t\treqPayload   string\n")
-	buf.WriteString("\t\tresPayload   *string\n")
-	buf.WriteString("\t\terrMsg       *string\n")
-	buf.WriteString("\t\tstartedAt    *string\n")
-	buf.WriteString("\t\tcompletedAt  *string\n")
-	buf.WriteString("\t\tretryCount   int\n")
-	buf.WriteString("\t)\n")
+	// Look up job via query runner
+	buf.WriteString("\t// Look up job_results row via query runner\n")
 
 	if hasAuth {
-		buf.WriteString("\terr = db.QueryRow(\n")
+		buf.WriteString("\tjobResult, err := runner.GetJobResult(r.Context(), queries.GetJobResultParams{\n")
 	} else {
-		buf.WriteString("\terr := db.QueryRow(\n")
+		buf.WriteString("\tjobResult, err := runner.GetJobResult(r.Context(), queries.GetJobResultParams{\n")
 	}
-	buf.WriteString("\t\t`SELECT public_id, channel_name, account_id, status, request_payload, result_payload, error_message, started_at, completed_at, retry_count FROM job_results WHERE public_id = ?`,\n")
-	buf.WriteString("\t\tjobID,\n")
-	buf.WriteString("\t).Scan(&publicID, &channelName, &jobAccountID, &status, &reqPayload, &resPayload, &errMsg, &startedAt, &completedAt, &retryCount)\n")
+	buf.WriteString("\t\tPublicId: jobID,\n")
+	buf.WriteString("\t})\n")
 	buf.WriteString("\tif err != nil {\n")
 	buf.WriteString("\t\thttputil.WriteError(w, httperror.NotFound(\"job not found\"))\n")
 	buf.WriteString("\t\treturn\n")
@@ -538,7 +527,7 @@ func generateJobStatusHandler(buf *bytes.Buffer, cfg ChannelHTTPGenConfig) {
 
 	if hasAuth {
 		buf.WriteString("\t// Verify requesting account owns the job\n")
-		buf.WriteString("\tif jobAccountID != accountID {\n")
+		buf.WriteString("\tif jobResult.AccountId != accountID {\n")
 		buf.WriteString("\t\thttputil.WriteError(w, httperror.Forbidden(\"you do not own this job\"))\n")
 		buf.WriteString("\t\treturn\n")
 		buf.WriteString("\t}\n\n")
@@ -546,23 +535,23 @@ func generateJobStatusHandler(buf *bytes.Buffer, cfg ChannelHTTPGenConfig) {
 
 	// Return job status JSON
 	buf.WriteString("\tresult := map[string]any{\n")
-	buf.WriteString("\t\t\"job_id\":          publicID,\n")
-	buf.WriteString("\t\t\"channel\":         channelName,\n")
-	buf.WriteString("\t\t\"status\":          status,\n")
-	buf.WriteString("\t\t\"request_payload\": json.RawMessage(reqPayload),\n")
-	buf.WriteString("\t\t\"retry_count\":     retryCount,\n")
+	buf.WriteString("\t\t\"job_id\":          jobResult.PublicId,\n")
+	buf.WriteString("\t\t\"channel\":         jobResult.ChannelName,\n")
+	buf.WriteString("\t\t\"status\":          jobResult.Status,\n")
+	buf.WriteString("\t\t\"request_payload\": json.RawMessage(jobResult.RequestPayload),\n")
+	buf.WriteString("\t\t\"retry_count\":     jobResult.RetryCount,\n")
 	buf.WriteString("\t}\n")
-	buf.WriteString("\tif resPayload != nil {\n")
-	buf.WriteString("\t\tresult[\"result_payload\"] = json.RawMessage(*resPayload)\n")
+	buf.WriteString("\tif jobResult.ResultPayload != nil {\n")
+	buf.WriteString("\t\tresult[\"result_payload\"] = json.RawMessage(*jobResult.ResultPayload)\n")
 	buf.WriteString("\t}\n")
-	buf.WriteString("\tif errMsg != nil {\n")
-	buf.WriteString("\t\tresult[\"error_message\"] = *errMsg\n")
+	buf.WriteString("\tif jobResult.ErrorMessage != nil {\n")
+	buf.WriteString("\t\tresult[\"error_message\"] = *jobResult.ErrorMessage\n")
 	buf.WriteString("\t}\n")
-	buf.WriteString("\tif startedAt != nil {\n")
-	buf.WriteString("\t\tresult[\"started_at\"] = *startedAt\n")
+	buf.WriteString("\tif jobResult.StartedAt != nil {\n")
+	buf.WriteString("\t\tresult[\"started_at\"] = *jobResult.StartedAt\n")
 	buf.WriteString("\t}\n")
-	buf.WriteString("\tif completedAt != nil {\n")
-	buf.WriteString("\t\tresult[\"completed_at\"] = *completedAt\n")
+	buf.WriteString("\tif jobResult.CompletedAt != nil {\n")
+	buf.WriteString("\t\tresult[\"completed_at\"] = *jobResult.CompletedAt\n")
 	buf.WriteString("\t}\n\n")
 
 	buf.WriteString("\thttputil.WriteJSON(w, http.StatusOK, result)\n")

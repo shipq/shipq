@@ -65,6 +65,14 @@ func generateWorkerImports(buf *bytes.Buffer, cfg WorkerGenConfig) {
 	channelPkg := cfg.ModulePath + "/shipq/lib/channel"
 	fmt.Fprintf(buf, "\t%q\n", channelPkg)
 
+	// Queries package (for UpdateJobStatus runner calls)
+	queriesPkg := cfg.ModulePath + "/shipq/queries"
+	fmt.Fprintf(buf, "\t%q\n", queriesPkg)
+
+	// Dialect-specific query runner import
+	runnerPkg := cfg.ModulePath + "/shipq/queries/" + cfg.DBDialect
+	fmt.Fprintf(buf, "\tdbrunner %q\n", runnerPkg)
+
 	// Channel packages (for handler references)
 	seen := make(map[string]bool)
 	for _, ch := range cfg.Channels {
@@ -100,6 +108,28 @@ func generateWorkerMainFunc(buf *bytes.Buffer, cfg WorkerGenConfig) {
 	buf.WriteString("\tif err := db.Ping(); err != nil {\n")
 	buf.WriteString("\t\tconfig.Logger.Error(\"failed to connect to database\", \"error\", err.Error())\n")
 	buf.WriteString("\t\tos.Exit(1)\n")
+	buf.WriteString("\t}\n\n")
+
+	// Create query runner for portable database access (no raw SQL).
+	buf.WriteString("\t// Create query runner for portable database access.\n")
+	buf.WriteString("\trunner := dbrunner.NewQueryRunner(db)\n\n")
+
+	// Build the UpdateJobFunc closure that calls the generated query runner.
+	// This keeps the channel runtime library free of raw SQL while using the
+	// portable querydefs system for all database operations.
+	buf.WriteString("\t// Build UpdateJobFunc using the generated query runner (no raw SQL).\n")
+	buf.WriteString("\tupdateJob := func(publicID, status string, startedAt, completedAt, errorMessage, resultPayload *string, retryCount int) error {\n")
+	buf.WriteString("\t\tctx := context.Background()\n")
+	buf.WriteString("\t\t_, err := runner.UpdateJobStatus(ctx, queries.UpdateJobStatusParams{\n")
+	buf.WriteString("\t\t\tPublicId:      publicID,\n")
+	buf.WriteString("\t\t\tStatus:        status,\n")
+	buf.WriteString("\t\t\tStartedAt:     startedAt,\n")
+	buf.WriteString("\t\t\tCompletedAt:   completedAt,\n")
+	buf.WriteString("\t\t\tErrorMessage:  errorMessage,\n")
+	buf.WriteString("\t\t\tResultPayload: resultPayload,\n")
+	buf.WriteString("\t\t\tRetryCount:    retryCount,\n")
+	buf.WriteString("\t\t})\n")
+	buf.WriteString("\t\treturn err\n")
 	buf.WriteString("\t}\n\n")
 
 	// Create concrete implementations via the interfaces.
@@ -147,9 +177,9 @@ func generateWorkerMainFunc(buf *bytes.Buffer, cfg WorkerGenConfig) {
 
 		if ch.HasSetup {
 			setupRef := ch.PackageName + ".Setup"
-			fmt.Fprintf(buf, "\tif err := queue.RegisterTask(%q, channel.WrapDispatchHandler(%s, transport, db, %q, channel.WithSetup(%s))); err != nil {\n", ch.Name, handlerRef, ch.Name, setupRef)
+			fmt.Fprintf(buf, "\tif err := queue.RegisterTask(%q, channel.WrapDispatchHandlerWithUpdater(%s, transport, updateJob, %q, channel.WithSetup(%s))); err != nil {\n", ch.Name, handlerRef, ch.Name, setupRef)
 		} else {
-			fmt.Fprintf(buf, "\tif err := queue.RegisterTask(%q, channel.WrapDispatchHandler(%s, transport, db, %q)); err != nil {\n", ch.Name, handlerRef, ch.Name)
+			fmt.Fprintf(buf, "\tif err := queue.RegisterTask(%q, channel.WrapDispatchHandlerWithUpdater(%s, transport, updateJob, %q)); err != nil {\n", ch.Name, handlerRef, ch.Name)
 		}
 		fmt.Fprintf(buf, "\t\tconfig.Logger.Error(\"failed to register task\", \"task\", %q, \"error\", err.Error())\n", ch.Name)
 		buf.WriteString("\t\tos.Exit(1)\n")

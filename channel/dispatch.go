@@ -9,6 +9,21 @@ import (
 	"time"
 )
 
+// UpdateJobFunc is a function that updates the status of a job result row.
+// The generated worker code passes in a closure that calls runner.UpdateJobStatus(...),
+// keeping the channel runtime library free of raw SQL while preserving its
+// independence from codegen output.
+//
+// Parameters:
+//   - publicID: the job's public_id (nanoid)
+//   - status: "running", "completed", or "failed"
+//   - startedAt: non-nil on transition to "running"
+//   - completedAt: non-nil on transition to "completed" or "failed"
+//   - errorMessage: non-nil on "failed"
+//   - resultPayload: non-nil when the handler returns a result
+//   - retryCount: number of retries so far
+type UpdateJobFunc func(publicID, status string, startedAt, completedAt, errorMessage, resultPayload *string, retryCount int) error
+
 // sqlDatetimeFormat is the Go time format string for MySQL DATETIME columns.
 // MySQL rejects RFC 3339 timestamps ("2006-01-02T15:04:05Z"); it requires
 // the space-separated format without a trailing timezone indicator.
@@ -88,7 +103,26 @@ type DispatchPayload struct {
 // [L4] Retry: WrapDispatchHandler does NOT implement its own retry logic. It
 // returns an error, and the TaskQueue re-enqueues the task if configured
 // (e.g., Machinery Fibonacci backoff via TaskOptions.RetryCount).
+// WrapDispatchHandlerWithUpdater is the preferred version of WrapDispatchHandler
+// that accepts an UpdateJobFunc instead of using raw SQL for job status updates.
+// This makes the channel runtime library portable across database dialects.
+//
+// The generated worker code should use this function, passing a closure that
+// calls runner.UpdateJobStatus(...) from the generated query runner.
+func WrapDispatchHandlerWithUpdater(handler any, transport RealtimeTransport, updateJob UpdateJobFunc, channelName string, opts ...DispatchOption) func(string) error {
+	return wrapDispatchHandlerInternal(handler, transport, nil, updateJob, channelName, opts...)
+}
+
+// WrapDispatchHandler wraps a user-defined handler function so it can be
+// registered with a TaskQueue via queue.RegisterTask(name, wrappedFn).
+//
+// Deprecated: Use WrapDispatchHandlerWithUpdater instead. This function uses
+// raw SQL with ? placeholders which only works on SQLite and MySQL, not PostgreSQL.
 func WrapDispatchHandler(handler any, transport RealtimeTransport, db *sql.DB, channelName string, opts ...DispatchOption) func(string) error {
+	return wrapDispatchHandlerInternal(handler, transport, db, nil, channelName, opts...)
+}
+
+func wrapDispatchHandlerInternal(handler any, transport RealtimeTransport, db *sql.DB, updateJob UpdateJobFunc, channelName string, opts ...DispatchOption) func(string) error {
 	// Apply functional options.
 	var options dispatchOptions
 	for _, o := range opts {
@@ -105,10 +139,22 @@ func WrapDispatchHandler(handler any, transport RealtimeTransport, db *sql.DB, c
 			return fmt.Errorf("channel.WrapDispatchHandler(%s): unmarshal payload: %w", channelName, err)
 		}
 
+		// Build the update function: prefer the injected UpdateJobFunc; fall
+		// back to the legacy raw-SQL helper when db is provided.
+		doUpdate := updateJob
+		if doUpdate == nil && db != nil {
+			doUpdate = func(publicID, status string, startedAt, completedAt, errorMessage, resultPayload *string, retryCount int) error {
+				return updateJobStatus(db, publicID, status, startedAt, completedAt, errorMessage, resultPayload, retryCount)
+			}
+		}
+		if doUpdate == nil {
+			return fmt.Errorf("channel.WrapDispatchHandler(%s): no update function or db provided", channelName)
+		}
+
 		// 2. Update job_results status to "running", set started_at.
 		now := time.Now().UTC()
 		nowStr := now.Format(sqlDatetimeFormat)
-		if err := updateJobStatus(db, dp.JobID, "running", &nowStr, nil, nil, nil, 0); err != nil {
+		if err := doUpdate(dp.JobID, "running", &nowStr, nil, nil, nil, 0); err != nil {
 			return fmt.Errorf("channel.WrapDispatchHandler(%s): update job to running: %w", channelName, err)
 		}
 
@@ -124,7 +170,7 @@ func WrapDispatchHandler(handler any, transport RealtimeTransport, db *sql.DB, c
 		if err != nil {
 			// Mark job as failed if we can't even subscribe.
 			errMsg := fmt.Sprintf("subscribe failed: %v", err)
-			_ = updateJobStatus(db, dp.JobID, "failed", nil, nil, &errMsg, nil, 0)
+			_ = doUpdate(dp.JobID, "failed", nil, nil, &errMsg, nil, 0)
 			return fmt.Errorf("channel.WrapDispatchHandler(%s): subscribe: %w", channelName, err)
 		}
 		// [L7]: cleanup calls client.Close() (terminal state, no reconnection).
@@ -158,7 +204,7 @@ func WrapDispatchHandler(handler any, transport RealtimeTransport, db *sql.DB, c
 		reqPtr := reflect.New(reqType)
 		if err := json.Unmarshal(dp.Request, reqPtr.Interface()); err != nil {
 			errMsg := fmt.Sprintf("unmarshal request: %v", err)
-			_ = updateJobStatus(db, dp.JobID, "failed", nil, nil, &errMsg, nil, 0)
+			_ = doUpdate(dp.JobID, "failed", nil, nil, &errMsg, nil, 0)
 			return fmt.Errorf("channel.WrapDispatchHandler(%s): unmarshal request: %w", channelName, err)
 		}
 
@@ -174,12 +220,12 @@ func WrapDispatchHandler(handler any, transport RealtimeTransport, db *sql.DB, c
 		if errIface != nil {
 			handlerErr := errIface.(error)
 			errMsg := handlerErr.Error()
-			_ = updateJobStatus(db, dp.JobID, "failed", nil, &completedAt, &errMsg, nil, 0)
+			_ = doUpdate(dp.JobID, "failed", nil, &completedAt, &errMsg, nil, 0)
 			return handlerErr
 		}
 
 		// Success: update job_results to "completed".
-		if err := updateJobStatus(db, dp.JobID, "completed", nil, &completedAt, nil, nil, 0); err != nil {
+		if err := doUpdate(dp.JobID, "completed", nil, &completedAt, nil, nil, 0); err != nil {
 			return fmt.Errorf("channel.WrapDispatchHandler(%s): update job to completed: %w", channelName, err)
 		}
 

@@ -147,3 +147,91 @@ func TestLiteralExpr_ImplementsExpr(t *testing.T) {
 func TestFuncExpr_ImplementsExpr(t *testing.T) {
 	var _ Expr = FuncExpr{}
 }
+
+func TestCoalesce_TwoArgs(t *testing.T) {
+	col := NullStringColumn{Table: "job_results", Name: "started_at"}
+	expr := Coalesce(Param[*string]("startedAt"), ColumnExpr{Column: col})
+
+	if expr.Name != "COALESCE" {
+		t.Errorf("expected Name = %q, got %q", "COALESCE", expr.Name)
+	}
+	if len(expr.Args) != 2 {
+		t.Fatalf("expected 2 args, got %d", len(expr.Args))
+	}
+
+	// First arg should be a ParamExpr
+	paramExpr, ok := expr.Args[0].(ParamExpr)
+	if !ok {
+		t.Fatalf("expected first arg to be ParamExpr, got %T", expr.Args[0])
+	}
+	if paramExpr.Name != "startedAt" {
+		t.Errorf("expected param name = %q, got %q", "startedAt", paramExpr.Name)
+	}
+	if paramExpr.GoType != "*string" {
+		t.Errorf("expected param GoType = %q, got %q", "*string", paramExpr.GoType)
+	}
+
+	// Second arg should be a ColumnExpr
+	colExpr, ok := expr.Args[1].(ColumnExpr)
+	if !ok {
+		t.Fatalf("expected second arg to be ColumnExpr, got %T", expr.Args[1])
+	}
+	if colExpr.Column.ColumnName() != "started_at" {
+		t.Errorf("expected column name = %q, got %q", "started_at", colExpr.Column.ColumnName())
+	}
+}
+
+func TestCoalesce_SingleArg(t *testing.T) {
+	expr := Coalesce(Param[*string]("value"))
+
+	if expr.Name != "COALESCE" {
+		t.Errorf("expected Name = %q, got %q", "COALESCE", expr.Name)
+	}
+	if len(expr.Args) != 1 {
+		t.Fatalf("expected 1 arg, got %d", len(expr.Args))
+	}
+}
+
+func TestCoalesce_NoArgs(t *testing.T) {
+	expr := Coalesce()
+
+	if expr.Name != "COALESCE" {
+		t.Errorf("expected Name = %q, got %q", "COALESCE", expr.Name)
+	}
+	if len(expr.Args) != 0 {
+		t.Errorf("expected 0 args, got %d", len(expr.Args))
+	}
+}
+
+func TestCoalesce_ImplementsExpr(t *testing.T) {
+	var _ Expr = Coalesce(Param[*string]("x"), Literal("default"))
+}
+
+func TestCoalesce_InSetClause(t *testing.T) {
+	// Verify Coalesce can be used as the value in an Update().Set() clause,
+	// which requires the value to satisfy the Expr interface.
+	col := NullStringColumn{Table: "jobs", Name: "started_at"}
+	coalesceExpr := Coalesce(Param[*string]("startedAt"), ColumnExpr{Column: col})
+
+	// Build an UPDATE with the COALESCE in a SET clause
+	table := mockTable{name: "jobs"}
+	ast := Update(table).
+		Set(col, coalesceExpr).
+		Where(StringColumn{Table: "jobs", Name: "id"}.Eq(Param[string]("id"))).
+		Build()
+
+	if len(ast.SetClauses) != 1 {
+		t.Fatalf("expected 1 set clause, got %d", len(ast.SetClauses))
+	}
+
+	funcExpr, ok := ast.SetClauses[0].Value.(FuncExpr)
+	if !ok {
+		t.Fatalf("expected FuncExpr in set clause value, got %T", ast.SetClauses[0].Value)
+	}
+	if funcExpr.Name != "COALESCE" {
+		t.Errorf("expected COALESCE, got %q", funcExpr.Name)
+	}
+	if len(funcExpr.Args) != 2 {
+		t.Errorf("expected 2 args in COALESCE, got %d", len(funcExpr.Args))
+	}
+}

@@ -490,6 +490,43 @@ func TestGenerateHTTPMain_GeneratedComment(t *testing.T) {
 	}
 }
 
+// ---------------------------------------------------------------------------
+// Bug 1: checkAuth must return session.AccountPublicId (account's public ID),
+// not session.PublicId (session's public ID) for Centrifugo token claims.
+// ---------------------------------------------------------------------------
+
+func TestGenerateHTTPMain_HasChannels_CheckAuthUsesAccountPublicId(t *testing.T) {
+	cfg := HTTPMainGenConfig{
+		ModulePath:  "example.com/myapp",
+		OutputPkg:   "api",
+		DBDialect:   "mysql",
+		HasChannels: true,
+	}
+
+	code, err := GenerateHTTPMain(cfg)
+	if err != nil {
+		t.Fatalf("GenerateHTTPMain() error = %v", err)
+	}
+
+	codeStr := string(code)
+
+	// checkAuth must return session.AccountPublicId (the account's stable public ID)
+	if !strings.Contains(codeStr, "session.AccountPublicId") {
+		t.Error("checkAuth must return session.AccountPublicId, not session.PublicId")
+	}
+
+	// It must NOT use session.PublicId as the accountPublicID return value.
+	// session.PublicId is the session's ephemeral public ID, which changes on
+	// every login and would cause Centrifugo to treat the same user as different
+	// identities across sessions.
+	lines := strings.Split(codeStr, "\n")
+	for _, line := range lines {
+		if strings.Contains(line, "return session.AccountId") && strings.Contains(line, "session.PublicId") {
+			t.Error("checkAuth must NOT return session.PublicId as accountPublicID; use session.AccountPublicId instead")
+		}
+	}
+}
+
 func TestGetDriverImport(t *testing.T) {
 	tests := []struct {
 		dialect string
