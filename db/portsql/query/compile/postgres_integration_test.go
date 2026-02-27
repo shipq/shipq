@@ -5,6 +5,7 @@ package compile
 import (
 	"context"
 	"encoding/json"
+	"os"
 	"testing"
 	"time"
 
@@ -21,14 +22,21 @@ func (m mockTable) TableName() string { return m.name }
 
 // connectPostgres attempts to connect to PostgreSQL and returns a connection.
 // Returns nil and skips the test if PostgreSQL is unavailable.
+//
+// Checks POSTGRES_TEST_URL first (for CI / custom setups), then falls back
+// to the local unix socket used by the nix-shell dev environment.
 func connectPostgres(t *testing.T) *pgx.Conn {
 	t.Helper()
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	// Connect via Unix socket at /tmp/.s.PGSQL.5432, user "postgres", database "postgres"
-	connString := "host=/tmp user=postgres database=postgres"
+	connString := os.Getenv("POSTGRES_TEST_URL")
+	if connString == "" {
+		// Fall back to unix socket for local nix-shell development
+		connString = "host=/tmp user=postgres database=postgres"
+	}
+
 	conn, err := pgx.Connect(ctx, connString)
 	if err != nil {
 		t.Skipf("PostgreSQL unavailable: %v. Please see the README for instructions about how to start all databases.", err)
@@ -765,7 +773,7 @@ func TestPostgresIntegration_ComplexQuery(t *testing.T) {
 			name VARCHAR(255) NOT NULL,
 			quantity INT NOT NULL
 		);
-		INSERT INTO test_complex_orders (id, public_id, status) VALUES 
+		INSERT INTO test_complex_orders (id, public_id, status) VALUES
 			(1, 'ord1', 'pending'),
 			(2, 'ord2', 'processing'),
 			(3, 'ord3', 'shipped');

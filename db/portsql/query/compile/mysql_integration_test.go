@@ -15,34 +15,38 @@ import (
 
 // connectMySQL attempts to connect to MySQL and returns a database connection.
 // Returns nil and skips the test if MySQL is unavailable.
+//
+// Checks MYSQL_TEST_URL first (for CI / custom setups), then falls back
+// to the local unix socket used by the nix-shell dev environment.
 func connectMySQL(t *testing.T) *sql.DB {
 	t.Helper()
 
-	// Find the MySQL socket path
-	// The socket is at $PROJECT_ROOT/db/databases/.mysql-data/mysql.sock
-	projectRoot := os.Getenv("PROJECT_ROOT")
-	if projectRoot == "" {
-		// Try to find it relative to the test file
-		// We're in db/portsql/query/compile, so go up 4 levels to project root
-		cwd, err := os.Getwd()
-		if err != nil {
-			t.Skipf("MySQL unavailable: cannot determine working directory: %v", err)
+	dsn := os.Getenv("MYSQL_TEST_URL")
+	if dsn == "" {
+		// Fall back to unix socket for local nix-shell development
+		projectRoot := os.Getenv("PROJECT_ROOT")
+		if projectRoot == "" {
+			// Try to find it relative to the test file
+			// We're in db/portsql/query/compile, so go up 4 levels to project root
+			cwd, err := os.Getwd()
+			if err != nil {
+				t.Skipf("MySQL unavailable: cannot determine working directory: %v", err)
+				return nil
+			}
+			projectRoot = filepath.Join(cwd, "..", "..", "..", "..")
+		}
+
+		socketPath := filepath.Join(projectRoot, "db", "databases", ".mysql-data", "mysql.sock")
+
+		// Check if socket exists
+		if _, err := os.Stat(socketPath); os.IsNotExist(err) {
+			t.Skipf("MySQL unavailable: socket not found at %s. Please see the README for instructions about how to start all databases.", socketPath)
 			return nil
 		}
-		projectRoot = filepath.Join(cwd, "..", "..", "..", "..")
+
+		dsn = "root@unix(" + socketPath + ")/test?multiStatements=true"
 	}
 
-	socketPath := filepath.Join(projectRoot, "db", "databases", ".mysql-data", "mysql.sock")
-
-	// Check if socket exists
-	if _, err := os.Stat(socketPath); os.IsNotExist(err) {
-		t.Skipf("MySQL unavailable: socket not found at %s. Please see the README for instructions about how to start all databases.", socketPath)
-		return nil
-	}
-
-	// Connect via Unix socket
-	// DSN format: user:password@unix(/path/to/socket)/database
-	dsn := "root@unix(" + socketPath + ")/test?multiStatements=true"
 	db, err := sql.Open("mysql", dsn)
 	if err != nil {
 		t.Skipf("MySQL unavailable: %v. Please see the README for instructions about how to start all databases.", err)

@@ -11,15 +11,45 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
 
+    services:
+      postgres:
+        image: postgres:18
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
+      mysql:
+        image: mysql:8.0
+        env:
+          MYSQL_ROOT_PASSWORD: root
+          MYSQL_DATABASE: test
+        ports:
+          - 3306:3306
+        options: >-
+          --health-cmd "mysqladmin ping --silent"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Install Nix
-        uses: DeterminateSystems/nix-installer-action@main
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
 
-      - name: Setup Nix Cache
-        uses: DeterminateSystems/magic-nix-cache-action@main
-
-      - name: Start databases and run tests
-        run: nix-shell --run 'bash .github/ci-test.sh'
+      - name: Run tests
+        env:
+          POSTGRES_TEST_URL: "postgres://postgres:postgres@localhost:5432/postgres?sslmode=disable"
+          MYSQL_TEST_URL: "root:root@tcp(localhost:3306)/test?multiStatements=true&parseTime=true"
+        run: go test -v ./... -tags=integration,property -count=1

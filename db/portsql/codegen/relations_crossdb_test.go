@@ -7,6 +7,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"os"
+	"path/filepath"
 	"reflect"
 	"sort"
 	"testing"
@@ -45,7 +46,8 @@ func connectPg(t *testing.T) *pgx.Conn {
 	t.Helper()
 	dsn := os.Getenv("POSTGRES_TEST_URL")
 	if dsn == "" {
-		dsn = "postgres://postgres:postgres@localhost:5432/postgres?sslmode=disable"
+		// Fall back to unix socket for local nix-shell development
+		dsn = "host=/tmp user=postgres database=postgres"
 	}
 	conn, err := pgx.Connect(context.Background(), dsn)
 	if err != nil {
@@ -59,7 +61,23 @@ func connectMy(t *testing.T) *sql.DB {
 	t.Helper()
 	dsn := os.Getenv("MYSQL_TEST_URL")
 	if dsn == "" {
-		dsn = "root:root@tcp(localhost:3306)/test?parseTime=true"
+		// Fall back to unix socket for local nix-shell development
+		projectRoot := os.Getenv("PROJECT_ROOT")
+		if projectRoot == "" {
+			cwd, err := os.Getwd()
+			if err != nil {
+				t.Skipf("MySQL unavailable: cannot determine working directory: %v", err)
+				return nil
+			}
+			// We're in db/portsql/codegen, so go up 3 levels to project root
+			projectRoot = filepath.Join(cwd, "..", "..", "..")
+		}
+		socketPath := filepath.Join(projectRoot, "db", "databases", ".mysql-data", "mysql.sock")
+		if _, err := os.Stat(socketPath); os.IsNotExist(err) {
+			t.Skipf("MySQL unavailable: socket not found at %s", socketPath)
+			return nil
+		}
+		dsn = "root@unix(" + socketPath + ")/test?multiStatements=true&parseTime=true"
 	}
 	db, err := sql.Open("mysql", dsn)
 	if err != nil {
@@ -112,7 +130,7 @@ func setupAllDBsSchema(t *testing.T, dbs *dbConnections) {
 		DROP TABLE IF EXISTS pets CASCADE;
 		DROP TABLE IF EXISTS tags CASCADE;
 		DROP TABLE IF EXISTS categories CASCADE;
-		
+
 		CREATE TABLE categories (
 			id BIGSERIAL PRIMARY KEY,
 			public_id VARCHAR(255) NOT NULL UNIQUE,
@@ -120,7 +138,7 @@ func setupAllDBsSchema(t *testing.T, dbs *dbConnections) {
 			created_at TIMESTAMP NOT NULL DEFAULT NOW(),
 			updated_at TIMESTAMP NOT NULL DEFAULT NOW()
 		);
-		
+
 		CREATE TABLE pets (
 			id BIGSERIAL PRIMARY KEY,
 			public_id VARCHAR(255) NOT NULL UNIQUE,
@@ -130,7 +148,7 @@ func setupAllDBsSchema(t *testing.T, dbs *dbConnections) {
 			created_at TIMESTAMP NOT NULL DEFAULT NOW(),
 			updated_at TIMESTAMP NOT NULL DEFAULT NOW()
 		);
-		
+
 		CREATE TABLE tags (
 			id BIGSERIAL PRIMARY KEY,
 			public_id VARCHAR(255) NOT NULL UNIQUE,
@@ -138,7 +156,7 @@ func setupAllDBsSchema(t *testing.T, dbs *dbConnections) {
 			created_at TIMESTAMP NOT NULL DEFAULT NOW(),
 			updated_at TIMESTAMP NOT NULL DEFAULT NOW()
 		);
-		
+
 		CREATE TABLE pet_tags (
 			pet_id BIGINT NOT NULL,
 			tag_id BIGINT NOT NULL,
@@ -209,7 +227,7 @@ func setupAllDBsSchema(t *testing.T, dbs *dbConnections) {
 		DROP TABLE IF EXISTS pets;
 		DROP TABLE IF EXISTS tags;
 		DROP TABLE IF EXISTS categories;
-		
+
 		CREATE TABLE categories (
 			id INTEGER PRIMARY KEY,
 			public_id TEXT NOT NULL UNIQUE,
@@ -217,7 +235,7 @@ func setupAllDBsSchema(t *testing.T, dbs *dbConnections) {
 			created_at DATETIME NOT NULL,
 			updated_at DATETIME NOT NULL
 		);
-		
+
 		CREATE TABLE pets (
 			id INTEGER PRIMARY KEY,
 			public_id TEXT NOT NULL UNIQUE,
@@ -227,7 +245,7 @@ func setupAllDBsSchema(t *testing.T, dbs *dbConnections) {
 			created_at DATETIME NOT NULL,
 			updated_at DATETIME NOT NULL
 		);
-		
+
 		CREATE TABLE tags (
 			id INTEGER PRIMARY KEY,
 			public_id TEXT NOT NULL UNIQUE,
@@ -235,7 +253,7 @@ func setupAllDBsSchema(t *testing.T, dbs *dbConnections) {
 			created_at DATETIME NOT NULL,
 			updated_at DATETIME NOT NULL
 		);
-		
+
 		CREATE TABLE pet_tags (
 			pet_id INTEGER NOT NULL,
 			tag_id INTEGER NOT NULL,
@@ -256,16 +274,16 @@ func insertAllDBsData(t *testing.T, dbs *dbConnections) {
 		INSERT INTO categories (id, public_id, name, created_at, updated_at) VALUES
 		(1, 'cat-1', 'Dogs', '2025-01-01 00:00:00', '2025-01-01 00:00:00'),
 		(2, 'cat-2', 'Cats', '2025-01-01 00:00:00', '2025-01-01 00:00:00');
-		
+
 		INSERT INTO pets (id, public_id, category_id, name, status, created_at, updated_at) VALUES
 		(1, 'pet-1', 1, 'Buddy', 'available', '2025-01-01 00:00:00', '2025-01-01 00:00:00'),
 		(2, 'pet-2', 1, 'Max', 'pending', '2025-01-01 00:00:00', '2025-01-01 00:00:00'),
 		(3, 'pet-3', 2, 'Whiskers', 'available', '2025-01-01 00:00:00', '2025-01-01 00:00:00');
-		
+
 		INSERT INTO tags (id, public_id, name, created_at, updated_at) VALUES
 		(1, 'tag-1', 'Friendly', '2025-01-01 00:00:00', '2025-01-01 00:00:00'),
 		(2, 'tag-2', 'Trained', '2025-01-01 00:00:00', '2025-01-01 00:00:00');
-		
+
 		INSERT INTO pet_tags (pet_id, tag_id) VALUES
 		(1, 1), (1, 2), (2, 1);
 	`)
@@ -309,16 +327,16 @@ func insertAllDBsData(t *testing.T, dbs *dbConnections) {
 		INSERT INTO categories (id, public_id, name, created_at, updated_at) VALUES
 		(1, 'cat-1', 'Dogs', '2025-01-01 00:00:00', '2025-01-01 00:00:00'),
 		(2, 'cat-2', 'Cats', '2025-01-01 00:00:00', '2025-01-01 00:00:00');
-		
+
 		INSERT INTO pets (id, public_id, category_id, name, status, created_at, updated_at) VALUES
 		(1, 'pet-1', 1, 'Buddy', 'available', '2025-01-01 00:00:00', '2025-01-01 00:00:00'),
 		(2, 'pet-2', 1, 'Max', 'pending', '2025-01-01 00:00:00', '2025-01-01 00:00:00'),
 		(3, 'pet-3', 2, 'Whiskers', 'available', '2025-01-01 00:00:00', '2025-01-01 00:00:00');
-		
+
 		INSERT INTO tags (id, public_id, name, created_at, updated_at) VALUES
 		(1, 'tag-1', 'Friendly', '2025-01-01 00:00:00', '2025-01-01 00:00:00'),
 		(2, 'tag-2', 'Trained', '2025-01-01 00:00:00', '2025-01-01 00:00:00');
-		
+
 		INSERT INTO pet_tags (pet_id, tag_id) VALUES
 		(1, 1), (1, 2), (2, 1);
 	`)

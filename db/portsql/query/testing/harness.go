@@ -95,14 +95,21 @@ func SetupTestDBs(t *testing.T) (*TestDBs, func()) {
 	return dbs, cleanup
 }
 
-// setupPostgres connects to Postgres
+// setupPostgres connects to Postgres.
+//
+// Checks POSTGRES_TEST_URL first (for CI / custom setups), then falls back
+// to the local unix socket used by the nix-shell dev environment.
 func setupPostgres(t *testing.T) *pgx.Conn {
 	t.Helper()
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	connString := "host=/tmp user=postgres database=postgres"
+	connString := os.Getenv("POSTGRES_TEST_URL")
+	if connString == "" {
+		connString = "host=/tmp user=postgres database=postgres"
+	}
+
 	conn, err := pgx.Connect(ctx, connString)
 	if err != nil {
 		t.Logf("PostgreSQL unavailable: %v", err)
@@ -112,40 +119,47 @@ func setupPostgres(t *testing.T) *pgx.Conn {
 	return conn
 }
 
-// setupMySQL connects to MySQL
+// setupMySQL connects to MySQL.
+//
+// Checks MYSQL_TEST_URL first (for CI / custom setups), then falls back
+// to the local unix socket used by the nix-shell dev environment.
 func setupMySQL(t *testing.T) *sql.DB {
 	t.Helper()
 
-	projectRoot := os.Getenv("PROJECT_ROOT")
-	if projectRoot == "" {
-		cwd, err := os.Getwd()
-		if err != nil {
-			t.Logf("MySQL unavailable: cannot determine working directory: %v", err)
+	dsn := os.Getenv("MYSQL_TEST_URL")
+	if dsn == "" {
+		// Fall back to unix socket for local nix-shell development
+		projectRoot := os.Getenv("PROJECT_ROOT")
+		if projectRoot == "" {
+			cwd, err := os.Getwd()
+			if err != nil {
+				t.Logf("MySQL unavailable: cannot determine working directory: %v", err)
+				return nil
+			}
+			// We're in db/portsql/query/testing, so go up 4 levels to project root
+			projectRoot = filepath.Join(cwd, "..", "..", "..", "..")
+		}
+
+		socketPath := filepath.Join(projectRoot, "db", "databases", ".mysql-data", "mysql.sock")
+
+		if _, err := os.Stat(socketPath); os.IsNotExist(err) {
+			t.Logf("MySQL unavailable: socket not found at %s", socketPath)
 			return nil
 		}
-		// We're in db/portsql/query/testing, so go up 4 levels to project root
-		projectRoot = filepath.Join(cwd, "..", "..", "..", "..")
+
+		// First connect without database to create it if needed
+		dsnNoDb := "root@unix(" + socketPath + ")/?multiStatements=true"
+		tempDb, err := sql.Open("mysql", dsnNoDb)
+		if err != nil {
+			t.Logf("MySQL unavailable: %v", err)
+			return nil
+		}
+		tempDb.Exec("CREATE DATABASE IF NOT EXISTS test")
+		tempDb.Close()
+
+		dsn = "root@unix(" + socketPath + ")/test?multiStatements=true"
 	}
 
-	socketPath := filepath.Join(projectRoot, "db", "databases", ".mysql-data", "mysql.sock")
-
-	if _, err := os.Stat(socketPath); os.IsNotExist(err) {
-		t.Logf("MySQL unavailable: socket not found at %s", socketPath)
-		return nil
-	}
-
-	// First connect without database to create it if needed
-	dsnNoDb := "root@unix(" + socketPath + ")/?multiStatements=true"
-	tempDb, err := sql.Open("mysql", dsnNoDb)
-	if err != nil {
-		t.Logf("MySQL unavailable: %v", err)
-		return nil
-	}
-	tempDb.Exec("CREATE DATABASE IF NOT EXISTS test")
-	tempDb.Close()
-
-	// Now connect to the test database
-	dsn := "root@unix(" + socketPath + ")/test?multiStatements=true"
 	db, err := sql.Open("mysql", dsn)
 	if err != nil {
 		t.Logf("MySQL unavailable: %v", err)
