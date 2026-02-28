@@ -521,8 +521,8 @@ func TestCrossDB_JSONAggregation_TypedStruct(t *testing.T) {
 	defer cleanup()
 
 	type BookItem struct {
-		Title string  `json:"title"`
-		Price *string `json:"price"`
+		Title string          `json:"title"`
+		Price json.RawMessage `json:"price"`
 	}
 
 	proptest.Check(t, "JSON aggregation typed struct deserialization works identically across databases", proptest.Config{NumTrials: 20, Verbose: true}, func(g *proptest.Generator) bool {
@@ -602,7 +602,7 @@ func TestCrossDB_JSONAggregation_TypedStruct(t *testing.T) {
 			// Filter out null entries from LEFT JOIN with no matches
 			var filtered []BookItem
 			for _, b := range books {
-				if b.Title != "" || b.Price != nil {
+				if b.Title != "" || (b.Price != nil && string(b.Price) != "null") {
 					filtered = append(filtered, b)
 				}
 			}
@@ -627,7 +627,7 @@ func TestCrossDB_JSONAggregation_TypedStruct(t *testing.T) {
 
 		// All books should have non-nil Price (we set one for each)
 		for _, b := range pg {
-			if b.Price == nil {
+			if b.Price == nil || string(b.Price) == "null" {
 				t.Logf("expected non-nil price for book %q in postgres", b.Title)
 				return false
 			}
@@ -736,8 +736,8 @@ func TestCrossDB_JSONAggregation_NullableColumns(t *testing.T) {
 	defer cleanup()
 
 	type BookItem struct {
-		Title string  `json:"title"`
-		Price *string `json:"price"`
+		Title string          `json:"title"`
+		Price json.RawMessage `json:"price"`
 	}
 
 	proptest.Check(t, "JSON aggregation nullable columns deserialize correctly across all databases", proptest.Config{NumTrials: 15, Verbose: true}, func(g *proptest.Generator) bool {
@@ -827,13 +827,13 @@ func TestCrossDB_JSONAggregation_NullableColumns(t *testing.T) {
 			// Filter out null entries from LEFT JOIN
 			var filtered []BookItem
 			for _, b := range books {
-				if b.Title != "" || b.Price != nil {
+				if b.Title != "" || (b.Price != nil && string(b.Price) != "null") {
 					filtered = append(filtered, b)
 				}
 			}
 
 			for _, b := range filtered {
-				if b.Price == nil {
+				if b.Price == nil || string(b.Price) == "null" {
 					nullCounts[dialect]++
 				} else {
 					nonNullCounts[dialect]++

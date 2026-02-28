@@ -1067,6 +1067,7 @@ func TestEndToEnd_LLM(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping end-to-end test in short mode")
 	}
+	requireRedis(t)
 
 	repoRoot := shipqRepoRoot(t)
 	shipq := buildShipq(t, repoRoot)

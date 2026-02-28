@@ -58,6 +58,16 @@ func cleanEnv() []string {
 	return env
 }
 
+// requireRedis skips the test if redis-server is not on $PATH.
+// Some E2E scenarios (workers, LLM) shell out to `shipq workers` which
+// refuses to start without Redis.
+func requireRedis(t *testing.T) {
+	t.Helper()
+	if _, err := exec.LookPath("redis-server"); err != nil {
+		t.Skip("skipping: redis-server not found on $PATH")
+	}
+}
+
 // run executes a command in the given directory and fails the test on error.
 // It strips DATABASE_URL from the environment so shipq uses its ini config.
 func run(t *testing.T, dir string, name string, args ...string) string {
@@ -962,6 +972,7 @@ func TestEndToEnd_Workers(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping end-to-end test in short mode")
 	}
+	requireRedis(t)
 
 	repoRoot := shipqRepoRoot(t)
 	shipq := buildShipq(t, repoRoot)

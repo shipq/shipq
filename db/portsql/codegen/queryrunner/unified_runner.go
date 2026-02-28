@@ -790,19 +790,14 @@ func collectRunnerImports(cfg UnifiedRunnerConfig, queries []userQueryInfo) map[
 	imports[cfg.ModulePath+"/shipq/queries"] = true
 
 	// SQLite needs extra imports for scan helpers (parseSQLiteTime, etc.)
-	// and also needs "time"/"encoding/json" for user query result scanning.
 	// Non-SQLite dialects reference time.Time and json.RawMessage only via the
 	// shared queries package types, so the runner itself doesn't import them.
+	// Note: json.RawMessage columns in SQLite are scanned via []byte(raw.String),
+	// which does NOT require encoding/json. The json_agg block below handles the
+	// cases that actually call json.Unmarshal.
 	if cfg.Dialect == dburl.DialectSQLite {
 		imports["fmt"] = true
 		imports["time"] = true
-		for _, qi := range queries {
-			for _, r := range qi.Results {
-				if needsJSONImport(r.GoType) {
-					imports["encoding/json"] = true
-				}
-			}
-		}
 	}
 
 	// All dialects need encoding/json when any query has json_agg fields

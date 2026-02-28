@@ -1,3 +1,4 @@
+#!/usr/bin/env bash
 # A tiny script to start a MySQL server for development.
 set -euo pipefail
 
