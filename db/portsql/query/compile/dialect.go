@@ -51,8 +51,10 @@ type Dialect interface {
 
 	// WriteOrderByExpr writes an expression for ORDER BY clause.
 	// MySQL needs special COLLATE handling for string columns.
+	// Postgres needs COLLATE "C" for binary ordering, but must skip it
+	// for SELECT DISTINCT (PG requires ORDER BY exprs to match the select list).
 	// The writeExpr and writeColumn callbacks are for writing sub-expressions.
-	WriteOrderByExpr(b *strings.Builder, expr query.Expr, writeExpr func(query.Expr) error, writeColumn func(query.Column)) error
+	WriteOrderByExpr(b *strings.Builder, expr query.Expr, writeExpr func(query.Expr) error, writeColumn func(query.Column), distinct bool) error
 }
 
 // CompilerState holds the mutable state during compilation.
@@ -155,15 +157,19 @@ func (d *PostgresDialect) WriteJSONAgg(b *strings.Builder, cols []query.Column, 
 	return nil
 }
 
-func (d *PostgresDialect) WriteOrderByExpr(b *strings.Builder, expr query.Expr, writeExpr func(query.Expr) error, writeColumn func(query.Column)) error {
+func (d *PostgresDialect) WriteOrderByExpr(b *strings.Builder, expr query.Expr, writeExpr func(query.Expr) error, writeColumn func(query.Column), distinct bool) error {
 	// Postgres: Add COLLATE "C" to string columns for binary ordering
 	// that matches MySQL (COLLATE utf8mb4_bin) and SQLite (binary by default).
-	if colExpr, ok := expr.(query.ColumnExpr); ok {
-		goType := colExpr.Column.GoType()
-		if goType == "string" || goType == "*string" {
-			writeColumn(colExpr.Column)
-			b.WriteString(` COLLATE "C"`)
-			return nil
+	// Skip for SELECT DISTINCT — PG requires ORDER BY exprs to exactly match
+	// the select list, so adding COLLATE would break the query.
+	if !distinct {
+		if colExpr, ok := expr.(query.ColumnExpr); ok {
+			goType := colExpr.Column.GoType()
+			if goType == "string" || goType == "*string" {
+				writeColumn(colExpr.Column)
+				b.WriteString(` COLLATE "C"`)
+				return nil
+			}
 		}
 	}
 	return writeExpr(expr)
@@ -234,7 +240,7 @@ func (d *MySQLDialect) WriteJSONAgg(b *strings.Builder, cols []query.Column, wri
 	return nil
 }
 
-func (d *MySQLDialect) WriteOrderByExpr(b *strings.Builder, expr query.Expr, writeExpr func(query.Expr) error, writeColumn func(query.Column)) error {
+func (d *MySQLDialect) WriteOrderByExpr(b *strings.Builder, expr query.Expr, writeExpr func(query.Expr) error, writeColumn func(query.Column), distinct bool) error {
 	// MySQL: Add COLLATE utf8mb4_bin to string columns for case-sensitive sorting
 	if colExpr, ok := expr.(query.ColumnExpr); ok {
 		goType := colExpr.Column.GoType()
@@ -314,7 +320,7 @@ func (d *SQLiteDialect) WriteJSONAgg(b *strings.Builder, cols []query.Column, wr
 	return nil
 }
 
-func (d *SQLiteDialect) WriteOrderByExpr(b *strings.Builder, expr query.Expr, writeExpr func(query.Expr) error, writeColumn func(query.Column)) error {
+func (d *SQLiteDialect) WriteOrderByExpr(b *strings.Builder, expr query.Expr, writeExpr func(query.Expr) error, writeColumn func(query.Column), distinct bool) error {
 	// SQLite: no special handling needed
 	return writeExpr(expr)
 }

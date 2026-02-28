@@ -392,9 +392,32 @@ func createCrossDBPlan() *migrate.MigrationPlan {
 	return plan
 }
 
+// timestampLayouts are the formats each database may emit inside JSON aggregation.
+var timestampLayouts = []string{
+	"2006-01-02T15:04:05",        // PostgreSQL ISO 8601
+	"2006-01-02 15:04:05",        // SQLite / MySQL without fractional
+	"2006-01-02 15:04:05.000000", // MySQL with microseconds
+	"2006-01-02T15:04:05Z",       // RFC 3339 no offset
+	"2006-01-02T15:04:05Z07:00",  // RFC 3339
+	time.RFC3339,
+}
+
+// normalizeTimestamp tries to parse s as a timestamp in any of the known
+// database formats and returns a canonical representation.  If s cannot be
+// parsed it is returned unchanged so non-timestamp strings are unaffected.
+func normalizeTimestamp(s string) string {
+	for _, layout := range timestampLayouts {
+		if t, err := time.Parse(layout, s); err == nil {
+			return t.UTC().Format("2006-01-02T15:04:05")
+		}
+	}
+	return s
+}
+
 // normalizeJSON normalizes a JSON structure for comparison:
 // - Removes null entries from arrays
 // - Converts numeric types consistently
+// - Normalizes timestamp strings to a common format
 // - Sorts arrays by a deterministic key
 func normalizeJSON(v interface{}) interface{} {
 	switch val := v.(type) {
@@ -441,6 +464,9 @@ func normalizeJSON(v interface{}) interface{} {
 			return int64(val)
 		}
 		return val
+	case string:
+		// Normalize timestamp strings so different DB formats compare equal
+		return normalizeTimestamp(val)
 	default:
 		return val
 	}
