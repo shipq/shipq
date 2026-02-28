@@ -66,7 +66,12 @@ var RefFS embed.FS
 //go:embed proptest/*.go
 var ProptestFS embed.FS
 
-// Category C: static assets (JS, CSS) for development tooling
+// Category C: general-purpose library packages (no shipq-internal imports)
+
+//go:embed dag/*.go
+var DagFS embed.FS
+
+// Category D: static assets (JS, CSS) for development tooling
 
 //go:embed assets/*
 var AssetsFS embed.FS

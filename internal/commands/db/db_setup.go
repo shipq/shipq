@@ -13,6 +13,7 @@ import (
 	"github.com/shipq/shipq/cli"
 	"github.com/shipq/shipq/dburl"
 	"github.com/shipq/shipq/inifile"
+	shipqdag "github.com/shipq/shipq/internal/dag"
 	"github.com/shipq/shipq/internal/dbops"
 	"github.com/shipq/shipq/project"
 )
@@ -69,6 +70,11 @@ func DBSetupCmd() {
 	roots, err := project.FindProjectRoots()
 	if err != nil {
 		cli.FatalErr("failed to find project", err)
+	}
+
+	// DAG prerequisite check (alongside existing checks)
+	if !shipqdag.CheckPrerequisites(shipqdag.CmdDBSetup, roots.ShipqRoot) {
+		os.Exit(1)
 	}
 
 	// Get project name for database names

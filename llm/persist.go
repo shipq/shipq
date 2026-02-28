@@ -22,6 +22,18 @@ type Persister interface {
 
 	// InsertMessage appends a single message to an existing conversation.
 	InsertMessage(ctx context.Context, p InsertMessageParams) error
+
+	// ListCompletedTools returns the distinct tool names that were
+	// successfully invoked across all prior conversations for the given
+	// job_id. "Successfully invoked" means a tool_call message exists
+	// (the model saw the result either way and the DAG should progress).
+	//
+	// This is used by the conversation loop to hydrate the completedTools
+	// set when a task DAG is configured, so that multi-turn conversations
+	// automatically remember which tools have already been used.
+	//
+	// Returns nil (not an error) if no prior tool calls exist.
+	ListCompletedTools(ctx context.Context, jobID string) ([]string, error)
 }
 
 // ConversationStatus mirrors the CHECK constraint on llm_conversations.status.

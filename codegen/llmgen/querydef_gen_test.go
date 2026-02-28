@@ -62,7 +62,7 @@ func TestGenerateLLMQuerydefs_HasInitFunc(t *testing.T) {
 	}
 }
 
-func TestGenerateLLMQuerydefs_AllSixQueriesDefined(t *testing.T) {
+func TestGenerateLLMQuerydefs_AllSevenQueriesDefined(t *testing.T) {
 	src := GenerateLLMQuerydefs("myapp", false, false)
 	code := string(src)
 
@@ -73,6 +73,7 @@ func TestGenerateLLMQuerydefs_AllSixQueriesDefined(t *testing.T) {
 		"GetLLMConversation",
 		"ListLLMMessagesByConversation",
 		"ListLLMConversationsByJob",
+		"ListCompletedToolsByJob",
 	}
 
 	for _, q := range queries {
@@ -520,6 +521,7 @@ func TestGenerateLLMQuerydefs_QueryTypeBreakdown(t *testing.T) {
 		{"GetLLMConversation", "MustDefineOne"},
 		{"ListLLMMessagesByConversation", "MustDefineMany"},
 		{"ListLLMConversationsByJob", "MustDefineMany"},
+		{"ListCompletedToolsByJob", "MustDefineMany"},
 	}
 
 	for _, tt := range tests {
@@ -652,5 +654,117 @@ func TestGenerateLLMQuerydefs_DifferentAuthProducesDifferentOutput(t *testing.T)
 
 	if string(src1) == string(src2) {
 		t.Error("expected different output for different auth settings")
+	}
+}
+
+// ── ListCompletedToolsByJob querydef tests ────────────────────────────────────
+
+func TestGenerateLLMQuerydefs_ListCompletedToolsByJob_IsMustDefineMany(t *testing.T) {
+	src := GenerateLLMQuerydefs("myapp", false, false)
+	code := string(src)
+
+	idx := strings.Index(code, `"ListCompletedToolsByJob"`)
+	if idx < 0 {
+		t.Fatal("ListCompletedToolsByJob not found")
+	}
+
+	prefix := code[:idx]
+	if !strings.Contains(prefix[strings.LastIndex(prefix, "query."):], "MustDefineMany") {
+		t.Error("expected ListCompletedToolsByJob to use MustDefineMany")
+	}
+}
+
+func TestGenerateLLMQuerydefs_ListCompletedToolsByJob_JoinsConversations(t *testing.T) {
+	src := GenerateLLMQuerydefs("myapp", false, false)
+	code := string(src)
+
+	// Should join llm_messages with llm_conversations.
+	if !strings.Contains(code, "Join(schema.LlmConversations") {
+		t.Error("expected ListCompletedToolsByJob to join LlmConversations")
+	}
+}
+
+func TestGenerateLLMQuerydefs_ListCompletedToolsByJob_SelectsToolName(t *testing.T) {
+	src := GenerateLLMQuerydefs("myapp", false, false)
+	code := string(src)
+
+	// Find the section for ListCompletedToolsByJob.
+	idx := strings.Index(code, `"ListCompletedToolsByJob"`)
+	if idx < 0 {
+		t.Fatal("ListCompletedToolsByJob not found")
+	}
+	section := code[idx:]
+
+	if !strings.Contains(section, "LlmMessages.ToolName()") {
+		t.Error("expected ListCompletedToolsByJob to select ToolName")
+	}
+}
+
+func TestGenerateLLMQuerydefs_ListCompletedToolsByJob_WhereJobId(t *testing.T) {
+	src := GenerateLLMQuerydefs("myapp", false, false)
+	code := string(src)
+
+	idx := strings.Index(code, `"ListCompletedToolsByJob"`)
+	if idx < 0 {
+		t.Fatal("ListCompletedToolsByJob not found")
+	}
+	section := code[idx:]
+
+	if !strings.Contains(section, "LlmConversations.JobId().Eq(query.Param[string](\"jobId\"))") {
+		t.Error("expected ListCompletedToolsByJob to filter by job_id")
+	}
+}
+
+func TestGenerateLLMQuerydefs_ListCompletedToolsByJob_WhereRoleToolCall(t *testing.T) {
+	src := GenerateLLMQuerydefs("myapp", false, false)
+	code := string(src)
+
+	idx := strings.Index(code, `"ListCompletedToolsByJob"`)
+	if idx < 0 {
+		t.Fatal("ListCompletedToolsByJob not found")
+	}
+	section := code[idx:]
+
+	if !strings.Contains(section, `Role().Eq(query.Value("tool_call"))`) {
+		t.Error("expected ListCompletedToolsByJob to filter by role = 'tool_call'")
+	}
+}
+
+func TestGenerateLLMQuerydefs_ListCompletedToolsByJob_WhereToolNameNotNull(t *testing.T) {
+	src := GenerateLLMQuerydefs("myapp", false, false)
+	code := string(src)
+
+	idx := strings.Index(code, `"ListCompletedToolsByJob"`)
+	if idx < 0 {
+		t.Fatal("ListCompletedToolsByJob not found")
+	}
+	section := code[idx:]
+
+	if !strings.Contains(section, "ToolName().IsNotNull()") {
+		t.Error("expected ListCompletedToolsByJob to filter by tool_name IS NOT NULL")
+	}
+}
+
+func TestGenerateLLMQuerydefs_ListCompletedToolsByJob_UsesDistinct(t *testing.T) {
+	src := GenerateLLMQuerydefs("myapp", false, false)
+	code := string(src)
+
+	idx := strings.Index(code, `"ListCompletedToolsByJob"`)
+	if idx < 0 {
+		t.Fatal("ListCompletedToolsByJob not found")
+	}
+	section := code[idx:]
+
+	if !strings.Contains(section, "Distinct()") {
+		t.Error("expected ListCompletedToolsByJob to use Distinct()")
+	}
+}
+
+func TestGenerateLLMQuerydefs_ListCompletedToolsByJob_HasComment(t *testing.T) {
+	src := GenerateLLMQuerydefs("myapp", false, false)
+	code := string(src)
+
+	if !strings.Contains(code, "ListCompletedToolsByJob returns distinct tool names") {
+		t.Error("expected ListCompletedToolsByJob to have a descriptive comment")
 	}
 }

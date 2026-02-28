@@ -39,6 +39,20 @@ func (m *mockPersister) InsertMessage(_ context.Context, p InsertMessageParams) 
 	return nil
 }
 
+func (m *mockPersister) ListCompletedTools(_ context.Context, jobID string) ([]string, error) {
+	seen := make(map[string]bool)
+	var result []string
+	for _, msg := range m.messages {
+		if msg.Role == MessageRoleToolCall && msg.ToolName != "" {
+			if !seen[msg.ToolName] {
+				seen[msg.ToolName] = true
+				result = append(result, msg.ToolName)
+			}
+		}
+	}
+	return result, nil
+}
+
 // Compile-time check: mockPersister satisfies Persister.
 var _ Persister = (*mockPersister)(nil)
 

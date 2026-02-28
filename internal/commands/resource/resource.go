@@ -16,6 +16,7 @@ import (
 	"github.com/shipq/shipq/inifile"
 	"github.com/shipq/shipq/internal/commands/db"
 	"github.com/shipq/shipq/internal/commands/migrate/up"
+	shipqdag "github.com/shipq/shipq/internal/dag"
 	"github.com/shipq/shipq/project"
 	"github.com/shipq/shipq/registry"
 )
@@ -43,6 +44,24 @@ func generateResource(tableName, operation string, isPublic bool) error {
 	roots, err := project.FindProjectRoots()
 	if err != nil {
 		return fmt.Errorf("failed to find project: %w", err)
+	}
+
+	// DAG prerequisite check (alongside existing checks)
+	if !shipqdag.CheckPrerequisites(shipqdag.CmdResource, roots.ShipqRoot) {
+		os.Exit(1)
+	}
+
+	// DAG-driven public/private route messaging
+	if !isPublic {
+		graph := shipqdag.Graph()
+		satisfied := shipqdag.SatisfiedFunc(roots.ShipqRoot)
+		softMissing := graph.CheckSoftDeps(shipqdag.CmdResource, satisfied)
+		for _, id := range softMissing {
+			if id == shipqdag.CmdAuth {
+				fmt.Fprintln(os.Stderr, "warning: Auth is not configured. Generated routes will be public.")
+				fmt.Fprintln(os.Stderr, "  Run 'shipq auth' to enable authentication, or pass --public to suppress this warning.")
+			}
+		}
 	}
 
 	// Step 1: Run migrations

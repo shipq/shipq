@@ -13,6 +13,7 @@ import (
 	"github.com/shipq/shipq/dburl"
 	"github.com/shipq/shipq/inifile"
 	"github.com/shipq/shipq/internal/commands/db"
+	shipqdag "github.com/shipq/shipq/internal/dag"
 	"github.com/shipq/shipq/project"
 	registrypkg "github.com/shipq/shipq/registry"
 )
@@ -38,6 +39,11 @@ func WorkersCompileCmd() {
 	roots, err := project.FindProjectRoots()
 	if err != nil {
 		cli.FatalErr("failed to find project roots", err)
+	}
+
+	// DAG prerequisite check (alongside existing checks)
+	if !shipqdag.CheckPrerequisites(shipqdag.CmdWorkersCompile, roots.ShipqRoot) {
+		os.Exit(1)
 	}
 
 	shipqIniPath := filepath.Join(roots.ShipqRoot, project.ShipqIniFile)

@@ -324,7 +324,7 @@ func TestGeneratePersisterAdapter_MonorepoModulePath(t *testing.T) {
 	}
 }
 
-func TestGeneratePersisterAdapter_AllThreeMethods(t *testing.T) {
+func TestGeneratePersisterAdapter_AllFourMethodsBasic(t *testing.T) {
 	src, err := GeneratePersisterAdapter("myapp", false)
 	if err != nil {
 		t.Fatalf("GeneratePersisterAdapter failed: %v", err)
@@ -336,6 +336,7 @@ func TestGeneratePersisterAdapter_AllThreeMethods(t *testing.T) {
 		"InsertConversation",
 		"UpdateConversation",
 		"InsertMessage",
+		"ListCompletedTools",
 	}
 
 	for _, method := range methods {
@@ -427,6 +428,108 @@ func TestGeneratePersisterAdapter_WithAuth_Deterministic(t *testing.T) {
 
 	if string(src1) != string(src2) {
 		t.Error("expected deterministic output for same parameters")
+	}
+}
+
+// ── ListCompletedTools adapter tests ──────────────────────────────────────────
+
+func TestGeneratePersisterAdapter_HasListCompletedTools(t *testing.T) {
+	src, err := GeneratePersisterAdapter("myapp", false)
+	if err != nil {
+		t.Fatalf("GeneratePersisterAdapter failed: %v", err)
+	}
+
+	code := string(src)
+
+	if !strings.Contains(code, "func (p *Persister) ListCompletedTools(ctx context.Context, jobID string) ([]string, error)") {
+		t.Error("expected ListCompletedTools method")
+	}
+}
+
+func TestGeneratePersisterAdapter_ListCompletedTools_CallsRunner(t *testing.T) {
+	src, err := GeneratePersisterAdapter("myapp", false)
+	if err != nil {
+		t.Fatalf("GeneratePersisterAdapter failed: %v", err)
+	}
+
+	code := string(src)
+
+	if !strings.Contains(code, "p.runner.ListCompletedToolsByJob(") {
+		t.Error("expected call to p.runner.ListCompletedToolsByJob")
+	}
+}
+
+func TestGeneratePersisterAdapter_ListCompletedTools_PassesJobID(t *testing.T) {
+	src, err := GeneratePersisterAdapter("myapp", false)
+	if err != nil {
+		t.Fatalf("GeneratePersisterAdapter failed: %v", err)
+	}
+
+	code := string(src)
+
+	if !strings.Contains(code, "JobId: jobID") {
+		t.Error("expected JobId: jobID in ListCompletedToolsByJob params")
+	}
+}
+
+func TestGeneratePersisterAdapter_ListCompletedTools_HandlesNullableToolName(t *testing.T) {
+	src, err := GeneratePersisterAdapter("myapp", false)
+	if err != nil {
+		t.Fatalf("GeneratePersisterAdapter failed: %v", err)
+	}
+
+	code := string(src)
+
+	if !strings.Contains(code, "row.ToolName != nil") {
+		t.Error("expected nil check for ToolName in ListCompletedTools")
+	}
+}
+
+func TestGeneratePersisterAdapter_ListCompletedTools_ReturnsStringSlice(t *testing.T) {
+	src, err := GeneratePersisterAdapter("myapp", false)
+	if err != nil {
+		t.Fatalf("GeneratePersisterAdapter failed: %v", err)
+	}
+
+	code := string(src)
+
+	if !strings.Contains(code, "return names, nil") {
+		t.Error("expected 'return names, nil' in ListCompletedTools")
+	}
+}
+
+func TestGeneratePersisterAdapter_AllFourMethods(t *testing.T) {
+	src, err := GeneratePersisterAdapter("myapp", false)
+	if err != nil {
+		t.Fatalf("GeneratePersisterAdapter failed: %v", err)
+	}
+
+	code := string(src)
+
+	methods := []string{
+		"InsertConversation",
+		"UpdateConversation",
+		"InsertMessage",
+		"ListCompletedTools",
+	}
+
+	for _, method := range methods {
+		if !strings.Contains(code, "func (p *Persister) "+method+"(") {
+			t.Errorf("expected method %s on Persister", method)
+		}
+	}
+}
+
+func TestGeneratePersisterAdapter_ListCompletedTools_HasComment(t *testing.T) {
+	src, err := GeneratePersisterAdapter("myapp", false)
+	if err != nil {
+		t.Fatalf("GeneratePersisterAdapter failed: %v", err)
+	}
+
+	code := string(src)
+
+	if !strings.Contains(code, "ListCompletedTools returns the distinct tool names") {
+		t.Error("expected descriptive comment for ListCompletedTools")
 	}
 }
 

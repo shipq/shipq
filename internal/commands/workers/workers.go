@@ -21,6 +21,7 @@ import (
 	"github.com/shipq/shipq/inifile"
 	"github.com/shipq/shipq/internal/commands/db"
 	"github.com/shipq/shipq/internal/commands/migrate/up"
+	shipqdag "github.com/shipq/shipq/internal/dag"
 	"github.com/shipq/shipq/project"
 	"github.com/shipq/shipq/registry"
 )
@@ -44,6 +45,11 @@ func WorkersCmd() {
 	roots, err := project.FindProjectRoots()
 	if err != nil {
 		cli.FatalErr("not in a shipq project", err)
+	}
+
+	// DAG prerequisite check (alongside existing checks)
+	if !shipqdag.CheckPrerequisites(shipqdag.CmdWorkers, roots.ShipqRoot) {
+		os.Exit(1)
 	}
 
 	shipqIniPath := filepath.Join(roots.ShipqRoot, project.ShipqIniFile)

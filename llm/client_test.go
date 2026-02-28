@@ -5,11 +5,15 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"sort"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/shipq/shipq/channel"
+	"github.com/shipq/shipq/dag"
 )
 
 // ── mock provider ──────────────────────────────────────────────────────────────
@@ -874,3 +878,778 @@ func TestChatToolNotFoundSendErrorToModel(t *testing.T) {
 		t.Error("expected IsError=true for missing tool")
 	}
 }
+
+// ── helpers for DAG tests ──────────────────────────────────────────────────────
+
+func toolNames(tools []ToolDef) []string {
+	names := make([]string, len(tools))
+	for i, t := range tools {
+		names[i] = t.Name
+	}
+	sort.Strings(names)
+	return names
+}
+
+func assertToolList(t *testing.T, label string, got []string, want []string) {
+	t.Helper()
+	sortedGot := make([]string, len(got))
+	copy(sortedGot, got)
+	sort.Strings(sortedGot)
+	sortedWant := make([]string, len(want))
+	copy(sortedWant, want)
+	sort.Strings(sortedWant)
+	if len(sortedGot) != len(sortedWant) {
+		t.Errorf("%s: got %v, want %v", label, sortedGot, sortedWant)
+		return
+	}
+	for i := range sortedGot {
+		if sortedGot[i] != sortedWant[i] {
+			t.Errorf("%s: got %v, want %v", label, sortedGot, sortedWant)
+			return
+		}
+	}
+}
+
+func noopToolFunc() ToolFunc {
+	return func(_ context.Context, _ []byte) ([]byte, error) {
+		return json.Marshal(map[string]string{"ok": "true"})
+	}
+}
+
+// ── DAG filtering unit tests ───────────────────────────────────────────────────
+
+func TestAvailableTools_NoDAG_ReturnsAllTools(t *testing.T) {
+	c := &Client{
+		registry: &Registry{Tools: []ToolDef{
+			{Name: "a"}, {Name: "b"}, {Name: "c"},
+		}},
+	}
+	tools := c.availableTools(map[string]bool{})
+	if len(tools) != 3 {
+		t.Errorf("expected 3 tools, got %d", len(tools))
+	}
+}
+
+func TestAvailableTools_WithDAG_FiltersBlockedTools(t *testing.T) {
+	g, err := dag.New([]dag.Node[string]{
+		{ID: "a", Description: "first"},
+		{ID: "b", Description: "second", HardDeps: []string{"a"}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	c := &Client{
+		registry: &Registry{Tools: []ToolDef{
+			{Name: "a"}, {Name: "b"},
+		}},
+		taskDAG: g,
+	}
+
+	// Nothing completed — only "a" should be available.
+	tools := c.availableTools(map[string]bool{})
+	if len(tools) != 1 || tools[0].Name != "a" {
+		t.Errorf("expected [a], got %v", toolNames(tools))
+	}
+
+	// After "a" completes — both should be available.
+	tools = c.availableTools(map[string]bool{"a": true})
+	if len(tools) != 2 {
+		t.Errorf("expected [a, b], got %v", toolNames(tools))
+	}
+}
+
+func TestAvailableTools_UngovernedToolsAlwaysAvailable(t *testing.T) {
+	g, err := dag.New([]dag.Node[string]{
+		{ID: "a", Description: "governed"},
+		{ID: "b", Description: "governed", HardDeps: []string{"a"}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	c := &Client{
+		registry: &Registry{Tools: []ToolDef{
+			{Name: "a"}, {Name: "b"}, {Name: "c"}, // "c" not in DAG
+		}},
+		taskDAG: g,
+	}
+
+	tools := c.availableTools(map[string]bool{})
+	names := toolNames(tools)
+	// "a" and "c" should be available; "b" is blocked.
+	if len(tools) != 2 {
+		t.Errorf("expected 2 tools, got %d: %v", len(tools), names)
+	}
+	assertToolList(t, "ungoverned", names, []string{"a", "c"})
+}
+
+func TestAvailableTools_CompletedToolsRemainAvailable(t *testing.T) {
+	g, err := dag.New([]dag.Node[string]{
+		{ID: "a", Description: "first"},
+		{ID: "b", Description: "second", HardDeps: []string{"a"}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	c := &Client{
+		registry: &Registry{Tools: []ToolDef{
+			{Name: "a"}, {Name: "b"},
+		}},
+		taskDAG: g,
+	}
+
+	// After "a" completes, it should still be callable (model might retry).
+	tools := c.availableTools(map[string]bool{"a": true})
+	names := toolNames(tools)
+	if len(tools) != 2 {
+		t.Errorf("expected [a, b], got %v", names)
+	}
+}
+
+func TestAvailableTools_DiamondDAG(t *testing.T) {
+	// a → b, a → c, b+c → d
+	g, err := dag.New([]dag.Node[string]{
+		{ID: "a", Description: "root"},
+		{ID: "b", Description: "left", HardDeps: []string{"a"}},
+		{ID: "c", Description: "right", HardDeps: []string{"a"}},
+		{ID: "d", Description: "join", HardDeps: []string{"b", "c"}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	c := &Client{
+		registry: &Registry{Tools: []ToolDef{
+			{Name: "a"}, {Name: "b"}, {Name: "c"}, {Name: "d"},
+		}},
+		taskDAG: g,
+	}
+
+	// Nothing completed: only "a"
+	assertToolList(t, "step0", toolNames(c.availableTools(map[string]bool{})), []string{"a"})
+
+	// "a" done: "a", "b", "c" available; "d" blocked
+	assertToolList(t, "step1", toolNames(c.availableTools(map[string]bool{"a": true})), []string{"a", "b", "c"})
+
+	// "a", "b" done: "a", "b", "c" available; "d" still blocked (needs c)
+	assertToolList(t, "step2", toolNames(c.availableTools(map[string]bool{"a": true, "b": true})), []string{"a", "b", "c"})
+
+	// "a", "b", "c" done: all four available
+	assertToolList(t, "step3", toolNames(c.availableTools(map[string]bool{"a": true, "b": true, "c": true})), []string{"a", "b", "c", "d"})
+}
+
+// ── DAG validation tests ───────────────────────────────────────────────────────
+
+func TestNewClient_DAGWithUnknownTool_Panics(t *testing.T) {
+	g, err := dag.New([]dag.Node[string]{
+		{ID: "nonexistent", Description: "tool that doesn't exist"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		if r := recover(); r == nil {
+			t.Error("expected panic for DAG referencing unknown tool")
+		}
+	}()
+	NewClient(newMockProvider(), WithTools(&Registry{
+		Tools: []ToolDef{{Name: "real_tool"}},
+	}), WithTaskDAG(g))
+}
+
+func TestNewClient_DAGWithoutRegistry_NoPanic(t *testing.T) {
+	// DAG without registry is fine — validation is skipped.
+	g, err := dag.New([]dag.Node[string]{
+		{ID: "a", Description: "first"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = NewClient(newMockProvider(), WithTaskDAG(g))
+}
+
+func TestNewClient_DAGMatchesRegistry_NoPanic(t *testing.T) {
+	g, err := dag.New([]dag.Node[string]{
+		{ID: "a", Description: "first"},
+		{ID: "b", Description: "second", HardDeps: []string{"a"}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = NewClient(newMockProvider(), WithTools(&Registry{
+		Tools: []ToolDef{{Name: "a"}, {Name: "b"}, {Name: "c"}},
+	}), WithTaskDAG(g))
+}
+
+// ── DAG system prompt suffix tests ─────────────────────────────────────────────
+
+func TestDagSystemPromptSuffix_NoDAG_EmptyString(t *testing.T) {
+	c := &Client{}
+	if got := c.dagSystemPromptSuffix(nil); got != "" {
+		t.Errorf("expected empty string, got %q", got)
+	}
+}
+
+func TestDagSystemPromptSuffix_WithDAG_DescribesDependencies(t *testing.T) {
+	g, err := dag.New([]dag.Node[string]{
+		{ID: "a", Description: "first"},
+		{ID: "b", Description: "second", HardDeps: []string{"a"}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	c := &Client{taskDAG: g}
+	suffix := c.dagSystemPromptSuffix(map[string]bool{})
+	if !strings.Contains(suffix, "requires") {
+		t.Error("expected suffix to mention requirements")
+	}
+	if !strings.Contains(suffix, "a") {
+		t.Error("expected suffix to mention tool 'a'")
+	}
+}
+
+func TestDagSystemPromptSuffix_ReflectsCompletedState(t *testing.T) {
+	g, err := dag.New([]dag.Node[string]{
+		{ID: "a", Description: "first"},
+		{ID: "b", Description: "second", HardDeps: []string{"a"}},
+		{ID: "c", Description: "third", HardDeps: []string{"b"}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	c := &Client{taskDAG: g}
+
+	// Before anything is completed, "a" is available.
+	suffix := c.dagSystemPromptSuffix(map[string]bool{})
+	if !strings.Contains(suffix, "a") {
+		t.Error("expected 'a' in available tools")
+	}
+
+	// After "a" is completed, "b" becomes available.
+	suffix = c.dagSystemPromptSuffix(map[string]bool{"a": true})
+	if !strings.Contains(suffix, "b") {
+		t.Error("expected 'b' in available tools after 'a' completed")
+	}
+}
+
+func TestDagSystemPromptSuffix_SoftDeps(t *testing.T) {
+	g, err := dag.New([]dag.Node[string]{
+		{ID: "a", Description: "first"},
+		{ID: "b", Description: "second", SoftDeps: []string{"a"}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	c := &Client{taskDAG: g}
+	suffix := c.dagSystemPromptSuffix(map[string]bool{})
+	if !strings.Contains(suffix, "benefits from") {
+		t.Error("expected suffix to mention soft deps")
+	}
+}
+
+// ── DAG integration tests: full conversation flow ──────────────────────────────
+
+func TestChat_WithTaskDAG_ToolsFilteredByDependencies(t *testing.T) {
+	// Setup: 3 tools, linear chain a → b → c.
+	g, err := dag.New([]dag.Node[string]{
+		{ID: "a", Description: "first"},
+		{ID: "b", Description: "second", HardDeps: []string{"a"}},
+		{ID: "c", Description: "third", HardDeps: []string{"b"}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	mp := newMockProvider(
+		// Turn 1: model sees only tool "a", calls it.
+		&ProviderResponse{
+			Text:      "calling a",
+			ToolCalls: []ToolCall{{ID: "tc1", ToolName: "a", ArgsJSON: json.RawMessage(`{}`)}},
+		},
+		// Turn 2: model sees "a" + "b", calls "b".
+		&ProviderResponse{
+			Text:      "calling b",
+			ToolCalls: []ToolCall{{ID: "tc2", ToolName: "b", ArgsJSON: json.RawMessage(`{}`)}},
+		},
+		// Turn 3: model sees "a" + "b" + "c", calls "c".
+		&ProviderResponse{
+			Text:      "calling c",
+			ToolCalls: []ToolCall{{ID: "tc3", ToolName: "c", ArgsJSON: json.RawMessage(`{}`)}},
+		},
+		// Turn 4: final response.
+		&ProviderResponse{Text: "all done", Done: true},
+	)
+
+	noop := noopToolFunc()
+
+	client := NewClient(mp,
+		WithTools(&Registry{Tools: []ToolDef{
+			{Name: "a", Func: noop, InputSchema: json.RawMessage(`{}`)},
+			{Name: "b", Func: noop, InputSchema: json.RawMessage(`{}`)},
+			{Name: "c", Func: noop, InputSchema: json.RawMessage(`{}`)},
+		}}),
+		WithTaskDAG(g),
+	)
+
+	resp, err := client.Chat(context.Background(), "do all the things")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if resp.Text != "all done" {
+		t.Errorf("expected 'all done', got %q", resp.Text)
+	}
+
+	// Verify tool availability progressed correctly.
+	mp.mu.Lock()
+	defer mp.mu.Unlock()
+	if len(mp.Requests) != 4 {
+		t.Fatalf("expected 4 requests, got %d", len(mp.Requests))
+	}
+
+	// Collect tool names per request.
+	var toolsPerRequest [][]string
+	for _, req := range mp.Requests {
+		var names []string
+		for _, tool := range req.Tools {
+			names = append(names, tool.Name)
+		}
+		toolsPerRequest = append(toolsPerRequest, names)
+	}
+
+	// Request 1: only "a"
+	assertToolList(t, "request 1", toolsPerRequest[0], []string{"a"})
+	// Request 2: "a", "b"
+	assertToolList(t, "request 2", toolsPerRequest[1], []string{"a", "b"})
+	// Request 3: "a", "b", "c"
+	assertToolList(t, "request 3", toolsPerRequest[2], []string{"a", "b", "c"})
+	// Request 4: "a", "b", "c" (all completed, all available)
+	assertToolList(t, "request 4", toolsPerRequest[3], []string{"a", "b", "c"})
+}
+
+func TestChat_WithTaskDAG_BlockedToolCallSendsError(t *testing.T) {
+	// Model hallucinates a call to "b" before "a" is done.
+	g, err := dag.New([]dag.Node[string]{
+		{ID: "a", Description: "first"},
+		{ID: "b", Description: "second", HardDeps: []string{"a"}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	mp := newMockProvider(
+		// Turn 1: model calls "b" (blocked).
+		&ProviderResponse{
+			Text:      "calling b",
+			ToolCalls: []ToolCall{{ID: "tc1", ToolName: "b", ArgsJSON: json.RawMessage(`{}`)}},
+		},
+		// Turn 2: model calls "a" (correcting itself).
+		&ProviderResponse{
+			Text:      "calling a",
+			ToolCalls: []ToolCall{{ID: "tc2", ToolName: "a", ArgsJSON: json.RawMessage(`{}`)}},
+		},
+		// Turn 3: model calls "b" (now allowed).
+		&ProviderResponse{
+			Text:      "calling b again",
+			ToolCalls: []ToolCall{{ID: "tc3", ToolName: "b", ArgsJSON: json.RawMessage(`{}`)}},
+		},
+		// Turn 4: final.
+		&ProviderResponse{Text: "done", Done: true},
+	)
+
+	noop := noopToolFunc()
+
+	client := NewClient(mp,
+		WithTools(&Registry{Tools: []ToolDef{
+			{Name: "a", Func: noop, InputSchema: json.RawMessage(`{}`)},
+			{Name: "b", Func: noop, InputSchema: json.RawMessage(`{}`)},
+		}}),
+		WithTaskDAG(g),
+	)
+
+	resp, err := client.Chat(context.Background(), "do things")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if resp.Text != "done" {
+		t.Errorf("expected 'done', got %q", resp.Text)
+	}
+	// The first tool call should have an error (blocked).
+	if len(resp.ToolCalls) < 1 {
+		t.Fatal("expected at least one tool call log")
+	}
+	if resp.ToolCalls[0].Error == nil {
+		t.Error("expected error for blocked tool call to 'b'")
+	}
+	if !strings.Contains(resp.ToolCalls[0].Error.Error(), "prerequisites not met") {
+		t.Errorf("expected prerequisites error, got %q", resp.ToolCalls[0].Error.Error())
+	}
+}
+
+func TestChat_WithTaskDAG_SystemPromptContainsDAGInfo(t *testing.T) {
+	g, err := dag.New([]dag.Node[string]{
+		{ID: "a", Description: "first"},
+		{ID: "b", Description: "second", HardDeps: []string{"a"}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	mp := newMockProvider(
+		&ProviderResponse{Text: "done", Done: true},
+	)
+
+	noop := noopToolFunc()
+
+	client := NewClient(mp,
+		WithTools(&Registry{Tools: []ToolDef{
+			{Name: "a", Func: noop, InputSchema: json.RawMessage(`{}`)},
+			{Name: "b", Func: noop, InputSchema: json.RawMessage(`{}`)},
+		}}),
+		WithTaskDAG(g),
+		WithSystem("Base system prompt."),
+	)
+
+	_, err = client.Chat(context.Background(), "hi")
+	if err != nil {
+		t.Fatalf("Chat: %v", err)
+	}
+
+	mp.mu.Lock()
+	defer mp.mu.Unlock()
+	if len(mp.Requests) < 1 {
+		t.Fatal("no requests recorded")
+	}
+	sys := mp.Requests[0].System
+	if !strings.Contains(sys, "Base system prompt.") {
+		t.Error("expected base system prompt to be preserved")
+	}
+	if !strings.Contains(sys, "Tool Ordering") {
+		t.Error("expected DAG info in system prompt")
+	}
+	if !strings.Contains(sys, "requires") {
+		t.Error("expected dependency info in system prompt")
+	}
+}
+
+func TestChat_WithTaskDAG_UngovernedToolsAlwaysPresent(t *testing.T) {
+	// Only "a" and "b" are in the DAG. "c" is ungoverned.
+	g, err := dag.New([]dag.Node[string]{
+		{ID: "a", Description: "first"},
+		{ID: "b", Description: "second", HardDeps: []string{"a"}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	mp := newMockProvider(
+		&ProviderResponse{Text: "done", Done: true},
+	)
+
+	noop := noopToolFunc()
+
+	client := NewClient(mp,
+		WithTools(&Registry{Tools: []ToolDef{
+			{Name: "a", Func: noop, InputSchema: json.RawMessage(`{}`)},
+			{Name: "b", Func: noop, InputSchema: json.RawMessage(`{}`)},
+			{Name: "c", Func: noop, InputSchema: json.RawMessage(`{}`)},
+		}}),
+		WithTaskDAG(g),
+	)
+
+	_, err = client.Chat(context.Background(), "hi")
+	if err != nil {
+		t.Fatalf("Chat: %v", err)
+	}
+
+	mp.mu.Lock()
+	defer mp.mu.Unlock()
+	// "a" and "c" should be available; "b" is blocked.
+	var names []string
+	for _, tool := range mp.Requests[0].Tools {
+		names = append(names, tool.Name)
+	}
+	assertToolList(t, "first request", names, []string{"a", "c"})
+}
+
+func TestChat_WithoutDAG_AllToolsAvailable(t *testing.T) {
+	// Baseline: no DAG, all tools available.
+	mp := newMockProvider(
+		&ProviderResponse{Text: "done", Done: true},
+	)
+
+	noop := noopToolFunc()
+
+	client := NewClient(mp,
+		WithTools(&Registry{Tools: []ToolDef{
+			{Name: "a", Func: noop, InputSchema: json.RawMessage(`{}`)},
+			{Name: "b", Func: noop, InputSchema: json.RawMessage(`{}`)},
+			{Name: "c", Func: noop, InputSchema: json.RawMessage(`{}`)},
+		}}),
+	)
+
+	_, err := client.Chat(context.Background(), "hi")
+	if err != nil {
+		t.Fatalf("Chat: %v", err)
+	}
+
+	mp.mu.Lock()
+	defer mp.mu.Unlock()
+	var names []string
+	for _, tool := range mp.Requests[0].Tools {
+		names = append(names, tool.Name)
+	}
+	assertToolList(t, "no DAG", names, []string{"a", "b", "c"})
+}
+
+// ── computeToolSets tests ──────────────────────────────────────────────────────
+
+func TestComputeToolSets(t *testing.T) {
+	g, err := dag.New([]dag.Node[string]{
+		{ID: "a", Description: "root"},
+		{ID: "b", Description: "mid", HardDeps: []string{"a"}},
+		{ID: "c", Description: "leaf", HardDeps: []string{"b"}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	c := &Client{taskDAG: g}
+
+	// Nothing completed: "a" available, "b"+"c" blocked.
+	avail, done, blocked := c.computeToolSets(map[string]bool{})
+	assertToolList(t, "avail-0", avail, []string{"a"})
+	if len(done) != 0 {
+		t.Errorf("expected 0 done, got %v", done)
+	}
+	assertToolList(t, "blocked-0", blocked, []string{"b", "c"})
+
+	// "a" completed: "a" done, "b" available, "c" blocked.
+	avail, done, blocked = c.computeToolSets(map[string]bool{"a": true})
+	assertToolList(t, "avail-1", avail, []string{"b"})
+	assertToolList(t, "done-1", done, []string{"a"})
+	assertToolList(t, "blocked-1", blocked, []string{"c"})
+
+	// "a"+"b" completed: "c" available.
+	avail, done, blocked = c.computeToolSets(map[string]bool{"a": true, "b": true})
+	assertToolList(t, "avail-2", avail, []string{"c"})
+	assertToolList(t, "done-2", done, []string{"a", "b"})
+	if len(blocked) != 0 {
+		t.Errorf("expected 0 blocked, got %v", blocked)
+	}
+}
+
+// ── DAG persistence hydration tests ────────────────────────────────────────────
+
+// mockPersisterWithCompletedTools extends mockPersister with configurable
+// ListCompletedTools behavior.
+type mockPersisterWithCompletedTools struct {
+	mockPersister
+	completedTools []string
+	completedErr   error
+	calledJobID    string
+}
+
+func (m *mockPersisterWithCompletedTools) ListCompletedTools(_ context.Context, jobID string) ([]string, error) {
+	m.calledJobID = jobID
+	return m.completedTools, m.completedErr
+}
+
+func TestRun_WithDAG_HydratesCompletedToolsFromPersister(t *testing.T) {
+	// DAG: a → b. Persister says "a" was already completed.
+	g, err := dag.New([]dag.Node[string]{
+		{ID: "a", Description: "first"},
+		{ID: "b", Description: "second", HardDeps: []string{"a"}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	mp := newMockProvider(
+		&ProviderResponse{Text: "done", Done: true},
+	)
+
+	noop := noopToolFunc()
+
+	persist := &mockPersisterWithCompletedTools{
+		mockPersister:  *newMockPersister(),
+		completedTools: []string{"a"},
+	}
+
+	// Create a no-op channel to provide a job ID.
+	ch := createTestChannel(t, "test-job")
+
+	client := NewClient(mp,
+		WithTools(&Registry{Tools: []ToolDef{
+			{Name: "a", Func: noop, InputSchema: json.RawMessage(`{}`)},
+			{Name: "b", Func: noop, InputSchema: json.RawMessage(`{}`)},
+		}}),
+		WithTaskDAG(g),
+		WithPersister(persist),
+		WithChannel(ch),
+	)
+
+	_, err = client.Chat(context.Background(), "hi")
+	if err != nil {
+		t.Fatalf("Chat: %v", err)
+	}
+
+	// Both "a" and "b" should be available because "a" was hydrated as completed.
+	mp.mu.Lock()
+	defer mp.mu.Unlock()
+	var names []string
+	for _, tool := range mp.Requests[0].Tools {
+		names = append(names, tool.Name)
+	}
+	assertToolList(t, "hydrated", names, []string{"a", "b"})
+}
+
+func TestRun_WithDAG_NoPersister_StartsEmpty(t *testing.T) {
+	g, err := dag.New([]dag.Node[string]{
+		{ID: "a", Description: "first"},
+		{ID: "b", Description: "second", HardDeps: []string{"a"}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	mp := newMockProvider(
+		&ProviderResponse{Text: "done", Done: true},
+	)
+
+	noop := noopToolFunc()
+
+	client := NewClient(mp,
+		WithTools(&Registry{Tools: []ToolDef{
+			{Name: "a", Func: noop, InputSchema: json.RawMessage(`{}`)},
+			{Name: "b", Func: noop, InputSchema: json.RawMessage(`{}`)},
+		}}),
+		WithTaskDAG(g),
+		// No persister — should start with empty completed set.
+	)
+
+	_, err = client.Chat(context.Background(), "hi")
+	if err != nil {
+		t.Fatalf("Chat: %v", err)
+	}
+
+	mp.mu.Lock()
+	defer mp.mu.Unlock()
+	var names []string
+	for _, tool := range mp.Requests[0].Tools {
+		names = append(names, tool.Name)
+	}
+	// Only "a" available since no hydration happened.
+	assertToolList(t, "no persister", names, []string{"a"})
+}
+
+func TestRun_WithDAG_NoChannel_StartsEmpty(t *testing.T) {
+	g, err := dag.New([]dag.Node[string]{
+		{ID: "a", Description: "first"},
+		{ID: "b", Description: "second", HardDeps: []string{"a"}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	mp := newMockProvider(
+		&ProviderResponse{Text: "done", Done: true},
+	)
+
+	noop := noopToolFunc()
+
+	persist := &mockPersisterWithCompletedTools{
+		mockPersister:  *newMockPersister(),
+		completedTools: []string{"a"},
+	}
+
+	client := NewClient(mp,
+		WithTools(&Registry{Tools: []ToolDef{
+			{Name: "a", Func: noop, InputSchema: json.RawMessage(`{}`)},
+			{Name: "b", Func: noop, InputSchema: json.RawMessage(`{}`)},
+		}}),
+		WithTaskDAG(g),
+		WithPersister(persist),
+		// No channel — no job ID.
+	)
+
+	_, err = client.Chat(context.Background(), "hi")
+	if err != nil {
+		t.Fatalf("Chat: %v", err)
+	}
+
+	mp.mu.Lock()
+	defer mp.mu.Unlock()
+	var names []string
+	for _, tool := range mp.Requests[0].Tools {
+		names = append(names, tool.Name)
+	}
+	// Only "a" available (no channel means no hydration).
+	assertToolList(t, "no channel", names, []string{"a"})
+}
+
+func TestRun_WithDAG_PersisterError_StartsEmpty(t *testing.T) {
+	g, err := dag.New([]dag.Node[string]{
+		{ID: "a", Description: "first"},
+		{ID: "b", Description: "second", HardDeps: []string{"a"}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	mp := newMockProvider(
+		&ProviderResponse{Text: "done", Done: true},
+	)
+
+	noop := noopToolFunc()
+
+	persist := &mockPersisterWithCompletedTools{
+		mockPersister: *newMockPersister(),
+		completedErr:  errors.New("db connection failed"),
+	}
+
+	ch := createTestChannel(t, "test-job")
+
+	client := NewClient(mp,
+		WithTools(&Registry{Tools: []ToolDef{
+			{Name: "a", Func: noop, InputSchema: json.RawMessage(`{}`)},
+			{Name: "b", Func: noop, InputSchema: json.RawMessage(`{}`)},
+		}}),
+		WithTaskDAG(g),
+		WithPersister(persist),
+		WithChannel(ch),
+	)
+
+	_, err = client.Chat(context.Background(), "hi")
+	if err != nil {
+		t.Fatalf("Chat: %v", err)
+	}
+
+	mp.mu.Lock()
+	defer mp.mu.Unlock()
+	var names []string
+	for _, tool := range mp.Requests[0].Tools {
+		names = append(names, tool.Name)
+	}
+	// Only "a" available (persister error means graceful degradation).
+	assertToolList(t, "persister error", names, []string{"a"})
+}
+
+// createTestChannel builds a minimal *channel.Channel for tests that need
+// a job ID for DAG hydration but don't actually publish anything.
+func createTestChannel(t *testing.T, jobID string) *channel.Channel {
+	t.Helper()
+	tr := testNoopTransport{}
+	incoming, cleanup, _ := tr.Subscribe("test", "sub")
+	return channel.NewChannel("test", jobID, 0, 0, false, tr, incoming, cleanup)
+}
+
+type testNoopTransport struct{}
+
+func (testNoopTransport) Publish(string, []byte) error { return nil }
+func (testNoopTransport) Subscribe(string, string) (<-chan []byte, func(), error) {
+	return make(chan []byte), func() {}, nil
+}
+func (testNoopTransport) GenerateConnectionToken(_ string, _ time.Duration) (string, error) {
+	return "", nil
+}
+func (testNoopTransport) GenerateSubscriptionToken(_ string, _ string, _ time.Duration) (string, error) {
+	return "", nil
+}
+func (testNoopTransport) ConnectionURL() string { return "" }

@@ -420,5 +420,6 @@ func llmStreamTypeNames() []string {
 		"LLMToolCallStart",
 		"LLMToolCallResult",
 		"LLMDone",
+		"LLMToolsAvailable",
 	}
 }
