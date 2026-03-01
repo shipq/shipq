@@ -1636,3 +1636,175 @@ func TestEndToEnd_PublicJSONColumn(t *testing.T) {
 		})
 	}
 }
+
+// -------------------------------------------------------------------------
+// Scenario: migrate up after auth must not clobber auth queries
+// -------------------------------------------------------------------------
+
+// scenarioMigrateUpAfterAuth reproduces a bug where running `shipq migrate up`
+// after `shipq auth` overwrites the query runner with UserQueries: nil,
+// deleting all auth query methods (FindAccountByEmail, FindActiveSession, etc.).
+// Any subsequent `go build` fails because the auth handlers reference query
+// runner methods that no longer exist.
+func scenarioMigrateUpAfterAuth(t *testing.T, shipq string, db dbConfig) {
+	t.Helper()
+
+	proj := setupProject(t, shipq, "shipq-e2e-migrate-clobber", db)
+	dbEnv := []string{"DATABASE_URL=" + proj.DatabaseURL}
+	tEnv := testEnvForProject(t, proj.CleanDir, db)
+
+	// 1. shipq auth — sets up auth migrations, query defs, handlers, and
+	//    runs db compile which generates the full query runner.
+	t.Log("Generating auth...")
+	runWithEnv(t, proj.CleanDir, dbEnv, shipq, "auth")
+	run(t, proj.CleanDir, "go", "mod", "tidy")
+
+	// 2. Verify the project compiles after auth (sanity check).
+	t.Log("Verifying project compiles after auth...")
+	run(t, proj.CleanDir, "go", "build", "./...")
+
+	// 3. Run auth tests to make sure everything works.
+	t.Log("Running auth tests...")
+	runWithEnv(t, proj.CleanDir, tEnv, "go", "test", "./api/auth/spec/...", "-v", "-count=1")
+
+	// 4. Now run `shipq migrate up` directly — this is the operation that
+	//    triggers the bug. It regenerates the query runner with
+	//    UserQueries: nil, clobbering the auth query methods.
+	t.Log("Running migrate up (should NOT clobber auth queries)...")
+	runWithEnv(t, proj.CleanDir, dbEnv, shipq, "migrate", "up")
+
+	// 5. The project must STILL compile. Before the fix, this step fails
+	//    because the auth handlers call runner methods (e.g.
+	//    runner.FindAccountByEmail) that were removed from the runner.
+	t.Log("Verifying project still compiles after migrate up...")
+	run(t, proj.CleanDir, "go", "build", "./...")
+
+	// 6. Auth tests must still pass — the query runner must still contain
+	//    all the auth query methods.
+	t.Log("Running auth tests after migrate up...")
+	runWithEnv(t, proj.CleanDir, tEnv, "go", "test", "./api/auth/spec/...", "-v", "-count=1")
+
+	t.Log("migrate up after auth scenario passed!")
+}
+
+func TestEndToEnd_MigrateUpAfterAuth(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping end-to-end test in short mode")
+	}
+
+	repoRoot := shipqRepoRoot(t)
+	shipq := buildShipq(t, repoRoot)
+
+	for _, db := range allDBConfigs(t) {
+		t.Run(db.Name, func(t *testing.T) {
+			scenarioMigrateUpAfterAuth(t, shipq, db)
+		})
+	}
+}
+
+// -------------------------------------------------------------------------
+// Scenario: auth then signup must not emit OAuth references
+// -------------------------------------------------------------------------
+
+// scenarioAuthThenSignupNoOAuth reproduces a bug where running `shipq auth`
+// followed by `shipq signup` (without any OAuth provider) produces generated
+// code that contains OAuth references (e.g. RegisterOAuthRoutes, OAuth
+// imports, or oauth_shared.go). When no OAuth provider is configured, the
+// generated code must be completely free of OAuth symbols.
+func scenarioAuthThenSignupNoOAuth(t *testing.T, shipq string, db dbConfig) {
+	t.Helper()
+
+	proj := setupProject(t, shipq, "shipq-e2e-signup-no-oauth", db)
+	dbEnv := []string{"DATABASE_URL=" + proj.DatabaseURL}
+	tEnv := testEnvForProject(t, proj.CleanDir, db)
+
+	// 1. shipq auth (base email/password system — NO OAuth)
+	t.Log("Generating auth...")
+	runWithEnv(t, proj.CleanDir, dbEnv, shipq, "auth")
+	run(t, proj.CleanDir, "go", "mod", "tidy")
+
+	// 2. shipq signup (adds /signup route)
+	t.Log("Generating signup handler...")
+	runWithEnv(t, proj.CleanDir, dbEnv, shipq, "signup")
+
+	// 3. Verify the project compiles
+	t.Log("Verifying project compiles after auth + signup...")
+	run(t, proj.CleanDir, "go", "build", "./...")
+
+	// 4. Verify go vet passes
+	t.Log("Running go vet...")
+	run(t, proj.CleanDir, "go", "vet", "./...")
+
+	// 5. Verify register.go does NOT contain OAuth-specific symbols
+	t.Log("Verifying register.go has no OAuth references...")
+	registerContent, err := os.ReadFile(filepath.Join(proj.CleanDir, "api", "auth", "register.go"))
+	if err != nil {
+		t.Fatalf("failed to read register.go: %v", err)
+	}
+	registerStr := string(registerContent)
+	if strings.Contains(registerStr, "RegisterOAuthRoutes") {
+		t.Fatalf("register.go should NOT contain RegisterOAuthRoutes when OAuth is not enabled:\n%s", registerStr)
+	}
+
+	// 6. Verify the top-level generated HTTP file does NOT contain OAuth route registration
+	t.Log("Verifying generated HTTP code has no OAuth references...")
+	httpPath := filepath.Join(proj.CleanDir, "api", "zz_generated_http.go")
+	httpContent, err := os.ReadFile(httpPath)
+	if err != nil {
+		t.Fatalf("failed to read zz_generated_http.go: %v", err)
+	}
+	httpStr := string(httpContent)
+	if strings.Contains(httpStr, "RegisterOAuthRoutes") {
+		t.Fatalf("zz_generated_http.go should NOT contain RegisterOAuthRoutes when OAuth is not enabled:\n%s", httpStr)
+	}
+
+	// 7. Verify oauth_shared.go does NOT exist
+	t.Log("Verifying oauth_shared.go does not exist...")
+	oauthSharedPath := filepath.Join(proj.CleanDir, "api", "auth", "oauth_shared.go")
+	if _, err := os.Stat(oauthSharedPath); err == nil {
+		t.Fatal("oauth_shared.go should NOT exist when OAuth is not enabled")
+	}
+
+	// 8. Verify no OAuth provider handler files exist
+	t.Log("Verifying no OAuth provider files exist...")
+	for _, provider := range []string{"google", "github"} {
+		providerPath := filepath.Join(proj.CleanDir, "api", "auth", "oauth_"+provider+".go")
+		if _, err := os.Stat(providerPath); err == nil {
+			t.Fatalf("oauth_%s.go should NOT exist when OAuth is not enabled", provider)
+		}
+	}
+
+	// 9. Verify querydefs/auth/queries.go does NOT contain OAuth query definitions
+	t.Log("Verifying auth query defs have no OAuth queries...")
+	queryDefsContent, err := os.ReadFile(filepath.Join(proj.CleanDir, "querydefs", "auth", "queries.go"))
+	if err != nil {
+		t.Fatalf("failed to read querydefs/auth/queries.go: %v", err)
+	}
+	queryDefsStr := string(queryDefsContent)
+	for _, oauthSymbol := range []string{"FindOAuthAccount", "UpsertOAuthAccount", "OAuthAccounts"} {
+		if strings.Contains(queryDefsStr, oauthSymbol) {
+			t.Fatalf("querydefs/auth/queries.go should NOT contain %q when OAuth is not enabled:\n%s", oauthSymbol, queryDefsStr)
+		}
+	}
+
+	// 10. Run all tests in the generated project
+	t.Log("Running all tests in generated project...")
+	runWithEnv(t, proj.CleanDir, tEnv, "go", "test", "./...", "-v", "-count=1")
+
+	t.Log("auth then signup (no OAuth) scenario passed!")
+}
+
+func TestEndToEnd_AuthThenSignupNoOAuth(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping end-to-end test in short mode")
+	}
+
+	repoRoot := shipqRepoRoot(t)
+	shipq := buildShipq(t, repoRoot)
+
+	for _, db := range allDBConfigs(t) {
+		t.Run(db.Name, func(t *testing.T) {
+			scenarioAuthThenSignupNoOAuth(t, shipq, db)
+		})
+	}
+}
