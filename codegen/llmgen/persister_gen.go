@@ -135,6 +135,23 @@ func GeneratePersisterAdapter(modulePath string, hasAuth bool) ([]byte, error) {
 	buf.WriteString("\t\tToolCallId:     toolCallID,\n")
 	buf.WriteString("\t})\n")
 	buf.WriteString("\treturn err\n")
+	buf.WriteString("}\n\n")
+
+	// ListCompletedTools
+	buf.WriteString("// ListCompletedTools returns the distinct tool names successfully invoked\n")
+	buf.WriteString("// across all prior conversations for the given job_id.\n")
+	buf.WriteString("func (p *Persister) ListCompletedTools(ctx context.Context, jobID string) ([]string, error) {\n")
+	buf.WriteString("\trows, err := p.runner.ListCompletedToolsByJob(ctx, queries.ListCompletedToolsByJobParams{JobId: jobID})\n")
+	buf.WriteString("\tif err != nil {\n")
+	buf.WriteString("\t\treturn nil, err\n")
+	buf.WriteString("\t}\n")
+	buf.WriteString("\tnames := make([]string, 0, len(rows))\n")
+	buf.WriteString("\tfor _, row := range rows {\n")
+	buf.WriteString("\t\tif row.ToolName != nil {\n")
+	buf.WriteString("\t\t\tnames = append(names, *row.ToolName)\n")
+	buf.WriteString("\t\t}\n")
+	buf.WriteString("\t}\n")
+	buf.WriteString("\treturn names, nil\n")
 	buf.WriteString("}\n")
 
 	formatted, err := format.Source(buf.Bytes())

@@ -11,10 +11,12 @@ import (
 	"github.com/shipq/shipq/codegen"
 	"github.com/shipq/shipq/codegen/authgen"
 	configpkg "github.com/shipq/shipq/codegen/httpserver/config"
+	codegenMigrate "github.com/shipq/shipq/codegen/migrate"
 	"github.com/shipq/shipq/dburl"
 	"github.com/shipq/shipq/inifile"
 	"github.com/shipq/shipq/internal/commands/db"
 	"github.com/shipq/shipq/internal/commands/migrate/up"
+	shipqdag "github.com/shipq/shipq/internal/dag"
 	"github.com/shipq/shipq/project"
 	"github.com/shipq/shipq/registry"
 )
@@ -88,6 +90,11 @@ func EmailCmd() {
 	roots, err := project.FindProjectRoots()
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "error: not in a shipq project (%v)\n", err)
+		os.Exit(1)
+	}
+
+	// DAG prerequisite check (alongside existing checks)
+	if !shipqdag.CheckPrerequisites(shipqdag.CmdEmail, roots.ShipqRoot) {
 		os.Exit(1)
 	}
 
@@ -181,7 +188,7 @@ func EmailCmd() {
 		fmt.Println("")
 		fmt.Println("Generating email migrations...")
 
-		baseTime := time.Now().UTC()
+		baseTime := codegenMigrate.NextMigrationBaseTime(migrationsPath)
 		ts0 := baseTime.Format("20060102150405")
 		ts1 := baseTime.Add(1 * time.Second).Format("20060102150405")
 		ts2 := baseTime.Add(2 * time.Second).Format("20060102150405")

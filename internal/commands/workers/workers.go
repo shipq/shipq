@@ -8,7 +8,6 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
-	"time"
 
 	"github.com/shipq/shipq/cli"
 	"github.com/shipq/shipq/codegen"
@@ -17,10 +16,12 @@ import (
 	"github.com/shipq/shipq/codegen/embed"
 	configpkg "github.com/shipq/shipq/codegen/httpserver/config"
 	"github.com/shipq/shipq/codegen/llmgen"
+	codegenMigrate "github.com/shipq/shipq/codegen/migrate"
 	"github.com/shipq/shipq/dburl"
 	"github.com/shipq/shipq/inifile"
 	"github.com/shipq/shipq/internal/commands/db"
 	"github.com/shipq/shipq/internal/commands/migrate/up"
+	shipqdag "github.com/shipq/shipq/internal/dag"
 	"github.com/shipq/shipq/project"
 	"github.com/shipq/shipq/registry"
 )
@@ -44,6 +45,11 @@ func WorkersCmd() {
 	roots, err := project.FindProjectRoots()
 	if err != nil {
 		cli.FatalErr("not in a shipq project", err)
+	}
+
+	// DAG prerequisite check (alongside existing checks)
+	if !shipqdag.CheckPrerequisites(shipqdag.CmdWorkers, roots.ShipqRoot) {
+		os.Exit(1)
 	}
 
 	shipqIniPath := filepath.Join(roots.ShipqRoot, project.ShipqIniFile)
@@ -157,7 +163,7 @@ func WorkersCmd() {
 	} else {
 		fmt.Println("  Generating job_results migration...")
 
-		timestamp := time.Now().UTC().Format("20060102150405")
+		timestamp := codegenMigrate.NextMigrationBaseTime(migrationsPath).Format("20060102150405")
 		code := channelgen.GenerateJobResultsMigration(timestamp, importPrefix, hasTenancy)
 		fileName := fmt.Sprintf("%s_job_results.go", timestamp)
 		filePath := filepath.Join(migrationsPath, fileName)

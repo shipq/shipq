@@ -20,6 +20,7 @@ import (
 	seedcmd "github.com/shipq/shipq/internal/commands/seed"
 	signupcmd "github.com/shipq/shipq/internal/commands/signup"
 	startcmd "github.com/shipq/shipq/internal/commands/start"
+	statuscmd "github.com/shipq/shipq/internal/commands/status"
 	workerscmd "github.com/shipq/shipq/internal/commands/workers"
 )
 
@@ -29,6 +30,7 @@ Usage:
   shipq <command> [arguments]
 
 Commands:
+  status            Show project status and available next steps
   nix               Generate shell.nix with latest stable nixpkgs
   docker            Generate production Dockerfiles (server + optional worker)
   init              Initialize a new shipq project (creates go.mod and shipq.ini)
@@ -74,6 +76,9 @@ func main() {
 	case "-h", "--help", "help":
 		fmt.Print(usage)
 		os.Exit(0)
+
+	case "status":
+		statuscmd.StatusCmd()
 
 	case "nix":
 		nixcmd.NixCmd()

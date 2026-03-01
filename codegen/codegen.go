@@ -80,11 +80,11 @@ func GetModuleInfo(goModRoot, shipqRoot string) (*ModuleInfo, error) {
 // SerializedHandlerInfo is a JSON-serializable version of handler.HandlerInfo.
 // This type is used across codegen packages for handler registry information.
 type SerializedHandlerInfo struct {
-	Method      string                `json:"method"`
-	Path        string                `json:"path"`
-	PathParams  []SerializedPathParam `json:"path_params"`
-	FuncName    string                `json:"func_name"`
-	PackagePath string                `json:"package_path"`
+	Method       string                `json:"method"`
+	Path         string                `json:"path"`
+	PathParams   []SerializedPathParam `json:"path_params"`
+	FuncName     string                `json:"func_name"`
+	PackagePath  string                `json:"package_path"`
 	RequireAuth  bool                  `json:"require_auth"`
 	OptionalAuth bool                  `json:"optional_auth"`
 	Request      *SerializedStructInfo `json:"request,omitempty"`
@@ -286,6 +286,15 @@ func parseDatabaseURL(rawURL string) (driver, dsn string) {
 	} else if len(dsn) >= 7 && dsn[:7] == "sqlite:" {
 		dsn = dsn[7:]
 	}
+	// Set a busy timeout so concurrent connections wait instead of
+	// returning SQLITE_BUSY immediately.
+	if !strings.Contains(dsn, "busy_timeout") {
+		sep := "?"
+		if strings.Contains(dsn, "?") {
+			sep = "&"
+		}
+		dsn += sep + "_pragma=busy_timeout(5000)"
+	}
 	return "sqlite", dsn
 }
 `
@@ -353,6 +362,15 @@ func ParseDatabaseURL(rawURL string) (driver, dsn string) {
 		dsn = dsn[9:]
 	} else if len(dsn) >= 7 && dsn[:7] == "sqlite:" {
 		dsn = dsn[7:]
+	}
+	// Set a busy timeout so concurrent connections wait instead of
+	// returning SQLITE_BUSY immediately.
+	if !strings.Contains(dsn, "busy_timeout") {
+		sep := "?"
+		if strings.Contains(dsn, "?") {
+			sep = "&"
+		}
+		dsn += sep + "_pragma=busy_timeout(5000)"
 	}
 	return "sqlite", dsn
 }

@@ -1301,7 +1301,11 @@ func scenarioFKResolutionOpenAPI(t *testing.T, shipq string, db dbConfig) {
 		shipq, "migrate", "new", "posts",
 		"title:string", "body:text", "category_id:references:categories")
 
-	// 3. Generate public resources (no auth)
+	// 3. Run migrate up so schema.json exists (required by resource command)
+	t.Log("Running migrate up...")
+	runWithEnv(t, proj.CleanDir, dbEnv, shipq, "migrate", "up")
+
+	// 4. Generate public resources (no auth)
 	t.Log("Generating categories resource...")
 	runWithEnv(t, proj.CleanDir, dbEnv,
 		shipq, "resource", "categories", "all", "--public")
@@ -1312,7 +1316,7 @@ func scenarioFKResolutionOpenAPI(t *testing.T, shipq string, db dbConfig) {
 
 	run(t, proj.CleanDir, "go", "mod", "tidy")
 
-	// 4. Extract the OpenAPI spec from the generated server file.
+	// 5. Extract the OpenAPI spec from the generated server file.
 	//    The registry embeds it as: var openAPISpec = `{...}`
 	serverFile := filepath.Join(proj.CleanDir, "api", "zz_generated_http.go")
 	serverCode, err := os.ReadFile(serverFile)
@@ -1322,7 +1326,7 @@ func scenarioFKResolutionOpenAPI(t *testing.T, shipq string, db dbConfig) {
 
 	specJSON := extractOpenAPISpec(t, string(serverCode))
 
-	// 5. Parse and assert
+	// 6. Parse and assert
 	var spec map[string]any
 	if err := json.Unmarshal([]byte(specJSON), &spec); err != nil {
 		t.Fatalf("OpenAPI spec is not valid JSON: %v", err)
@@ -1596,6 +1600,10 @@ func scenarioPublicJSONColumn(t *testing.T, shipq string, db dbConfig) {
 	t.Log("Creating migration with JSON column...")
 	runWithEnv(t, proj.CleanDir, dbEnv,
 		shipq, "migrate", "new", "website_signups", "metadata:json")
+
+	// Run migrate up so schema.json exists (required by resource command)
+	t.Log("Running migrate up...")
+	runWithEnv(t, proj.CleanDir, dbEnv, shipq, "migrate", "up")
 
 	// Generate only the CREATE route (no auth)
 	t.Log("Generating public CREATE route...")

@@ -404,7 +404,7 @@ func generateTokenHandlers(buf *bytes.Buffer, cfg ChannelHTTPGenConfig) {
 			buf.WriteString("\t\thttputil.WriteError(w, httperror.NotFound(\"job not found\"))\n")
 			buf.WriteString("\t\treturn\n")
 			buf.WriteString("\t}\n")
-			buf.WriteString("\tif jobResult.AccountId != accountID {\n")
+			buf.WriteString("\tif jobResult.AccountId == nil || *jobResult.AccountId != accountID {\n")
 			buf.WriteString("\t\thttputil.WriteError(w, httperror.Forbidden(\"you do not own this job\"))\n")
 			buf.WriteString("\t\treturn\n")
 			buf.WriteString("\t}\n\n")
@@ -527,7 +527,7 @@ func generateJobStatusHandler(buf *bytes.Buffer, cfg ChannelHTTPGenConfig) {
 
 	if hasAuth {
 		buf.WriteString("\t// Verify requesting account owns the job\n")
-		buf.WriteString("\tif jobResult.AccountId != accountID {\n")
+		buf.WriteString("\tif jobResult.AccountId == nil || *jobResult.AccountId != accountID {\n")
 		buf.WriteString("\t\thttputil.WriteError(w, httperror.Forbidden(\"you do not own this job\"))\n")
 		buf.WriteString("\t\treturn\n")
 		buf.WriteString("\t}\n\n")
@@ -542,7 +542,7 @@ func generateJobStatusHandler(buf *bytes.Buffer, cfg ChannelHTTPGenConfig) {
 	buf.WriteString("\t\t\"retry_count\":     jobResult.RetryCount,\n")
 	buf.WriteString("\t}\n")
 	buf.WriteString("\tif jobResult.ResultPayload != nil {\n")
-	buf.WriteString("\t\tresult[\"result_payload\"] = json.RawMessage(*jobResult.ResultPayload)\n")
+	buf.WriteString("\t\tresult[\"result_payload\"] = json.RawMessage(jobResult.ResultPayload)\n")
 	buf.WriteString("\t}\n")
 	buf.WriteString("\tif jobResult.ErrorMessage != nil {\n")
 	buf.WriteString("\t\tresult[\"error_message\"] = *jobResult.ErrorMessage\n")

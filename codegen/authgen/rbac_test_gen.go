@@ -73,6 +73,7 @@ func writeRBACTestServerSetup(buf *bytes.Buffer, cfg RBACTestGenConfig) {
 	buf.WriteString(`// newRBACTestServer creates a test server for RBAC tests.
 func newRBACTestServer(t *testing.T) *TestServer {
 	t.Helper()
+	os.Setenv("COOKIE_SECRET", "test-secret-key-for-testing-only")
 	dbURL := os.Getenv("TEST_DATABASE_URL")
 	if dbURL == "" {
 `)
@@ -162,7 +163,6 @@ func rbacCreateTestUser(t *testing.T, ts *TestServer, email, firstName string) (
 
 func writeTestGlobalOwnerCanAccessAnything(buf *bytes.Buffer, cfg RBACTestGenConfig) {
 	buf.WriteString(`func TestRBAC_GlobalOwnerCanAccessAnything(t *testing.T) {
-	os.Setenv("COOKIE_SECRET", "test-secret-key-for-testing-only")
 	ts := newRBACTestServer(t)
 	ctx := context.Background()
 	runner := dbrunner.NewQueryRunner(ts.Tx())
@@ -223,7 +223,6 @@ func writeTestGlobalOwnerCanAccessAnything(buf *bytes.Buffer, cfg RBACTestGenCon
 
 func writeTestUnrestrictedRouteAllowsAnyAuthenticatedUser(buf *bytes.Buffer, cfg RBACTestGenConfig) {
 	buf.WriteString(`func TestRBAC_UnrestrictedRouteAllowsAnyAuthenticatedUser(t *testing.T) {
-	os.Setenv("COOKIE_SECRET", "test-secret-key-for-testing-only")
 	ts := newRBACTestServer(t)
 
 	// Create a user with NO roles at all
@@ -250,7 +249,6 @@ func writeTestUnrestrictedRouteAllowsAnyAuthenticatedUser(buf *bytes.Buffer, cfg
 
 func writeTestRestrictedRouteAllowsUserWithMatchingRole(buf *bytes.Buffer, cfg RBACTestGenConfig) {
 	buf.WriteString(`func TestRBAC_RestrictedRouteAllowsUserWithMatchingRole(t *testing.T) {
-	os.Setenv("COOKIE_SECRET", "test-secret-key-for-testing-only")
 	ts := newRBACTestServer(t)
 	ctx := context.Background()
 	runner := dbrunner.NewQueryRunner(ts.Tx())
@@ -322,7 +320,6 @@ func writeTestRestrictedRouteAllowsUserWithMatchingRole(buf *bytes.Buffer, cfg R
 
 func writeTestRestrictedRouteDeniesUserWithoutMatchingRole(buf *bytes.Buffer, cfg RBACTestGenConfig) {
 	buf.WriteString(`func TestRBAC_RestrictedRouteDeniesUserWithoutMatchingRole(t *testing.T) {
-	os.Setenv("COOKIE_SECRET", "test-secret-key-for-testing-only")
 	ts := newRBACTestServer(t)
 	ctx := context.Background()
 	runner := dbrunner.NewQueryRunner(ts.Tx())
@@ -381,7 +378,6 @@ func writeTestRestrictedRouteDeniesUserWithoutMatchingRole(buf *bytes.Buffer, cf
 
 func writeTestWildcardMethodMatchesAnyMethod(buf *bytes.Buffer, cfg RBACTestGenConfig) {
 	buf.WriteString(`func TestRBAC_WildcardMethodMatchesAnyMethod(t *testing.T) {
-	os.Setenv("COOKIE_SECRET", "test-secret-key-for-testing-only")
 	ts := newRBACTestServer(t)
 	ctx := context.Background()
 	runner := dbrunner.NewQueryRunner(ts.Tx())
@@ -453,7 +449,6 @@ func writeTestWildcardMethodMatchesAnyMethod(buf *bytes.Buffer, cfg RBACTestGenC
 
 func writeTestOrgScopedRolesDoNotCrossOrgs(buf *bytes.Buffer, cfg RBACTestGenConfig) {
 	buf.WriteString(`func TestRBAC_OrgScopedRolesDoNotCrossOrgs(t *testing.T) {
-	os.Setenv("COOKIE_SECRET", "test-secret-key-for-testing-only")
 	ts := newRBACTestServer(t)
 	ctx := context.Background()
 	runner := dbrunner.NewQueryRunner(ts.Tx())

@@ -180,6 +180,23 @@ func GenerateLLMQuerydefs(modulePath string, hasTenancy bool, hasAuth bool) []by
 	buf.WriteString("\t\t\tOrderBy(schema.LlmConversations.StartedAt().Asc()).\n")
 	buf.WriteString("\t\t\tBuild())\n\n")
 
+	// ── ListCompletedToolsByJob ──────────────────────────────────────────
+	buf.WriteString("\t// ListCompletedToolsByJob returns distinct tool names from all tool_call messages across conversations for a job.\n")
+	buf.WriteString("\tquery.MustDefineMany(\"ListCompletedToolsByJob\",\n")
+	buf.WriteString("\t\tquery.From(schema.LlmMessages).\n")
+	buf.WriteString("\t\t\tJoin(schema.LlmConversations).\n")
+	buf.WriteString("\t\t\tOn(schema.LlmMessages.ConversationId().Eq(schema.LlmConversations.Id())).\n")
+	buf.WriteString("\t\t\tSelect(\n")
+	buf.WriteString("\t\t\t\tschema.LlmMessages.ToolName(),\n")
+	buf.WriteString("\t\t\t).\n")
+	buf.WriteString("\t\t\tWhere(query.And(\n")
+	buf.WriteString("\t\t\t\tschema.LlmConversations.JobId().Eq(query.Param[string](\"jobId\")),\n")
+	buf.WriteString("\t\t\t\tschema.LlmMessages.Role().Eq(query.Literal(\"tool_call\")),\n")
+	buf.WriteString("\t\t\t\tschema.LlmMessages.ToolName().IsNotNull(),\n")
+	buf.WriteString("\t\t\t)).\n")
+	buf.WriteString("\t\t\tDistinct().\n")
+	buf.WriteString("\t\t\tBuild())\n\n")
+
 	buf.WriteString("}\n")
 
 	return formatQuerydefSourceLLM(buf.Bytes())

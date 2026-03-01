@@ -509,6 +509,31 @@ func (p *testPersister) UpdateConversation(ctx context.Context, params llm.Updat
 	return nil
 }
 
+func (p *testPersister) ListCompletedTools(ctx context.Context, jobID string) ([]string, error) {
+	rows, err := p.db.QueryContext(ctx, `
+		SELECT DISTINCT m.tool_name
+		FROM llm_messages m
+		JOIN llm_conversations c ON c.id = m.conversation_id
+		WHERE c.job_id = ?
+		  AND m.role = 'tool_call'
+		  AND m.tool_name IS NOT NULL
+	`, jobID)
+	if err != nil {
+		return nil, fmt.Errorf("testPersister.ListCompletedTools: %w", err)
+	}
+	defer rows.Close()
+
+	var names []string
+	for rows.Next() {
+		var name string
+		if err := rows.Scan(&name); err != nil {
+			return nil, fmt.Errorf("testPersister.ListCompletedTools: scan: %w", err)
+		}
+		names = append(names, name)
+	}
+	return names, rows.Err()
+}
+
 func (p *testPersister) InsertMessage(ctx context.Context, params llm.InsertMessageParams) error {
 	var toolName, toolCallID, content *string
 	if params.ToolName != "" {

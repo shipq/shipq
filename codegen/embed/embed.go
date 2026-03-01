@@ -50,6 +50,7 @@ func EmbedAllPackages(shipqRoot, modulePath string, opts EmbedOptions) error {
 		{fs: shipqsrc.DdlFS, srcDir: filepath.Join("db", "portsql", "ddl"), destDir: filepath.Join("shipq", "lib", "db", "portsql", "ddl")},
 		{fs: shipqsrc.RefFS, srcDir: filepath.Join("db", "portsql", "ref"), destDir: filepath.Join("shipq", "lib", "db", "portsql", "ref")},
 		{fs: shipqsrc.ProptestFS, srcDir: "proptest", destDir: filepath.Join("shipq", "lib", "proptest")},
+		{fs: shipqsrc.DagFS, srcDir: "dag", destDir: filepath.Join("shipq", "lib", "dag")},
 	}
 
 	if opts.FilesEnabled {

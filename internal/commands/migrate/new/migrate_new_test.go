@@ -140,7 +140,7 @@ func createMigrationHelper(t *testing.T, tmpDir string, name string, columns []p
 		MigrationsPath: filepath.Join(tmpDir, "migrations"),
 	}
 
-	timestamp := generator.GenerateTimestamp()
+	timestamp := generator.GenerateTimestamp(cfg.MigrationsPath)
 
 	migrationCfg := generator.MigrationConfig{
 		PackageName:   "migrations",
@@ -345,7 +345,7 @@ func TestMigrateNew_GeneratedCodeIsValidGo(t *testing.T) {
 			cfg := generator.MigrationConfig{
 				PackageName:   "migrations",
 				MigrationName: tc.name,
-				Timestamp:     generator.GenerateTimestamp(),
+				Timestamp:     generator.GenerateTimestamp(""),
 				Columns:       tc.columns,
 			}
 

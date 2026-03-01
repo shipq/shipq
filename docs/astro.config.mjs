@@ -34,6 +34,7 @@ export default defineConfig({
             { label: 'File Uploads', slug: 'guides/file-uploads' },
             { label: 'Workers & Channels', slug: 'guides/workers' },
             { label: 'LLM Tools', slug: 'guides/llm-tools' },
+            { label: 'Task DAGs', slug: 'guides/task-dags' },
             { label: 'TypeScript Clients', slug: 'guides/typescript' },
             { label: 'Deployment', slug: 'guides/deployment' },
           ],

@@ -1041,6 +1041,7 @@ func HandleChatRequest(ctx context.Context, req *ChatRequest) error {
 - `WithWebSearch(cfg)` — enable web search (provider-dependent)
 - `WithErrorStrategy(s)` — `SendErrorToModel` (default, recoverable) or `AbortOnToolError`
 - `WithSequentialToolCalls()` — execute parallel tool calls sequentially
+- `WithTaskDAG(g)` — attach a `*dag.Graph[string]` to enforce tool ordering constraints. Tools whose hard dependencies haven't been satisfied are omitted from the provider request. See "Task DAGs" section below.
 
 ### Multiple Providers
 
@@ -1062,6 +1063,7 @@ The client publishes these envelope types over Centrifugo (same format as all Sh
 - `LLMToolCallStart` — `{ "tool_call_id": "...", "tool_name": "...", "input": {...} }` — tool invocation
 - `LLMToolCallResult` — `{ "tool_call_id": "...", "tool_name": "...", "output": {...}, "duration_ms": 123 }` — tool result
 - `LLMDone` — `{ "text": "...", "input_tokens": 100, "output_tokens": 50, "tool_call_count": 2 }` — conversation complete
+- `LLMToolsAvailable` — `{ "available": [...], "completed": [...], "blocked": [...] }` — published after each tool-call round when a task DAG is configured, so the frontend can update UI affordances (enable/disable buttons, show workflow progress)
 
 ### Database Persistence
 
@@ -1083,6 +1085,99 @@ The `llm/llmtest` package provides mock providers (scripted responses, no API ke
 - `ANTHROPIC_API_KEY` — required if using the Anthropic provider
 
 These are read by the user's Setup function, not by the framework.
+
+### Task DAGs (Tool Ordering)
+
+Task DAGs let you declare ordering constraints between LLM tools. Without them, the model can call any tool at any time — system prompts can ask it to follow a sequence, but structured constraints are more reliable than prose.
+
+#### Quick Example
+
+```go
+import "myapp/shipq/lib/dag"
+
+g, _ := dag.New([]dag.Node[string]{
+    {ID: "search_docs",  Description: "Search documentation"},
+    {ID: "list_files",   Description: "List repository files"},
+    {ID: "write_code",   Description: "Write code",
+        HardDeps: []string{"search_docs"}},
+    {ID: "run_tests",    Description: "Run tests",
+        HardDeps: []string{"write_code"}},
+    {ID: "submit_pr",    Description: "Submit a pull request",
+        HardDeps: []string{"write_code", "run_tests"}},
+})
+
+client := llm.NewClient(provider,
+    llm.WithTools(registry),
+    llm.WithTaskDAG(g),
+)
+```
+
+#### How It Works
+
+The DAG is a runtime concept attached to `llm.Client`. It is declared in userspace (typically in your Setup function) and passed via `WithTaskDAG`. No codegen is involved.
+
+**Tool filtering**: On each iteration of the conversation loop, only tools whose hard dependencies are satisfied are included in the `ProviderRequest.Tools` slice. Root nodes (no deps) are available immediately. Completed tools remain available for retries.
+
+**Ungoverned tools**: Tools in the registry but NOT in the DAG are always available. This lets you add ordering constraints to a subset of tools without listing every single one.
+
+**System prompt injection**: When a DAG is configured, the client appends a section to the system prompt describing tool prerequisites and currently available tools, helping the model plan ahead.
+
+**Blocked tool guard**: If the model hallucinates a call to a blocked tool, the client sends an error message back as the tool result (not fatal). The model can then course-correct.
+
+**Stream events**: After each tool-call round, the client publishes `LLMToolsAvailable` with `available`, `completed`, and `blocked` tool name lists for frontend UI rendering.
+
+#### DAG Node Types
+
+- `HardDeps` — must be completed before the dependent tool becomes available. The tool is omitted from the provider request until all hard deps are satisfied.
+- `SoftDeps` — informational only. Appear in the system prompt as recommendations but don't block the tool.
+
+#### Validation
+
+`dag.New()` validates at construction: no duplicate IDs, no dangling references, no cycles. `llm.NewClient` additionally validates that every DAG node ID matches a tool in the registry (panics on mismatch to catch typos at wiring time).
+
+#### Cross-Turn Persistence
+
+When both a persister and channel are configured (the normal production case), the DAG automatically remembers which tools have been completed across conversation turns within the same channel job:
+
+1. Every tool invocation is already persisted as a `tool_call` row in `llm_messages`
+2. At the start of each `run()`, the client calls `persister.ListCompletedTools(ctx, jobID)` to find prior completions
+3. The `completedTools` set is hydrated before the main loop begins
+4. The DAG picks up where it left off — no extra user code needed
+
+The `ListCompletedTools` method runs a single query: `SELECT DISTINCT tool_name FROM llm_messages JOIN llm_conversations WHERE job_id = ? AND role = 'tool_call'`. This is generated via the querydefs system (`ListCompletedToolsByJob` querydef).
+
+Graceful degradation: if no persister, no channel, or the query fails, `completedTools` starts empty (same as single-turn). Non-fatal.
+
+#### Partial DAGs
+
+Only tools that need ordering constraints need to be in the DAG:
+
+```go
+// Only 2 of 8 tools have ordering constraints.
+g, _ := dag.New([]dag.Node[string]{
+    {ID: "verify_identity", Description: "Verify customer identity"},
+    {ID: "issue_refund",    Description: "Issue a refund",
+        HardDeps: []string{"verify_identity"}},
+})
+client := llm.NewClient(provider,
+    llm.WithTools(supportRegistry), // 8 tools total
+    llm.WithTaskDAG(g),             // only 2 governed
+)
+```
+
+#### The `dag` Package
+
+The generic `dag` package (already embedded into user projects) provides:
+- `dag.New(nodes)` — construct and validate a graph
+- `g.Available(satisfied)` — "what can I do next?"
+- `g.CheckHardDeps(id, satisfied)` — which hard deps are unsatisfied?
+- `g.Find(id)` — look up a node
+- `g.Nodes()` — all nodes
+- `g.TopologicalOrder()` — topological sort
+- `g.TransitiveDeps(id)` — all transitive hard deps
+- `g.Dependents(id)` — direct dependents
+
+The graph is immutable after construction and safe for concurrent queries.
 
 ## Deployment
 

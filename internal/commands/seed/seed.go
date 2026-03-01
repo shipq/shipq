@@ -17,6 +17,7 @@ import (
 	"github.com/shipq/shipq/codegen"
 	"github.com/shipq/shipq/dburl"
 	"github.com/shipq/shipq/inifile"
+	shipqdag "github.com/shipq/shipq/internal/dag"
 	"github.com/shipq/shipq/internal/dbops"
 	"github.com/shipq/shipq/project"
 )
@@ -34,6 +35,11 @@ func SeedCmd() {
 	roots, err := project.FindProjectRoots()
 	if err != nil {
 		cli.FatalErr("failed to find project", err)
+	}
+
+	// DAG prerequisite check (alongside existing checks)
+	if !shipqdag.CheckPrerequisites(shipqdag.CmdSeed, roots.ShipqRoot) {
+		os.Exit(1)
 	}
 
 	moduleInfo, err := codegen.GetModuleInfo(roots.GoModRoot, roots.ShipqRoot)

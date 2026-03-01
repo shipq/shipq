@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/shipq/shipq/db/portsql/migrate"
 )
@@ -18,6 +19,64 @@ type MigrationFile struct {
 	Timestamp string // 14-digit timestamp
 	Name      string // Name after timestamp (e.g., "users")
 	FuncName  string // Full function name (e.g., "Migrate_20260115120000_users")
+}
+
+// NextMigrationBaseTime returns a base time that is guaranteed to produce
+// timestamps strictly after all existing migration files in migrationsPath.
+// It scans the directory for the latest timestamp, parses it, and returns
+// whichever is later: now or (latestExistingTimestamp + 1 second).
+//
+// This prevents timestamp collisions when multiple shipq commands (e.g.
+// auth, files, email) generate migrations in rapid succession.
+func NextMigrationBaseTime(migrationsPath string) time.Time {
+	now := time.Now().UTC()
+
+	entries, err := os.ReadDir(migrationsPath)
+	if err != nil {
+		return now
+	}
+
+	var latest string
+	for _, entry := range entries {
+		if entry.IsDir() {
+			continue
+		}
+		name := entry.Name()
+		if !strings.HasSuffix(name, ".go") || strings.HasSuffix(name, "_test.go") {
+			continue
+		}
+		baseName := strings.TrimSuffix(name, ".go")
+		if len(baseName) < 16 || baseName[14] != '_' {
+			continue
+		}
+		ts := baseName[:14]
+		valid := true
+		for _, c := range ts {
+			if c < '0' || c > '9' {
+				valid = false
+				break
+			}
+		}
+		if valid && ts > latest {
+			latest = ts
+		}
+	}
+
+	if latest == "" {
+		return now
+	}
+
+	parsed, err := time.Parse("20060102150405", latest)
+	if err != nil {
+		return now
+	}
+
+	// Ensure we start at least 1 second after the latest existing migration
+	minBase := parsed.Add(1 * time.Second)
+	if now.After(minBase) {
+		return now
+	}
+	return minBase
 }
 
 // DiscoverMigrations finds all migration files in the migrations directory.

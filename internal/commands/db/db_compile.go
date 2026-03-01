@@ -16,6 +16,7 @@ import (
 	"github.com/shipq/shipq/db/portsql/codegen/queryrunner"
 	"github.com/shipq/shipq/db/portsql/ddl"
 	"github.com/shipq/shipq/db/portsql/query"
+	shipqdag "github.com/shipq/shipq/internal/dag"
 	"github.com/shipq/shipq/project"
 )
 
@@ -26,6 +27,11 @@ func DBCompileCmd() {
 	roots, err := project.FindProjectRoots()
 	if err != nil {
 		cli.FatalErr("failed to find project", err)
+	}
+
+	// DAG prerequisite check (alongside existing checks)
+	if !shipqdag.CheckPrerequisites(shipqdag.CmdDBCompile, roots.ShipqRoot) {
+		os.Exit(1)
 	}
 
 	// 1. Load project configuration

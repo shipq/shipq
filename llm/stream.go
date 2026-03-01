@@ -42,6 +42,15 @@ type LLMDone struct {
 	ToolCallCount int    `json:"tool_call_count"`
 }
 
+// LLMToolsAvailable is published when the set of available tools changes
+// due to DAG progression. Frontend clients can use this to enable/disable
+// tool buttons or show progress through a multi-step workflow.
+type LLMToolsAvailable struct {
+	Available []string `json:"available"` // tool names currently available
+	Completed []string `json:"completed"` // tool names already completed
+	Blocked   []string `json:"blocked"`   // tool names waiting on dependencies
+}
+
 // ── Message type name constants ───────────────────────────────────────────────
 //
 // These are the type names used in the channel.Envelope.Type field.
@@ -53,6 +62,7 @@ const (
 	TypeLLMToolCallStart  = "LLMToolCallStart"
 	TypeLLMToolCallResult = "LLMToolCallResult"
 	TypeLLMDone           = "LLMDone"
+	TypeLLMToolsAvailable = "LLMToolsAvailable"
 )
 
 // ── Publishing helpers ────────────────────────────────────────────────────────
@@ -97,6 +107,20 @@ func publishToolCallResult(ctx context.Context, ch *channel.Channel, callID, too
 		Output:     output,
 		Error:      errMsg,
 		DurationMs: durationMs,
+	})
+}
+
+// publishToolsAvailable notifies the subscriber that the set of available tools
+// has changed due to DAG progression.
+// It is a no-op when ch is nil.
+func publishToolsAvailable(ctx context.Context, ch *channel.Channel, available, completed, blocked []string) error {
+	if ch == nil {
+		return nil
+	}
+	return publish(ctx, ch, TypeLLMToolsAvailable, LLMToolsAvailable{
+		Available: available,
+		Completed: completed,
+		Blocked:   blocked,
 	})
 }
 

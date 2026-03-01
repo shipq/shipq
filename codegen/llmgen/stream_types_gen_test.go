@@ -482,11 +482,11 @@ func TestGenerateLLMStreamTypeScript_HasAutoInjectedComment(t *testing.T) {
 
 // ── Union member tests ───────────────────────────────────────────────────────
 
-func TestLLMFromServerUnionMembers_ReturnsFourMembers(t *testing.T) {
+func TestLLMFromServerUnionMembers_ReturnsFiveMembers(t *testing.T) {
 	members := LLMFromServerUnionMembers()
 
-	if len(members) != 4 {
-		t.Fatalf("expected 4 union members, got %d", len(members))
+	if len(members) != 5 {
+		t.Fatalf("expected 5 union members, got %d", len(members))
 	}
 }
 
@@ -498,6 +498,7 @@ func TestLLMFromServerUnionMembers_ContainsAllTypes(t *testing.T) {
 		"LLMToolCallStart",
 		"LLMToolCallResult",
 		"LLMDone",
+		"LLMToolsAvailable",
 	}
 
 	joined := strings.Join(members, "\n")
@@ -1186,6 +1187,48 @@ func TestGenerateLLMStreamTypeScript_WithoutTools_UsesGenericInterfaces(t *testi
 	}
 	if !strings.Contains(ts, "output?: Record<string, unknown>") {
 		t.Error("without tools, expected Record<string, unknown> for output")
+	}
+}
+
+func TestGenerateLLMStreamTypeScript_HasLLMToolsAvailable(t *testing.T) {
+	ts := GenerateLLMStreamTypeScript(nil)
+
+	if !strings.Contains(ts, "export interface LLMToolsAvailable") {
+		t.Error("expected LLMToolsAvailable interface")
+	}
+}
+
+func TestGenerateLLMStreamTypeScript_LLMToolsAvailableFields(t *testing.T) {
+	ts := GenerateLLMStreamTypeScript(nil)
+
+	expectedFields := []string{
+		"available: string[]",
+		"completed: string[]",
+		"blocked: string[]",
+	}
+
+	for _, field := range expectedFields {
+		if !strings.Contains(ts, field) {
+			t.Errorf("expected LLMToolsAvailable to contain field %q", field)
+		}
+	}
+}
+
+func TestGenerateLLMStreamTypeScript_WithTools_StillHasLLMToolsAvailable(t *testing.T) {
+	tools := makeTestTools()
+	ts := GenerateLLMStreamTypeScript(tools)
+
+	if !strings.Contains(ts, "export interface LLMToolsAvailable") {
+		t.Error("expected LLMToolsAvailable interface even when tools are provided")
+	}
+}
+
+func TestLLMFromServerUnionMembers_ContainsLLMToolsAvailable(t *testing.T) {
+	members := LLMFromServerUnionMembers()
+	joined := strings.Join(members, "\n")
+
+	if !strings.Contains(joined, "LLMToolsAvailable") {
+		t.Error("expected union members to contain LLMToolsAvailable")
 	}
 }
 

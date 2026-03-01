@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/shipq/shipq/channel"
+	"github.com/shipq/shipq/dag"
 	"golang.org/x/sync/errgroup"
 )
 
@@ -25,8 +26,9 @@ type Client struct {
 	temperature *float64
 	webSearch   *WebSearchConfig
 	onError     ErrorStrategy
-	name        string // optional name for multi-client contexts (empty = default)
-	sequential  bool   // if true, tool calls execute one at a time
+	name        string             // optional name for multi-client contexts (empty = default)
+	sequential  bool               // if true, tool calls execute one at a time
+	taskDAG     *dag.Graph[string] // nil = no ordering constraints
 }
 
 // Option configures a Client.
@@ -87,6 +89,20 @@ func WithSequentialToolCalls() Option {
 	return func(c *Client) { c.sequential = true }
 }
 
+// WithTaskDAG attaches a task dependency graph to the client. When set,
+// the conversation loop filters the tool list on each provider call so
+// that only tools whose hard dependencies have been satisfied are
+// presented to the model.
+//
+// The graph nodes are keyed by tool name (matching ToolDef.Name). Every
+// node ID in the graph SHOULD correspond to a tool in the registry, but
+// tools that appear in the registry but NOT in the graph are treated as
+// having no dependencies (always available). This lets you add ordering
+// constraints to a subset of tools without listing every single one.
+func WithTaskDAG(g *dag.Graph[string]) Option {
+	return func(c *Client) { c.taskDAG = g }
+}
+
 // NewClient creates a new LLM client with the given provider and options.
 func NewClient(provider Provider, opts ...Option) *Client {
 	c := &Client{
@@ -97,6 +113,19 @@ func NewClient(provider Provider, opts ...Option) *Client {
 	for _, opt := range opts {
 		opt(c)
 	}
+
+	// Validate DAG node IDs against registry.
+	if c.taskDAG != nil && c.registry != nil {
+		for _, node := range c.taskDAG.Nodes() {
+			if c.registry.FindTool(node.ID) == nil {
+				panic(fmt.Sprintf(
+					"llm.NewClient: task DAG references tool %q which is not in the registry",
+					node.ID,
+				))
+			}
+		}
+	}
+
 	return c
 }
 
@@ -142,15 +171,40 @@ func (c *Client) run(ctx context.Context, history []ProviderMessage) (*Response,
 		toolLogs   []ToolCallLog
 	)
 
+	// Track which tools have been completed for DAG filtering.
+	completedTools := make(map[string]bool)
+
+	// Hydrate completed tools from prior conversations when a DAG,
+	// persister, and channel are all present.
+	if c.taskDAG != nil && c.persister != nil && c.channel != nil {
+		jobID := c.channel.JobID()
+		if jobID != "" {
+			prior, err := c.persister.ListCompletedTools(ctx, jobID)
+			if err != nil {
+				// Non-fatal: if we can't read history, start fresh.
+				// Log the error but don't fail the conversation.
+			} else {
+				for _, name := range prior {
+					completedTools[name] = true
+				}
+			}
+		}
+	}
+
 	// ── 1. Open persistence row ───────────────────────────────────────────────
 	if c.persister != nil {
-		row, err := c.persister.InsertConversation(ctx, InsertConversationParams{
+		p := InsertConversationParams{
 			PublicID:  generatePublicID(),
 			Provider:  c.provider.Name(),
 			Model:     c.provider.ModelName(),
 			Status:    ConversationStatusRunning,
 			StartedAt: time.Now(),
-		})
+		}
+		if c.channel != nil {
+			p.JobID = c.channel.JobID()
+			p.ChannelName = c.channel.Name()
+		}
+		row, err := c.persister.InsertConversation(ctx, p)
 		if err != nil {
 			return nil, fmt.Errorf("llm: insert conversation: %w", err)
 		}
@@ -179,14 +233,14 @@ func (c *Client) run(ctx context.Context, history []ProviderMessage) (*Response,
 	// ── 3. Main loop ──────────────────────────────────────────────────────────
 	for iter := 0; iter < c.maxIter; iter++ {
 		req := &ProviderRequest{
-			System:      c.system,
+			System:      c.system + c.dagSystemPromptSuffix(completedTools),
 			Messages:    history,
 			MaxTokens:   c.maxTokens,
 			Temperature: c.temperature,
 			WebSearch:   c.webSearch,
 		}
 		if c.registry != nil {
-			req.Tools = c.registry.Tools
+			req.Tools = c.availableTools(completedTools)
 		}
 
 		// ── 3a. Call the provider ─────────────────────────────────────────────
@@ -218,13 +272,26 @@ func (c *Client) run(ctx context.Context, history []ProviderMessage) (*Response,
 		}
 
 		// ── 3d. Dispatch tool calls ───────────────────────────────────────────
-		toolResults, logs, err := c.dispatchToolCalls(ctx, convID, provResp.ToolCalls)
+		toolResults, logs, err := c.dispatchToolCalls(ctx, convID, provResp.ToolCalls, completedTools)
 		if err != nil {
 			// AbortOnToolError — propagate immediately.
 			c.failConversation(ctx, convID, totalUsage, len(toolLogs), err)
 			return nil, err
 		}
 		toolLogs = append(toolLogs, logs...)
+
+		// Mark completed tools for DAG progression.
+		for _, log := range logs {
+			completedTools[log.ToolName] = true
+		}
+
+		// Publish LLMToolsAvailable when a DAG is configured.
+		if c.taskDAG != nil {
+			avail, comp, blk := c.computeToolSets(completedTools)
+			if err := publishToolsAvailable(ctx, c.channel, avail, comp, blk); err != nil {
+				return nil, fmt.Errorf("llm: publish tools available: %w", err)
+			}
+		}
 
 		// ── 3e. Append assistant + tool result messages to history ────────────
 		history = append(history, ProviderMessage{
@@ -385,13 +452,14 @@ func (c *Client) dispatchToolCalls(
 	ctx context.Context,
 	convID int64,
 	calls []ToolCall,
+	completedTools map[string]bool,
 ) ([]ToolResult, []ToolCallLog, error) {
 	results := make([]ToolResult, len(calls))
 	logs := make([]ToolCallLog, len(calls))
 
 	if c.sequential {
 		for i, tc := range calls {
-			r, l, err := c.executeOne(ctx, convID, tc)
+			r, l, err := c.executeOne(ctx, convID, tc, completedTools)
 			if err != nil {
 				return nil, nil, err
 			}
@@ -407,7 +475,7 @@ func (c *Client) dispatchToolCalls(
 	for i, tc := range calls {
 		i, tc := i, tc // capture loop vars
 		g.Go(func() error {
-			r, l, err := c.executeOne(gctx, convID, tc)
+			r, l, err := c.executeOne(gctx, convID, tc, completedTools)
 			if err != nil {
 				return err
 			}
@@ -426,7 +494,39 @@ func (c *Client) dispatchToolCalls(
 
 // executeOne executes a single tool call, publishes stream events, and
 // persists the tool_call + tool_result messages.
-func (c *Client) executeOne(ctx context.Context, convID int64, tc ToolCall) (ToolResult, ToolCallLog, error) {
+func (c *Client) executeOne(ctx context.Context, convID int64, tc ToolCall, completedTools map[string]bool) (ToolResult, ToolCallLog, error) {
+	// Guard against model calling a blocked tool (DAG enforcement).
+	if c.taskDAG != nil {
+		node := c.taskDAG.Find(tc.ToolName)
+		if node != nil {
+			unsatisfied := c.taskDAG.CheckHardDeps(tc.ToolName, func(name string) bool {
+				return completedTools[name]
+			})
+			if len(unsatisfied) > 0 {
+				errMsg := fmt.Sprintf(
+					"tool %q cannot be called yet — prerequisites not met: %s",
+					tc.ToolName, strings.Join(unsatisfied, ", "),
+				)
+				errJSON, _ := json.Marshal(errMsg)
+				log := ToolCallLog{
+					ToolName: tc.ToolName,
+					Input:    tc.ArgsJSON,
+					Error:    fmt.Errorf("%s", errMsg),
+				}
+				result := ToolResult{
+					ToolCallID: tc.ID,
+					Output:     errJSON,
+					IsError:    true,
+				}
+				// Publish the error as a tool result so the model can course-correct.
+				if pubErr := publishToolCallResult(ctx, c.channel, tc.ID, tc.ToolName, errJSON, errMsg, 0); pubErr != nil {
+					return ToolResult{}, ToolCallLog{}, fmt.Errorf("llm: publish blocked tool result: %w", pubErr)
+				}
+				return result, log, nil
+			}
+		}
+	}
+
 	// Persist tool_call message.
 	if c.persister != nil {
 		if err := c.persister.InsertMessage(ctx, InsertMessageParams{
@@ -554,4 +654,109 @@ func (c *Client) failConversation(ctx context.Context, convID int64, usage Usage
 // fallback to avoid adding a dependency in the library package.
 func generatePublicID() string {
 	return fmt.Sprintf("conv_%d", time.Now().UnixNano())
+}
+
+// ── DAG helpers ───────────────────────────────────────────────────────────────
+
+// availableTools returns the subset of registered tools that are currently
+// available given the completed tools set and the task DAG. If no DAG is
+// configured, all registered tools are returned.
+func (c *Client) availableTools(completed map[string]bool) []ToolDef {
+	if c.taskDAG == nil || c.registry == nil {
+		// No DAG — all tools are available (existing behavior).
+		if c.registry != nil {
+			return c.registry.Tools
+		}
+		return nil
+	}
+
+	// Build the satisfied predicate from the completed set.
+	satisfied := func(name string) bool {
+		return completed[name]
+	}
+
+	// Ask the DAG which nodes are available.
+	availableIDs := c.taskDAG.Available(satisfied)
+	availableSet := make(map[string]bool, len(availableIDs))
+	for _, id := range availableIDs {
+		availableSet[id] = true
+	}
+
+	// Also include any tools that are already completed (the DAG's
+	// Available method excludes satisfied nodes, but completed tools
+	// should remain callable — the model might want to retry or call
+	// them with different arguments).
+	for name := range completed {
+		availableSet[name] = true
+	}
+
+	// Tools NOT in the DAG at all are always available (ungoverned).
+	// Tools IN the DAG but not in the available set are filtered out.
+	var result []ToolDef
+	for _, tool := range c.registry.Tools {
+		if c.taskDAG.Find(tool.Name) == nil {
+			// Tool is not governed by the DAG — always available.
+			result = append(result, tool)
+		} else if availableSet[tool.Name] {
+			// Tool is governed and currently available.
+			result = append(result, tool)
+		}
+		// else: tool is governed but its deps aren't met — omit it.
+	}
+
+	return result
+}
+
+// dagSystemPromptSuffix generates a human-readable description of the task
+// DAG for inclusion in the system prompt. Returns empty string if no DAG.
+func (c *Client) dagSystemPromptSuffix(completed map[string]bool) string {
+	if c.taskDAG == nil {
+		return ""
+	}
+
+	var sb strings.Builder
+	sb.WriteString("\n\n## Tool Ordering\n\n")
+	sb.WriteString("Some tools have prerequisites. You must complete prerequisite tools before dependent tools become available.\n\n")
+
+	for _, node := range c.taskDAG.Nodes() {
+		if len(node.HardDeps) == 0 && len(node.SoftDeps) == 0 {
+			continue
+		}
+		if len(node.HardDeps) > 0 {
+			sb.WriteString(fmt.Sprintf("- `%s` requires: %s\n",
+				node.ID, strings.Join(node.HardDeps, ", ")))
+		}
+		if len(node.SoftDeps) > 0 {
+			sb.WriteString(fmt.Sprintf("- `%s` benefits from (optional): %s\n",
+				node.ID, strings.Join(node.SoftDeps, ", ")))
+		}
+	}
+
+	satisfied := func(name string) bool { return completed[name] }
+	available := c.taskDAG.Available(satisfied)
+	if len(available) > 0 {
+		sb.WriteString("\nCurrently available tools: ")
+		sb.WriteString(strings.Join(available, ", "))
+		sb.WriteString("\n")
+	}
+
+	return sb.String()
+}
+
+// computeToolSets partitions DAG nodes into available, completed, and blocked
+// sets for the LLMToolsAvailable stream event.
+func (c *Client) computeToolSets(completed map[string]bool) (available, done, blocked []string) {
+	satisfied := func(name string) bool { return completed[name] }
+
+	for _, node := range c.taskDAG.Nodes() {
+		switch {
+		case completed[node.ID]:
+			done = append(done, node.ID)
+		case len(c.taskDAG.CheckHardDeps(node.ID, satisfied)) == 0:
+			available = append(available, node.ID)
+		default:
+			blocked = append(blocked, node.ID)
+		}
+	}
+	return
 }

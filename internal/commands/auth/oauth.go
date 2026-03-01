@@ -6,15 +6,16 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
-	"time"
 
 	"github.com/shipq/shipq/codegen"
 	"github.com/shipq/shipq/codegen/authgen"
 	configpkg "github.com/shipq/shipq/codegen/httpserver/config"
+	codegenMigrate "github.com/shipq/shipq/codegen/migrate"
 	"github.com/shipq/shipq/dburl"
 	"github.com/shipq/shipq/inifile"
 	"github.com/shipq/shipq/internal/commands/db"
 	"github.com/shipq/shipq/internal/commands/migrate/up"
+	shipqdag "github.com/shipq/shipq/internal/dag"
 	"github.com/shipq/shipq/project"
 	"github.com/shipq/shipq/registry"
 )
@@ -85,6 +86,15 @@ func AuthOAuthCmd(providerName string) {
 		os.Exit(1)
 	}
 
+	// DAG prerequisite check (alongside existing checks)
+	dagCmd := shipqdag.CmdAuthGoogle
+	if providerName == "github" {
+		dagCmd = shipqdag.CmdAuthGitHub
+	}
+	if !shipqdag.CheckPrerequisites(dagCmd, cfg.ShipqRoot) {
+		os.Exit(1)
+	}
+
 	// Precondition: auth migrations must already exist
 	if !authMigrationsExist(cfg.MigrationsPath) {
 		fmt.Fprintln(os.Stderr, "error: auth migrations not found. Run `shipq auth` first.")
@@ -120,7 +130,7 @@ func AuthOAuthCmd(providerName string) {
 		fmt.Println("")
 		fmt.Println("Generating OAuth migrations...")
 
-		ts0 := time.Now().UTC().Format("20060102150405")
+		ts0 := codegenMigrate.NextMigrationBaseTime(cfg.MigrationsPath).Format("20060102150405")
 
 		migrations := []struct {
 			name     string

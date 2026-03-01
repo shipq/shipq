@@ -246,6 +246,7 @@ func Register(app *channel.App) {
 | `WithWebSearch(cfg)` | Enable web search (provider-dependent) | Disabled |
 | `WithErrorStrategy(s)` | What to do when a tool returns an error | `SendErrorToModel` |
 | `WithSequentialToolCalls()` | Execute parallel tool calls sequentially | Parallel |
+| `WithTaskDAG(g)` | Attach a task dependency graph to control tool ordering | No DAG (all tools always available) |
 
 ### Error strategies
 
@@ -395,6 +396,34 @@ One row per logical message. Tool calls and tool results are separate rows for a
 
 The `role` values are intentionally different from provider wire formats. Providers use `assistant` for both text responses and tool call requests; the database splits them into `assistant` and `tool_call` for clarity.
 
+## Task DAGs (Tool Ordering)
+
+Real-world agents have multi-step workflows where certain actions only make sense after prerequisite actions have completed. `WithTaskDAG` lets you declare these ordering constraints so the conversation loop enforces them automatically — filtering tools, guarding against hallucinated calls, and remembering progress across turns.
+
+```go
+g, _ := dag.New([]dag.Node[string]{
+    {ID: "search_docs",  Description: "Search documentation"},
+    {ID: "write_code",   Description: "Write code",
+        HardDeps: []string{"search_docs"}},
+    {ID: "run_tests",    Description: "Run tests",
+        HardDeps: []string{"write_code"}},
+})
+
+client := llm.NewClient(provider,
+    llm.WithTools(registry),
+    llm.WithTaskDAG(g),
+)
+```
+
+With a DAG configured, the loop automatically:
+- **Filters tools** — only tools whose hard dependencies are satisfied appear in the request
+- **Injects DAG context** into the system prompt so the model can plan ahead
+- **Guards against hallucinated calls** — sends an error back if the model calls a blocked tool
+- **Publishes `LLMToolsAvailable` events** with available/completed/blocked lists for UI rendering
+- **Remembers progress across turns** when persistence is enabled (via `ListCompletedTools`)
+
+Tools in the registry but not in the DAG are always available. See the full [Task DAGs](/guides/task-dags/) guide for details, examples, and the cross-turn persistence mechanism.
+
 ## The Conversation Loop
 
 When you call `client.Chat(ctx, message)`, the following happens automatically:
@@ -402,7 +431,7 @@ When you call `client.Chat(ctx, message)`, the following happens automatically:
 1. **Create** an `llm_conversations` row (status = `running`)
 2. **Persist** the user message → `llm_messages` (role = `user`)
 3. **Loop** (up to `maxIterations`):
-   - Build the provider request from conversation history + tools
+   - Build the provider request from conversation history + tools (filtered by DAG if configured)
    - Call the provider (streaming if supported)
    - Stream `LLMTextDelta` events to the channel as tokens arrive
    - Persist the assistant message → `llm_messages`
@@ -420,6 +449,10 @@ When you call `client.Chat(ctx, message)`, the following happens automatically:
 ### Parallel tool calls
 
 When the model requests multiple tool calls in one turn, they execute concurrently by default (using `errgroup`). Both OpenAI and Anthropic emit parallel tool calls. Use `WithSequentialToolCalls()` if your tools have side effects that must be ordered.
+
+### DAG progression
+
+When a task DAG is configured, completed tools are tracked after each tool-call round. After marking completions, the loop publishes an `LLMToolsAvailable` event and recomputes the available tool set for the next iteration — so tools can unlock mid-turn as their dependencies complete.
 
 ## JSON Schema Generation
 
@@ -613,6 +646,7 @@ The LLM layer adds three things on top:
 
 ## Next Steps
 
+- [Task DAGs](/guides/task-dags/) — enforce tool ordering constraints in multi-step agent workflows
 - [Workers & Channels](/guides/workers/) — set up the channel infrastructure that LLM tools build on
 - [Configuration](/concepts/configuration/) — understand `shipq.ini` and the `[llm]` section
 - [CLI Commands](/reference/cli/) — full reference for `shipq llm compile`

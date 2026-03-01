@@ -10,10 +10,12 @@ import (
 
 	"github.com/shipq/shipq/codegen"
 	configpkg "github.com/shipq/shipq/codegen/httpserver/config"
+	codegenMigrate "github.com/shipq/shipq/codegen/migrate"
 	"github.com/shipq/shipq/dburl"
 	"github.com/shipq/shipq/inifile"
 	"github.com/shipq/shipq/internal/commands/db"
 	"github.com/shipq/shipq/internal/commands/migrate/up"
+	shipqdag "github.com/shipq/shipq/internal/dag"
 	"github.com/shipq/shipq/project"
 	"github.com/shipq/shipq/registry"
 )
@@ -117,6 +119,11 @@ func FilesCmd() {
 		os.Exit(1)
 	}
 
+	// DAG prerequisite check (alongside existing checks)
+	if !shipqdag.CheckPrerequisites(shipqdag.CmdFiles, cfg.ShipqRoot) {
+		os.Exit(1)
+	}
+
 	// Create migrations directory if needed
 	if err := os.MkdirAll(cfg.MigrationsPath, 0755); err != nil {
 		fmt.Fprintf(os.Stderr, "error: failed to create migrations directory: %v\n", err)
@@ -176,7 +183,7 @@ func FilesCmd() {
 		fmt.Println("Generating files migrations...")
 		fmt.Println("")
 
-		baseTime := time.Now().UTC()
+		baseTime := codegenMigrate.NextMigrationBaseTime(cfg.MigrationsPath)
 		timestamps := make([]string, 2)
 		for i := range timestamps {
 			timestamps[i] = baseTime.Add(time.Duration(i) * time.Second).Format("20060102150405")

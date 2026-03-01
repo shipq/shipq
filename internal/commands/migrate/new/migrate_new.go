@@ -11,6 +11,7 @@ import (
 	"github.com/shipq/shipq/inifile"
 	"github.com/shipq/shipq/internal/commands/migrate/generator"
 	"github.com/shipq/shipq/internal/commands/migrate/parser"
+	shipqdag "github.com/shipq/shipq/internal/dag"
 	"github.com/shipq/shipq/project"
 )
 
@@ -121,6 +122,11 @@ func MigrateNewCmd(args []string) {
 		os.Exit(1)
 	}
 
+	// DAG prerequisite check (alongside existing checks)
+	if !shipqdag.CheckPrerequisites(shipqdag.CmdMigrateNew, cfg.ShipqRoot) {
+		os.Exit(1)
+	}
+
 	// Parse column specs
 	columns, err := parser.ParseColumnSpecs(columnArgs)
 	if err != nil {
@@ -129,7 +135,7 @@ func MigrateNewCmd(args []string) {
 	}
 
 	// Generate timestamp
-	timestamp := generator.GenerateTimestamp()
+	timestamp := generator.GenerateTimestamp(cfg.MigrationsPath)
 
 	// Load scope config from shipq.ini
 	scopeColumn, scopeTable := loadScopeConfig(cfg)

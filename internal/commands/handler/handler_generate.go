@@ -11,6 +11,7 @@ import (
 	"github.com/shipq/shipq/codegen/handlergen"
 	dbcodegen "github.com/shipq/shipq/db/portsql/codegen"
 	"github.com/shipq/shipq/db/portsql/migrate"
+	shipqdag "github.com/shipq/shipq/internal/dag"
 	"github.com/shipq/shipq/project"
 	"github.com/shipq/shipq/registry"
 )
@@ -33,6 +34,11 @@ func HandlerGenerateCmd(args []string) {
 	roots, err := project.FindProjectRoots()
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "error: failed to find project: %v\n", err)
+		os.Exit(1)
+	}
+
+	// DAG prerequisite check (alongside existing checks)
+	if !shipqdag.CheckPrerequisites(shipqdag.CmdHandlerGen, roots.ShipqRoot) {
 		os.Exit(1)
 	}
 

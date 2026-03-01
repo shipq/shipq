@@ -5,10 +5,10 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-	"time"
 
 	"github.com/shipq/shipq/codegen"
 	"github.com/shipq/shipq/codegen/llmcompile"
+	codegenMigrate "github.com/shipq/shipq/codegen/migrate"
 )
 
 // GenerateAllLLMConfig holds configuration for the full LLM code generation pass.
@@ -164,7 +164,7 @@ func generateMigration(cfg GenerateAllLLMConfig) error {
 	// The LLM migration creates two plan entries (llm_conversations at this
 	// timestamp and llm_messages at timestamp+1s), so we need 2 consecutive
 	// seconds of headroom.
-	timestamp := nextMigrationTimestamp(migrationsDir)
+	timestamp := codegenMigrate.NextMigrationBaseTime(migrationsDir).Format("20060102150405")
 	content := GenerateLLMMigration(timestamp, cfg.ModulePath, cfg.HasTenancy, cfg.HasAuth)
 
 	filename := fmt.Sprintf("%s_llm_tables.go", timestamp)
@@ -175,48 +175,6 @@ func generateMigration(cfg GenerateAllLLMConfig) error {
 	}
 
 	return nil
-}
-
-// nextMigrationTimestamp returns a timestamp that is strictly after both
-// time.Now() and the latest existing migration file timestamp. This prevents
-// ordering conflicts when prior commands (e.g. shipq auth) pre-generate
-// migration timestamps into the future.
-//
-// Comparisons use the formatted 14-digit string representation (not time.Time)
-// to avoid nanosecond precision issues: time.Now() includes sub-second
-// precision while time.Parse produces zero-nanosecond values, so a direct
-// time.Before comparison can incorrectly conclude that a parsed timestamp
-// with the same second is "before" now.
-func nextMigrationTimestamp(migrationsDir string) string {
-	candidateStr := time.Now().UTC().Format("20060102150405")
-
-	entries, err := os.ReadDir(migrationsDir)
-	if err != nil {
-		return candidateStr
-	}
-
-	for _, entry := range entries {
-		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".go") {
-			continue
-		}
-		name := entry.Name()
-		if len(name) < 14 {
-			continue
-		}
-		ts := name[:14]
-		// Validate that it's a proper timestamp.
-		parsed, err := time.Parse("20060102150405", ts)
-		if err != nil {
-			continue
-		}
-		// We need our timestamp to be strictly after this one.
-		// Compare strings to avoid nanosecond precision issues.
-		if ts >= candidateStr {
-			candidateStr = parsed.Add(time.Second).Format("20060102150405")
-		}
-	}
-
-	return candidateStr
 }
 
 // migrationExists checks whether a migration file with the given suffix

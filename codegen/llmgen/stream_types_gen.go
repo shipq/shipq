@@ -266,6 +266,12 @@ func GenerateLLMStreamTypeScript(tools []llmcompile.SerializedToolInfo) string {
 	buf.WriteString("  input_tokens: number;\n")
 	buf.WriteString("  output_tokens: number;\n")
 	buf.WriteString("  tool_call_count: number;\n")
+	buf.WriteString("}\n\n")
+
+	buf.WriteString("export interface LLMToolsAvailable {\n")
+	buf.WriteString("  available: string[];\n")
+	buf.WriteString("  completed: string[];\n")
+	buf.WriteString("  blocked: string[];\n")
 	buf.WriteString("}\n")
 
 	return buf.String()
@@ -388,6 +394,7 @@ func LLMFromServerUnionMembers() []string {
 		`{ type: "LLMToolCallStart"; data: LLMToolCallStart }`,
 		`{ type: "LLMToolCallResult"; data: LLMToolCallResult }`,
 		`{ type: "LLMDone"; data: LLMDone }`,
+		`{ type: "LLMToolsAvailable"; data: LLMToolsAvailable }`,
 	}
 }
 

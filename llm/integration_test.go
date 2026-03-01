@@ -664,6 +664,20 @@ func (m *mockIntegrationPersister) InsertMessage(_ context.Context, p llm.Insert
 	return nil
 }
 
+func (m *mockIntegrationPersister) ListCompletedTools(_ context.Context, jobID string) ([]string, error) {
+	seen := make(map[string]bool)
+	var result []string
+	for _, msg := range m.messages {
+		if msg.Role == "tool_call" && msg.ToolName != "" {
+			if !seen[msg.ToolName] {
+				seen[msg.ToolName] = true
+				result = append(result, msg.ToolName)
+			}
+		}
+	}
+	return result, nil
+}
+
 func TestIntegrationPersistenceWithAnthropicProvider(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")

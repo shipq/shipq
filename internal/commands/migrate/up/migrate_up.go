@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"os"
 	"path/filepath"
 	"strings"
 
@@ -21,6 +22,7 @@ import (
 	"github.com/shipq/shipq/db/portsql/migrate"
 	"github.com/shipq/shipq/dburl"
 	"github.com/shipq/shipq/inifile"
+	shipqdag "github.com/shipq/shipq/internal/dag"
 	"github.com/shipq/shipq/internal/dbops"
 	"github.com/shipq/shipq/project"
 )
@@ -31,6 +33,11 @@ func MigrateUpCmd() {
 	roots, err := project.FindProjectRoots()
 	if err != nil {
 		cli.FatalErr("failed to find project", err)
+	}
+
+	// DAG prerequisite check (alongside existing checks)
+	if !shipqdag.CheckPrerequisites(shipqdag.CmdMigrateUp, roots.ShipqRoot) {
+		os.Exit(1)
 	}
 
 	// Step 2: Load configuration
