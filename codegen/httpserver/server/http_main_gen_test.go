@@ -737,6 +737,176 @@ func TestGenerateHTTPMain_HasChannels_CheckAuthUsesAccountPublicId(t *testing.T)
 	}
 }
 
+// ── AutoMigrate tests ────────────────────────────────────────────────────────
+
+func TestGenerateHTTPMain_AutoMigrate_ValidGo(t *testing.T) {
+	dialects := []string{"mysql", "postgres", "sqlite"}
+
+	for _, dialect := range dialects {
+		t.Run(dialect, func(t *testing.T) {
+			cfg := HTTPMainGenConfig{
+				ModulePath:  "example.com/myapp",
+				OutputPkg:   "api",
+				DBDialect:   dialect,
+				AutoMigrate: true,
+			}
+
+			code, err := GenerateHTTPMain(cfg)
+			if err != nil {
+				t.Fatalf("GenerateHTTPMain() error = %v", err)
+			}
+
+			_, err = parser.ParseFile(token.NewFileSet(), "", code, parser.AllErrors)
+			if err != nil {
+				t.Errorf("generated code is not valid Go: %v\n%s", err, string(code))
+			}
+		})
+	}
+}
+
+func TestGenerateHTTPMain_AutoMigrate_ImportsDBMigrate(t *testing.T) {
+	dialects := []string{"mysql", "postgres", "sqlite"}
+
+	for _, dialect := range dialects {
+		t.Run(dialect, func(t *testing.T) {
+			cfg := HTTPMainGenConfig{
+				ModulePath:  "example.com/myapp",
+				OutputPkg:   "api",
+				DBDialect:   dialect,
+				AutoMigrate: true,
+			}
+
+			code, err := GenerateHTTPMain(cfg)
+			if err != nil {
+				t.Fatalf("GenerateHTTPMain() error = %v", err)
+			}
+
+			codeStr := string(code)
+
+			if !strings.Contains(codeStr, `dbmigrate "example.com/myapp/shipq/db/migrate"`) {
+				t.Error("expected dbmigrate alias import for shipq/db/migrate")
+			}
+		})
+	}
+}
+
+func TestGenerateHTTPMain_AutoMigrate_ImportsContext(t *testing.T) {
+	dialects := []string{"mysql", "postgres", "sqlite"}
+
+	for _, dialect := range dialects {
+		t.Run(dialect, func(t *testing.T) {
+			cfg := HTTPMainGenConfig{
+				ModulePath:  "example.com/myapp",
+				OutputPkg:   "api",
+				DBDialect:   dialect,
+				AutoMigrate: true,
+			}
+
+			code, err := GenerateHTTPMain(cfg)
+			if err != nil {
+				t.Fatalf("GenerateHTTPMain() error = %v", err)
+			}
+
+			codeStr := string(code)
+
+			if !strings.Contains(codeStr, `"context"`) {
+				t.Error("expected \"context\" import when AutoMigrate is true")
+			}
+		})
+	}
+}
+
+func TestGenerateHTTPMain_AutoMigrate_CallsRunWithDB(t *testing.T) {
+	dialects := []string{"mysql", "postgres", "sqlite"}
+
+	for _, dialect := range dialects {
+		t.Run(dialect, func(t *testing.T) {
+			cfg := HTTPMainGenConfig{
+				ModulePath:  "example.com/myapp",
+				OutputPkg:   "api",
+				DBDialect:   dialect,
+				AutoMigrate: true,
+			}
+
+			code, err := GenerateHTTPMain(cfg)
+			if err != nil {
+				t.Fatalf("GenerateHTTPMain() error = %v", err)
+			}
+
+			codeStr := string(code)
+
+			if !strings.Contains(codeStr, "dbmigrate.RunWithDB(context.Background(), db)") {
+				t.Error("expected dbmigrate.RunWithDB(context.Background(), db) call")
+			}
+		})
+	}
+}
+
+func TestGenerateHTTPMain_NoAutoMigrate_NoMigrateCode(t *testing.T) {
+	dialects := []string{"mysql", "postgres", "sqlite"}
+
+	for _, dialect := range dialects {
+		t.Run(dialect, func(t *testing.T) {
+			cfg := HTTPMainGenConfig{
+				ModulePath:  "example.com/myapp",
+				OutputPkg:   "api",
+				DBDialect:   dialect,
+				AutoMigrate: false,
+			}
+
+			code, err := GenerateHTTPMain(cfg)
+			if err != nil {
+				t.Fatalf("GenerateHTTPMain() error = %v", err)
+			}
+
+			codeStr := string(code)
+
+			if strings.Contains(codeStr, "dbmigrate") {
+				t.Error("expected no dbmigrate import or reference when AutoMigrate is false")
+			}
+			if strings.Contains(codeStr, "RunWithDB") {
+				t.Error("expected no RunWithDB call when AutoMigrate is false")
+			}
+			if strings.Contains(codeStr, `"context"`) {
+				t.Error("expected no \"context\" import when AutoMigrate is false (non-channel path)")
+			}
+		})
+	}
+}
+
+func TestGenerateHTTPMain_AutoMigrate_WithChannels_ValidGo(t *testing.T) {
+	dialects := []string{"mysql", "postgres", "sqlite"}
+
+	for _, dialect := range dialects {
+		t.Run(dialect, func(t *testing.T) {
+			cfg := HTTPMainGenConfig{
+				ModulePath:  "example.com/myapp",
+				OutputPkg:   "api",
+				DBDialect:   dialect,
+				HasChannels: true,
+				HasAuth:     true,
+				AutoMigrate: true,
+			}
+
+			code, err := GenerateHTTPMain(cfg)
+			if err != nil {
+				t.Fatalf("GenerateHTTPMain() error = %v", err)
+			}
+
+			_, err = parser.ParseFile(token.NewFileSet(), "", code, parser.AllErrors)
+			if err != nil {
+				t.Errorf("generated code is not valid Go: %v\n%s", err, string(code))
+			}
+
+			codeStr := string(code)
+
+			if !strings.Contains(codeStr, "dbmigrate.RunWithDB") {
+				t.Error("expected dbmigrate.RunWithDB call with channels enabled")
+			}
+		})
+	}
+}
+
 func TestGetDriverImport(t *testing.T) {
 	tests := []struct {
 		dialect string

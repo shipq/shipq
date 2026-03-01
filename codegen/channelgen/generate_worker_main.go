@@ -18,6 +18,7 @@ type WorkerGenConfig struct {
 	CentrifugoAPIKey     string
 	CentrifugoHMACSecret string
 	CentrifugoWSURL      string
+	AutoMigrate          bool // true when [db] auto_migrate = true and schema.json exists; emits migrate-on-boot block
 }
 
 // GenerateWorkerMain generates the Go source code for cmd/worker/main.go.
@@ -65,6 +66,12 @@ func generateWorkerImports(buf *bytes.Buffer, cfg WorkerGenConfig) {
 	channelPkg := cfg.ModulePath + "/shipq/lib/channel"
 	fmt.Fprintf(buf, "\t%q\n", channelPkg)
 
+	// Auto-migrate import
+	if cfg.AutoMigrate {
+		migratePkg := cfg.ModulePath + "/shipq/db/migrate"
+		fmt.Fprintf(buf, "\tdbmigrate %q\n", migratePkg)
+	}
+
 	// Queries package (for UpdateJobStatus runner calls)
 	queriesPkg := cfg.ModulePath + "/shipq/queries"
 	fmt.Fprintf(buf, "\t%q\n", queriesPkg)
@@ -109,6 +116,17 @@ func generateWorkerMainFunc(buf *bytes.Buffer, cfg WorkerGenConfig) {
 	buf.WriteString("\t\tconfig.Logger.Error(\"failed to connect to database\", \"error\", err.Error())\n")
 	buf.WriteString("\t\tos.Exit(1)\n")
 	buf.WriteString("\t}\n\n")
+
+	// Auto-migrate block (configured via [db] auto_migrate = true in shipq.ini)
+	if cfg.AutoMigrate {
+		buf.WriteString("\t// Auto-migrate (configured via [db] auto_migrate = true in shipq.ini)\n")
+		buf.WriteString("\tconfig.Logger.Info(\"running database migrations\")\n")
+		buf.WriteString("\tif err := dbmigrate.RunWithDB(context.Background(), db); err != nil {\n")
+		buf.WriteString("\t\tconfig.Logger.Error(\"database migration failed\", \"error\", err.Error())\n")
+		buf.WriteString("\t\tos.Exit(1)\n")
+		buf.WriteString("\t}\n")
+		buf.WriteString("\tconfig.Logger.Info(\"database migrations complete\")\n\n")
+	}
 
 	// Create query runner for portable database access (no raw SQL).
 	buf.WriteString("\t// Create query runner for portable database access.\n")

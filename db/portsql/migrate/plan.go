@@ -28,18 +28,21 @@ func generateMigrationTimestamp() string {
 	now := time.Now().UTC()
 	currentTS := now.Format("20060102150405")
 
-	if currentTS == lastTimestamp {
-		// Same second, increment offset
+	if currentTS <= lastTimestamp {
+		// Current wall-clock second is at or before the last emitted
+		// timestamp (which may have been offset-adjusted). Increment
+		// from the last emitted value to guarantee strict ordering.
 		timestampOffset++
-		// Add offset seconds to get unique timestamp
-		adjusted := now.Add(time.Duration(timestampOffset) * time.Second)
-		currentTS = adjusted.Format("20060102150405")
+		// Parse lastTimestamp back to time, add offset from there
+		base, _ := time.Parse("20060102150405", lastTimestamp)
+		currentTS = base.Add(time.Duration(timestampOffset) * time.Second).Format("20060102150405")
 	} else {
-		// New second, reset offset
-		lastTimestamp = currentTS
+		// Wall clock has advanced past the last emitted timestamp.
+		// Safe to use the new second and reset the offset.
 		timestampOffset = 0
 	}
 
+	lastTimestamp = currentTS
 	return currentTS
 }
 

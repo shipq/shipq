@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/shipq/shipq/cli"
 	"github.com/shipq/shipq/codegen"
@@ -139,6 +140,15 @@ func WorkersCompileCmd() {
 
 	redisAddr := extractRedisAddr(redisURL)
 
+	// Detect auto_migrate setting from [db] section
+	autoMigrate := false
+	if strings.ToLower(ini.Get("db", "auto_migrate")) == "true" {
+		schemaJSONPath := filepath.Join(roots.ShipqRoot, "shipq", "db", "migrate", "schema.json")
+		if _, err := os.Stat(schemaJSONPath); err == nil {
+			autoMigrate = true
+		}
+	}
+
 	workerCfg := channelgen.WorkerGenConfig{
 		Channels:             channels,
 		ModulePath:           importPrefix,
@@ -148,6 +158,7 @@ func WorkersCompileCmd() {
 		CentrifugoAPIKey:     centrifugoAPIKey,
 		CentrifugoHMACSecret: centrifugoHMACSecret,
 		CentrifugoWSURL:      centrifugoWSURL,
+		AutoMigrate:          autoMigrate,
 	}
 
 	if err := channelgen.WriteWorkerMain(workerCfg, roots.ShipqRoot); err != nil {

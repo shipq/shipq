@@ -28,6 +28,7 @@ The most important section. Controls database connectivity, dialect selection, a
 |-----|------|-----------|-------------|
 | `database_url` | string | `shipq db setup` | Connection URL for the dev database. Determines which SQL dialect ShipQ uses for all code generation. |
 | `scope` | string | Manual | Optional global scope column for multi-tenancy. When set, `shipq migrate new` auto-injects this column as a foreign key reference into every new table. |
+| `auto_migrate` | bool | Manual | When `true`, generated `cmd/server/main.go` and `cmd/worker/main.go` run all pending migrations on startup before serving traffic. Only takes effect if `shipq/db/migrate/schema.json` exists (i.e., `shipq migrate up` has been run at least once). Default is `false`. |
 
 ### Supported `database_url` formats
 
@@ -47,6 +48,7 @@ For Postgres and MySQL, `shipq db setup` requires `DATABASE_URL` to **point to l
 [db]
 database_url = postgres://localhost:5432/myapp_dev
 scope = organization_id
+auto_migrate = true
 ```
 
 When `scope = organization_id` is set:
@@ -175,6 +177,7 @@ Each key under `[env]` is the name of an environment variable. The value should 
 |---------|-----|----------|------------|
 | `[db]` | `database_url` | Yes | `shipq db setup` |
 | `[db]` | `scope` | No | Manual |
+| `[db]` | `auto_migrate` | No | Manual |
 | `[auth]` | `protect_by_default` | No | `shipq auth` |
 | `[typescript]` | `framework` | No | `shipq init` |
 | `[typescript]` | `http_output` | No | `shipq init` |

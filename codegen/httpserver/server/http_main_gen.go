@@ -13,6 +13,7 @@ type HTTPMainGenConfig struct {
 	DBDialect   string // "mysql", "postgres", or "sqlite"
 	HasChannels bool   // true when [workers] channels exist; wires channel routes into the server
 	HasAuth     bool   // true when at least one channel requires auth (i.e., is not public)
+	AutoMigrate bool   // true when [db] auto_migrate = true and schema.json exists; emits migrate-on-boot block
 }
 
 // GenerateHTTPMain generates the main.go entrypoint for the HTTP server.
@@ -40,6 +41,9 @@ func GenerateHTTPMain(cfg HTTPMainGenConfig) ([]byte, error) {
 // generateMainImports writes the import block for main.go.
 func generateMainImports(buf *bytes.Buffer, cfg HTTPMainGenConfig) {
 	buf.WriteString("import (\n")
+	if cfg.AutoMigrate {
+		buf.WriteString("\t\"context\"\n")
+	}
 	buf.WriteString("\t\"database/sql\"\n")
 	buf.WriteString("\t\"net/http\"\n")
 	buf.WriteString("\t\"os\"\n")
@@ -78,6 +82,12 @@ func generateMainImports(buf *bytes.Buffer, cfg HTTPMainGenConfig) {
 		}
 	}
 
+	// Auto-migrate import
+	if cfg.AutoMigrate {
+		migratePkg := cfg.ModulePath + "/shipq/db/migrate"
+		fmt.Fprintf(buf, "\tdbmigrate %q\n", migratePkg)
+	}
+
 	// Dialect-specific query runner import
 	runnerPkg := cfg.ModulePath + "/shipq/queries/" + cfg.DBDialect
 	fmt.Fprintf(buf, "\tdbrunner %q\n", runnerPkg)
@@ -108,6 +118,17 @@ func generateMainFunc(buf *bytes.Buffer, cfg HTTPMainGenConfig) {
 	buf.WriteString("\t\tconfig.Logger.Error(\"failed to connect to database\", \"error\", err.Error())\n")
 	buf.WriteString("\t\tos.Exit(1)\n")
 	buf.WriteString("\t}\n\n")
+
+	// Auto-migrate block (configured via [db] auto_migrate = true in shipq.ini)
+	if cfg.AutoMigrate {
+		buf.WriteString("\t// Auto-migrate (configured via [db] auto_migrate = true in shipq.ini)\n")
+		buf.WriteString("\tconfig.Logger.Info(\"running database migrations\")\n")
+		buf.WriteString("\tif err := dbmigrate.RunWithDB(context.Background(), db); err != nil {\n")
+		buf.WriteString("\t\tconfig.Logger.Error(\"database migration failed\", \"error\", err.Error())\n")
+		buf.WriteString("\t\tos.Exit(1)\n")
+		buf.WriteString("\t}\n")
+		buf.WriteString("\tconfig.Logger.Info(\"database migrations complete\")\n\n")
+	}
 
 	// Create query runner
 	buf.WriteString("\trunner := dbrunner.NewQueryRunner(db)\n\n")
