@@ -5,7 +5,6 @@ package migrate
 import (
 	"context"
 	"database/sql"
-	"fmt"
 	"testing"
 	"time"
 
@@ -197,8 +196,8 @@ func TestProperty_Fuzz_SQLite_ValidSQL_CreateTable(t *testing.T) {
 		tableName := GenerateTableName(g)
 
 		// SQLite in-memory, clean via drop
-		db.Exec(fmt.Sprintf(`DROP TABLE IF EXISTS "%s"`, tableName))
-		defer db.Exec(fmt.Sprintf(`DROP TABLE IF EXISTS "%s"`, tableName))
+		db.Exec(`DROP TABLE IF EXISTS ` + escapeIdentifier(tableName, Sqlite))
+		defer db.Exec(`DROP TABLE IF EXISTS ` + escapeIdentifier(tableName, Sqlite))
 
 		cfg := DefaultTableConfig()
 		cfg.MaxColumns = 5
@@ -236,8 +235,8 @@ func TestProperty_Fuzz_SQLite_ValidSQL_SimpleTable(t *testing.T) {
 	proptest.Check(t, "SQLite simple table SQL is always valid", proptest.Config{NumTrials: 100}, func(g *proptest.Generator) bool {
 		tableName := GenerateTableName(g)
 
-		db.Exec(fmt.Sprintf(`DROP TABLE IF EXISTS "%s"`, tableName))
-		defer db.Exec(fmt.Sprintf(`DROP TABLE IF EXISTS "%s"`, tableName))
+		db.Exec(`DROP TABLE IF EXISTS ` + escapeIdentifier(tableName, Sqlite))
+		defer db.Exec(`DROP TABLE IF EXISTS ` + escapeIdentifier(tableName, Sqlite))
 
 		table := GenerateSimpleTable(g, tableName)
 
@@ -346,8 +345,8 @@ func TestProperty_Fuzz_SQLite_ReservedWordColumns(t *testing.T) {
 	proptest.Check(t, "SQLite handles reserved word columns", proptest.Config{NumTrials: 30}, func(g *proptest.Generator) bool {
 		tableName := GenerateTableName(g)
 
-		db.Exec(fmt.Sprintf(`DROP TABLE IF EXISTS "%s"`, tableName))
-		defer db.Exec(fmt.Sprintf(`DROP TABLE IF EXISTS "%s"`, tableName))
+		db.Exec(`DROP TABLE IF EXISTS ` + escapeIdentifier(tableName, Sqlite))
+		defer db.Exec(`DROP TABLE IF EXISTS ` + escapeIdentifier(tableName, Sqlite))
 
 		reservedWord := GenerateReservedWordIdentifier(g)
 
@@ -452,8 +451,8 @@ func TestProperty_Fuzz_SQLite_StringDefaults(t *testing.T) {
 	proptest.Check(t, "SQLite handles string defaults", proptest.Config{NumTrials: 50}, func(g *proptest.Generator) bool {
 		tableName := GenerateTableName(g)
 
-		db.Exec(fmt.Sprintf(`DROP TABLE IF EXISTS "%s"`, tableName))
-		defer db.Exec(fmt.Sprintf(`DROP TABLE IF EXISTS "%s"`, tableName))
+		db.Exec(`DROP TABLE IF EXISTS ` + escapeIdentifier(tableName, Sqlite))
+		defer db.Exec(`DROP TABLE IF EXISTS ` + escapeIdentifier(tableName, Sqlite))
 
 		defaultVal := GenerateSafeStringDefault(g)
 
@@ -561,8 +560,8 @@ func TestProperty_Fuzz_SQLite_AllColumnTypes(t *testing.T) {
 	proptest.Check(t, "SQLite handles all column types", proptest.Config{NumTrials: 30}, func(g *proptest.Generator) bool {
 		tableName := GenerateTableName(g)
 
-		db.Exec(fmt.Sprintf(`DROP TABLE IF EXISTS "%s"`, tableName))
-		defer db.Exec(fmt.Sprintf(`DROP TABLE IF EXISTS "%s"`, tableName))
+		db.Exec(`DROP TABLE IF EXISTS ` + escapeIdentifier(tableName, Sqlite))
+		defer db.Exec(`DROP TABLE IF EXISTS ` + escapeIdentifier(tableName, Sqlite))
 
 		colType := proptest.Pick(g, AllColumnTypes)
 		colName := "test_col"

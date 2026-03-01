@@ -152,7 +152,6 @@ func TestGenerateUnifiedRunner_WithUserQueries(t *testing.T) {
 	}
 }
 
-
 // TestGenerateUnifiedRunner_PostgresMySQLDontImportTimeWithUserQueries verifies
 // that for postgres and mysql, the runner does NOT import "time" even when user
 // queries have time.Time result columns. The runner references result types via
@@ -221,7 +220,7 @@ func TestGenerateUnifiedRunner_PostgresMySQLDontImportTimeWithUserQueries(t *tes
 						},
 					},
 				},
-				}
+			}
 
 			code, err := GenerateUnifiedRunner(cfg)
 			if err != nil {
@@ -257,6 +256,118 @@ func TestGenerateSharedTypes_Empty(t *testing.T) {
 	// Should have package declaration
 	if !strings.Contains(codeStr, "package queries") {
 		t.Error("expected 'package queries' in generated code")
+	}
+}
+
+func TestGenerateSharedTypes_ContainsTxRunner(t *testing.T) {
+	cfg := UnifiedRunnerConfig{
+		ModulePath:  "example.com/myapp",
+		Dialect:     dburl.DialectPostgres,
+		UserQueries: nil,
+	}
+
+	code, err := GenerateSharedTypes(cfg)
+	if err != nil {
+		t.Fatalf("GenerateSharedTypes failed: %v", err)
+	}
+
+	codeStr := string(code)
+
+	// Should have TxRunner struct
+	if !strings.Contains(codeStr, "type TxRunner struct") {
+		t.Error("expected TxRunner struct in generated types")
+	}
+
+	// TxRunner should embed Runner
+	if !strings.Contains(codeStr, "Runner") {
+		t.Error("expected TxRunner to embed Runner")
+	}
+
+	// TxRunner should have exported Tx field
+	if !strings.Contains(codeStr, "Tx *sql.Tx") {
+		t.Error("expected TxRunner to have Tx *sql.Tx field")
+	}
+
+	// Should have Commit method
+	if !strings.Contains(codeStr, "func (t *TxRunner) Commit()") {
+		t.Error("expected Commit method on TxRunner")
+	}
+
+	// Should have Rollback method
+	if !strings.Contains(codeStr, "func (t *TxRunner) Rollback()") {
+		t.Error("expected Rollback method on TxRunner")
+	}
+}
+
+func TestGenerateSharedTypes_RunnerInterfaceHasBeginTx(t *testing.T) {
+	cfg := UnifiedRunnerConfig{
+		ModulePath:  "example.com/myapp",
+		Dialect:     dburl.DialectPostgres,
+		UserQueries: nil,
+	}
+
+	code, err := GenerateSharedTypes(cfg)
+	if err != nil {
+		t.Fatalf("GenerateSharedTypes failed: %v", err)
+	}
+
+	codeStr := string(code)
+
+	// Runner interface should include BeginTx
+	if !strings.Contains(codeStr, "BeginTx(ctx context.Context) (*TxRunner, error)") {
+		t.Error("expected Runner interface to contain BeginTx method")
+	}
+}
+
+func TestGenerateUnifiedRunner_HasBeginTxMethod(t *testing.T) {
+	dialects := []string{dburl.DialectPostgres, dburl.DialectMySQL, dburl.DialectSQLite}
+
+	for _, dialect := range dialects {
+		t.Run(dialect, func(t *testing.T) {
+			cfg := UnifiedRunnerConfig{
+				ModulePath:  "example.com/myapp",
+				Dialect:     dialect,
+				UserQueries: nil,
+			}
+
+			code, err := GenerateUnifiedRunner(cfg)
+			if err != nil {
+				t.Fatalf("GenerateUnifiedRunner(%s) failed: %v", dialect, err)
+			}
+
+			codeStr := string(code)
+
+			// Should have BeginTx method on QueryRunner
+			if !strings.Contains(codeStr, "func (r *QueryRunner) BeginTx(ctx context.Context) (*queries.TxRunner, error)") {
+				t.Errorf("expected BeginTx method on QueryRunner for dialect %s", dialect)
+			}
+
+			// Should reference sql.DB type assertion
+			if !strings.Contains(codeStr, "r.db.(*sql.DB)") {
+				t.Errorf("expected BeginTx to type-assert db to *sql.DB for dialect %s", dialect)
+			}
+
+			// Should call BeginTx on the sql.DB
+			if !strings.Contains(codeStr, "sqlDB.BeginTx(ctx, nil)") {
+				t.Errorf("expected BeginTx to call sqlDB.BeginTx for dialect %s", dialect)
+			}
+
+			// Should return TxRunner with WithTx
+			if !strings.Contains(codeStr, "r.WithTx(tx)") {
+				t.Errorf("expected BeginTx to use r.WithTx(tx) for dialect %s", dialect)
+			}
+
+			// Should set Tx field
+			if !strings.Contains(codeStr, "Tx:     tx,") {
+				t.Errorf("expected BeginTx to set Tx field for dialect %s", dialect)
+			}
+
+			// Generated code must be valid Go
+			_, fmtErr := format.Source(code)
+			if fmtErr != nil {
+				t.Errorf("generated runner for dialect %s is not valid Go: %v", dialect, fmtErr)
+			}
+		})
 	}
 }
 

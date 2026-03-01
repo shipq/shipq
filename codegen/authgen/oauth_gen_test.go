@@ -646,6 +646,79 @@ func TestGenerateOAuthShared_UsesCorrectModulePath(t *testing.T) {
 	}
 }
 
+func TestGenerateOAuthShared_SignupEnabled_WrapsWritesInTransaction(t *testing.T) {
+	cfg := AuthGenConfig{
+		ModulePath:     "example.com/myapp",
+		OAuthProviders: []string{"google"},
+		SignupEnabled:  true,
+	}
+
+	code, err := GenerateOAuthShared(cfg)
+	if err != nil {
+		t.Fatalf("GenerateOAuthShared() error = %v", err)
+	}
+
+	codeStr := string(code)
+
+	if !strings.Contains(codeStr, "runner.BeginTx(ctx)") {
+		t.Error("expected findOrCreateOAuthAccount to call runner.BeginTx(ctx)")
+	}
+	if !strings.Contains(codeStr, "txRunner.Commit()") {
+		t.Error("expected findOrCreateOAuthAccount to call txRunner.Commit()")
+	}
+	if !strings.Contains(codeStr, "defer txRunner.Rollback()") {
+		t.Error("expected findOrCreateOAuthAccount to defer txRunner.Rollback()")
+	}
+
+	// All write operations should use txRunner, not runner
+	if strings.Contains(codeStr, "runner.SignupCreateOrganization(") {
+		t.Error("expected SignupCreateOrganization to use txRunner, not runner")
+	}
+	if strings.Contains(codeStr, "runner.OAuthCreateAccount(") {
+		t.Error("expected OAuthCreateAccount to use txRunner, not runner")
+	}
+	if strings.Contains(codeStr, "runner.SignupCreateOrganizationUser(") {
+		t.Error("expected SignupCreateOrganizationUser to use txRunner, not runner")
+	}
+	if strings.Contains(codeStr, "runner.CreateOAuthAccount(") {
+		t.Error("expected CreateOAuthAccount to use txRunner, not runner")
+	}
+
+	// Verify it's still valid Go
+	_, parseErr := parser.ParseFile(token.NewFileSet(), "oauth_shared.go", code, parser.AllErrors)
+	if parseErr != nil {
+		t.Errorf("generated oauth_shared.go with signup enabled is not valid Go: %v\n%s", parseErr, string(code))
+	}
+}
+
+func TestGenerateOAuthShared_SignupDisabled_NoTransaction(t *testing.T) {
+	cfg := AuthGenConfig{
+		ModulePath:     "example.com/myapp",
+		OAuthProviders: []string{"google"},
+		SignupEnabled:  false,
+	}
+
+	code, err := GenerateOAuthShared(cfg)
+	if err != nil {
+		t.Fatalf("GenerateOAuthShared() error = %v", err)
+	}
+
+	codeStr := string(code)
+
+	// Signup disabled branch only does a single CreateOAuthAccount write,
+	// so no transaction is strictly needed. But if it does appear, that's
+	// fine — we just want to make sure the code is valid Go.
+	_, parseErr := parser.ParseFile(token.NewFileSet(), "oauth_shared.go", code, parser.AllErrors)
+	if parseErr != nil {
+		t.Errorf("generated oauth_shared.go with signup disabled is not valid Go: %v\n%s", parseErr, string(code))
+	}
+
+	// The signup-disabled branch should NOT have org/account creation
+	if strings.Contains(codeStr, "SignupCreateOrganization") {
+		t.Error("signup-disabled branch should not create organizations")
+	}
+}
+
 func TestGenerateOAuthProvider_Google_UsesCorrectModulePath(t *testing.T) {
 	cfg := AuthGenConfig{
 		ModulePath:     "github.com/custom/project",

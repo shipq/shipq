@@ -200,6 +200,17 @@ func allDBConfigs(t *testing.T) []dbConfig {
 // a clean slate. For SQLite this is a no-op (the file system dir is removed).
 // projectName is the basename of the project directory, which shipq db setup
 // uses as the database name.
+// escapeIdentifierE2E properly escapes a SQL identifier for use in shell commands.
+// For Postgres/SQLite it doubles embedded double-quotes; for MySQL it doubles backticks.
+func escapeIdentifierE2E(name, dialect string) string {
+	switch dialect {
+	case "mysql":
+		return "`" + strings.ReplaceAll(name, "`", "``") + "`"
+	default:
+		return `"` + strings.ReplaceAll(name, `"`, `""`) + `"`
+	}
+}
+
 func dropDatabases(t *testing.T, db dbConfig, projectName string) {
 	t.Helper()
 
@@ -210,7 +221,7 @@ func dropDatabases(t *testing.T, db dbConfig, projectName string) {
 		for _, name := range []string{projectName, testDBName} {
 			// Must quote identifiers with hyphens
 			cmd := exec.Command("psql", "-U", "postgres", "-h", "localhost", "-c",
-				fmt.Sprintf(`DROP DATABASE IF EXISTS "%s"`, name))
+				"DROP DATABASE IF EXISTS "+escapeIdentifierE2E(name, "postgres"))
 			cmd.Env = cleanEnv()
 			out, _ := cmd.CombinedOutput()
 			t.Logf("  psql drop %s: %s", name, strings.TrimSpace(string(out)))
@@ -221,7 +232,7 @@ func dropDatabases(t *testing.T, db dbConfig, projectName string) {
 		t.Logf("Dropping mysql databases %q and %q...", projectName, testDBName)
 		for _, name := range []string{projectName, testDBName} {
 			cmd := exec.Command("mysql", "-u", "root", "-h", "127.0.0.1", "-P", "3306", "-e",
-				fmt.Sprintf("DROP DATABASE IF EXISTS `%s`", name))
+				"DROP DATABASE IF EXISTS "+escapeIdentifierE2E(name, "mysql"))
 			cmd.Env = cleanEnv()
 			out, _ := cmd.CombinedOutput()
 			t.Logf("  mysql drop %s: %s", name, strings.TrimSpace(string(out)))

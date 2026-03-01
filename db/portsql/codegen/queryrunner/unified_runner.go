@@ -105,6 +105,9 @@ func GenerateSharedTypes(cfg UnifiedRunnerConfig) ([]byte, error) {
 	// Always need context for RunnerFromContext
 	imports["context"] = true
 
+	// Always need database/sql for TxRunner
+	imports["database/sql"] = true
+
 	// Need encoding/base64 and encoding/json for cursor helpers (paginated queries)
 	for _, qi := range userQueryInfo {
 		if qi.ReturnType == query.ReturnPaginated {
@@ -123,6 +126,9 @@ func GenerateSharedTypes(cfg UnifiedRunnerConfig) ([]byte, error) {
 		writeImports(&buf, imports)
 	}
 
+	// Write TxRunner struct
+	writeTxRunner(&buf)
+
 	// Write context helpers for runner access
 	writeContextHelpers(&buf, cfg, userQueryInfo)
 
@@ -139,6 +145,27 @@ func GenerateSharedTypes(cfg UnifiedRunnerConfig) ([]byte, error) {
 	}
 
 	return formatted, nil
+}
+
+// writeTxRunner writes the TxRunner struct that wraps a Runner backed by a transaction.
+func writeTxRunner(buf *bytes.Buffer) {
+	buf.WriteString("// =============================================================================\n")
+	buf.WriteString("// Transaction Support\n")
+	buf.WriteString("// =============================================================================\n\n")
+
+	buf.WriteString("// TxRunner is a Runner backed by a database transaction.\n")
+	buf.WriteString("// Use BeginTx on a Runner to obtain one, then call Commit or Rollback.\n")
+	buf.WriteString("type TxRunner struct {\n")
+	buf.WriteString("\tRunner\n")
+	buf.WriteString("\tTx *sql.Tx\n")
+	buf.WriteString("}\n\n")
+
+	buf.WriteString("// Commit commits the underlying transaction.\n")
+	buf.WriteString("func (t *TxRunner) Commit() error { return t.Tx.Commit() }\n\n")
+
+	buf.WriteString("// Rollback aborts the underlying transaction.\n")
+	buf.WriteString("// It is safe to call after Commit — the driver returns sql.ErrTxDone.\n")
+	buf.WriteString("func (t *TxRunner) Rollback() error { return t.Tx.Rollback() }\n\n")
 }
 
 // writeContextHelpers writes the RunnerFromContext and NewContextWithRunner functions.
@@ -167,6 +194,9 @@ func writeContextHelpers(buf *bytes.Buffer, cfg UnifiedRunnerConfig, userQueries
 			buf.WriteString(fmt.Sprintf("\t%s(ctx context.Context, params %sParams) (*%sResult, error)\n", qi.Name, qi.Name, qi.Name))
 		}
 	}
+
+	// BeginTx method on the Runner interface
+	buf.WriteString("\tBeginTx(ctx context.Context) (*TxRunner, error)\n")
 
 	buf.WriteString("}\n\n")
 
@@ -785,6 +815,7 @@ func collectRunnerImports(cfg UnifiedRunnerConfig, queries []userQueryInfo) map[
 	// Always needed
 	imports["context"] = true
 	imports["database/sql"] = true
+	imports["fmt"] = true // BeginTx uses fmt.Errorf
 
 	// Types package import
 	imports[cfg.ModulePath+"/shipq/queries"] = true
@@ -990,6 +1021,32 @@ func (r *QueryRunner) WithTx(tx *sql.Tx) *QueryRunner {
 	}
 
 	buf.WriteString("\t}\n}\n\n")
+
+	// BeginTx method on QueryRunner — satisfies the Runner interface
+	writeBeginTx(buf)
+}
+
+// writeBeginTx emits the BeginTx method on QueryRunner.
+func writeBeginTx(buf *bytes.Buffer) {
+	buf.WriteString(`// BeginTx starts a new database transaction and returns a TxRunner
+// that wraps a transactional copy of this QueryRunner.
+// If the underlying db is already a *sql.Tx, BeginTx returns an error.
+func (r *QueryRunner) BeginTx(ctx context.Context) (*queries.TxRunner, error) {
+	sqlDB, ok := r.db.(*sql.DB)
+	if !ok {
+		return nil, fmt.Errorf("BeginTx: underlying db is already a transaction")
+	}
+	tx, err := sqlDB.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, err
+	}
+	return &queries.TxRunner{
+		Runner: r.WithTx(tx),
+		Tx:     tx,
+	}, nil
+}
+
+`)
 }
 
 func writeWithDB(buf *bytes.Buffer, queries []userQueryInfo, cfg UnifiedRunnerConfig) {

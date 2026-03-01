@@ -4,7 +4,6 @@ package migrate
 
 import (
 	"context"
-	"fmt"
 	"os"
 	"testing"
 	"time"
@@ -145,7 +144,7 @@ func tableExists(t *testing.T, conn *pgx.Conn, tableName string) bool {
 // dropTableIfExists drops a table if it exists
 func dropTableIfExists(t *testing.T, conn *pgx.Conn, tableName string) {
 	t.Helper()
-	_, err := conn.Exec(context.Background(), fmt.Sprintf(`DROP TABLE IF EXISTS "%s" CASCADE`, tableName))
+	_, err := conn.Exec(context.Background(), `DROP TABLE IF EXISTS `+escapeIdentifier(tableName, Postgres)+` CASCADE`)
 	if err != nil {
 		t.Fatalf("failed to drop table: %v", err)
 	}
@@ -416,12 +415,12 @@ func TestPostgresIntegration_CreateTable_PrimaryKey(t *testing.T) {
 	}
 
 	// Verify primary key exists by trying to insert duplicate
-	_, err = conn.Exec(context.Background(), fmt.Sprintf(`INSERT INTO "%s" (id, name) VALUES (1, 'test')`, tableName))
+	_, err = conn.Exec(context.Background(), `INSERT INTO `+escapeIdentifier(tableName, Postgres)+` (id, name) VALUES (1, 'test')`)
 	if err != nil {
 		t.Fatalf("first insert failed: %v", err)
 	}
 
-	_, err = conn.Exec(context.Background(), fmt.Sprintf(`INSERT INTO "%s" (id, name) VALUES (1, 'test2')`, tableName))
+	_, err = conn.Exec(context.Background(), `INSERT INTO `+escapeIdentifier(tableName, Postgres)+` (id, name) VALUES (1, 'test2')`)
 	if err == nil {
 		t.Error("expected duplicate key error, but insert succeeded")
 	}
@@ -462,12 +461,12 @@ func TestPostgresIntegration_CreateTable_Indexes(t *testing.T) {
 	}
 
 	// Verify unique index on email works by trying to insert duplicates
-	_, err = conn.Exec(context.Background(), fmt.Sprintf(`INSERT INTO "%s" (email, status, first_name, last_name) VALUES ('test@test.com', 'active', 'John', 'Doe')`, tableName))
+	_, err = conn.Exec(context.Background(), `INSERT INTO `+escapeIdentifier(tableName, Postgres)+` (email, status, first_name, last_name) VALUES ('test@test.com', 'active', 'John', 'Doe')`)
 	if err != nil {
 		t.Fatalf("first insert failed: %v", err)
 	}
 
-	_, err = conn.Exec(context.Background(), fmt.Sprintf(`INSERT INTO "%s" (email, status, first_name, last_name) VALUES ('test@test.com', 'active', 'Jane', 'Doe')`, tableName))
+	_, err = conn.Exec(context.Background(), `INSERT INTO `+escapeIdentifier(tableName, Postgres)+` (email, status, first_name, last_name) VALUES ('test@test.com', 'active', 'Jane', 'Doe')`)
 	if err == nil {
 		t.Error("expected unique constraint violation, but insert succeeded")
 	}
@@ -665,12 +664,12 @@ func TestPostgresIntegration_AlterTable_AddIndex(t *testing.T) {
 	}
 
 	// Verify index works by inserting duplicates
-	_, err = conn.Exec(context.Background(), fmt.Sprintf(`INSERT INTO "%s" (email) VALUES ('test@test.com')`, tableName))
+	_, err = conn.Exec(context.Background(), `INSERT INTO `+escapeIdentifier(tableName, Postgres)+` (email) VALUES ('test@test.com')`)
 	if err != nil {
 		t.Fatalf("first insert failed: %v", err)
 	}
 
-	_, err = conn.Exec(context.Background(), fmt.Sprintf(`INSERT INTO "%s" (email) VALUES ('test@test.com')`, tableName))
+	_, err = conn.Exec(context.Background(), `INSERT INTO `+escapeIdentifier(tableName, Postgres)+` (email) VALUES ('test@test.com')`)
 	if err == nil {
 		t.Error("expected unique constraint violation after adding index")
 	}
@@ -718,12 +717,12 @@ func TestPostgresIntegration_AlterTable_DropIndex(t *testing.T) {
 	}
 
 	// Verify index is gone - duplicates should now be allowed
-	_, err = conn.Exec(context.Background(), fmt.Sprintf(`INSERT INTO "%s" (email) VALUES ('test@test.com')`, tableName))
+	_, err = conn.Exec(context.Background(), `INSERT INTO `+escapeIdentifier(tableName, Postgres)+` (email) VALUES ('test@test.com')`)
 	if err != nil {
 		t.Fatalf("first insert failed: %v", err)
 	}
 
-	_, err = conn.Exec(context.Background(), fmt.Sprintf(`INSERT INTO "%s" (email) VALUES ('test@test.com')`, tableName))
+	_, err = conn.Exec(context.Background(), `INSERT INTO `+escapeIdentifier(tableName, Postgres)+` (email) VALUES ('test@test.com')`)
 	if err != nil {
 		t.Error("expected duplicate insert to succeed after dropping index")
 	}
@@ -895,13 +894,13 @@ func TestPostgresIntegration_AddTable_PrimaryKeyConstraint(t *testing.T) {
 	}
 
 	// Insert first row
-	_, err = conn.Exec(context.Background(), fmt.Sprintf(`INSERT INTO "%s" (id, public_id, created_at, deleted_at, updated_at, name) VALUES (1, 'abc123', '2024-01-01', '2024-01-01', '2024-01-01', 'test')`, tableName))
+	_, err = conn.Exec(context.Background(), `INSERT INTO `+escapeIdentifier(tableName, Postgres)+` (id, public_id, created_at, deleted_at, updated_at, name) VALUES (1, 'abc123', '2024-01-01', '2024-01-01', '2024-01-01', 'test')`)
 	if err != nil {
 		t.Fatalf("first insert failed: %v", err)
 	}
 
 	// Try to insert duplicate id - should fail
-	_, err = conn.Exec(context.Background(), fmt.Sprintf(`INSERT INTO "%s" (id, public_id, created_at, deleted_at, updated_at, name) VALUES (1, 'xyz789', '2024-01-01', '2024-01-01', '2024-01-01', 'test2')`, tableName))
+	_, err = conn.Exec(context.Background(), `INSERT INTO `+escapeIdentifier(tableName, Postgres)+` (id, public_id, created_at, deleted_at, updated_at, name) VALUES (1, 'xyz789', '2024-01-01', '2024-01-01', '2024-01-01', 'test2')`)
 	if err == nil {
 		t.Error("expected duplicate id error, but insert succeeded")
 	}
@@ -931,13 +930,13 @@ func TestPostgresIntegration_AddTable_UniquePublicIdConstraint(t *testing.T) {
 	}
 
 	// Insert first row
-	_, err = conn.Exec(context.Background(), fmt.Sprintf(`INSERT INTO "%s" (id, public_id, created_at, deleted_at, updated_at, name) VALUES (1, 'abc123', '2024-01-01', '2024-01-01', '2024-01-01', 'test')`, tableName))
+	_, err = conn.Exec(context.Background(), `INSERT INTO `+escapeIdentifier(tableName, Postgres)+` (id, public_id, created_at, deleted_at, updated_at, name) VALUES (1, 'abc123', '2024-01-01', '2024-01-01', '2024-01-01', 'test')`)
 	if err != nil {
 		t.Fatalf("first insert failed: %v", err)
 	}
 
 	// Try to insert duplicate public_id - should fail due to unique constraint
-	_, err = conn.Exec(context.Background(), fmt.Sprintf(`INSERT INTO "%s" (id, public_id, created_at, deleted_at, updated_at, name) VALUES (2, 'abc123', '2024-01-01', '2024-01-01', '2024-01-01', 'test2')`, tableName))
+	_, err = conn.Exec(context.Background(), `INSERT INTO `+escapeIdentifier(tableName, Postgres)+` (id, public_id, created_at, deleted_at, updated_at, name) VALUES (2, 'abc123', '2024-01-01', '2024-01-01', '2024-01-01', 'test2')`)
 	if err == nil {
 		t.Error("expected duplicate public_id error, but insert succeeded")
 	}

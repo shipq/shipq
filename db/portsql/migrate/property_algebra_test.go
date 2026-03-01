@@ -4,7 +4,6 @@ package migrate
 
 import (
 	"context"
-	"fmt"
 	"testing"
 
 	"github.com/shipq/shipq/db/portsql/ddl"
@@ -276,8 +275,8 @@ func TestProperty_Algebra_SQLite_AddDropColumn_NoOp(t *testing.T) {
 		tableName := GenerateTableName(g)
 		newColName := GenerateColumnName(g)
 
-		db.Exec(fmt.Sprintf(`DROP TABLE IF EXISTS "%s"`, tableName))
-		defer db.Exec(fmt.Sprintf(`DROP TABLE IF EXISTS "%s"`, tableName))
+		db.Exec(`DROP TABLE IF EXISTS ` + escapeIdentifier(tableName, Sqlite))
+		defer db.Exec(`DROP TABLE IF EXISTS ` + escapeIdentifier(tableName, Sqlite))
 
 		plan := &MigrationPlan{Schema: Schema{Tables: map[string]ddl.Table{}}}
 		_, err := plan.AddEmptyTable(tableName, func(tb *ddl.TableBuilder) error {

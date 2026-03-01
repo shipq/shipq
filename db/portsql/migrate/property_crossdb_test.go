@@ -63,7 +63,7 @@ func (dbs *dbConnections) dropAllTables(t *testing.T, tableName string) {
 	t.Helper()
 	dropTableIfExists(t, dbs.postgres, tableName)
 	dropMySQLTableIfExists(t, dbs.mysql, tableName)
-	dbs.sqlite.Exec(fmt.Sprintf(`DROP TABLE IF EXISTS "%s"`, tableName))
+	dbs.sqlite.Exec(`DROP TABLE IF EXISTS ` + escapeIdentifier(tableName, Sqlite))
 }
 
 // =============================================================================
@@ -474,7 +474,7 @@ func TestProperty_CrossDB_Autoincrement_InsertReturnsGeneratedID(t *testing.T) {
 
 			// PostgreSQL: INSERT ... RETURNING id
 			var pgID int64
-			pgInsert := fmt.Sprintf(`INSERT INTO "%s" ("name") VALUES ($1) RETURNING "id"`, tableName)
+			pgInsert := `INSERT INTO ` + escapeIdentifier(tableName, Postgres) + ` ("name") VALUES ($1) RETURNING "id"`
 			err = dbs.postgres.QueryRow(context.Background(), pgInsert, rowName).Scan(&pgID)
 			if err != nil {
 				t.Logf("Postgres INSERT failed: %v", err)
@@ -483,7 +483,7 @@ func TestProperty_CrossDB_Autoincrement_InsertReturnsGeneratedID(t *testing.T) {
 			pgIDs = append(pgIDs, pgID)
 
 			// MySQL: INSERT then LAST_INSERT_ID()
-			myInsert := fmt.Sprintf("INSERT INTO `%s` (`name`) VALUES (?)", tableName)
+			myInsert := "INSERT INTO " + escapeIdentifier(tableName, MySQL) + " (`name`) VALUES (?)"
 			result, err := dbs.mysql.Exec(myInsert, rowName)
 			if err != nil {
 				t.Logf("MySQL INSERT failed: %v", err)
@@ -497,7 +497,7 @@ func TestProperty_CrossDB_Autoincrement_InsertReturnsGeneratedID(t *testing.T) {
 			myIDs = append(myIDs, myID)
 
 			// SQLite: INSERT then last_insert_rowid()
-			sqInsert := fmt.Sprintf(`INSERT INTO "%s" ("name") VALUES (?)`, tableName)
+			sqInsert := `INSERT INTO ` + escapeIdentifier(tableName, Sqlite) + ` ("name") VALUES (?)`
 			result, err = dbs.sqlite.Exec(sqInsert, rowName)
 			if err != nil {
 				t.Logf("SQLite INSERT failed: %v", err)
@@ -607,7 +607,7 @@ func TestProperty_CrossDB_Autoincrement_ExplicitIDAllowed(t *testing.T) {
 		explicitID := int64(g.IntRange(1000, 9999))
 
 		// PostgreSQL
-		pgInsert := fmt.Sprintf(`INSERT INTO "%s" ("id", "name") VALUES ($1, $2)`, tableName)
+		pgInsert := `INSERT INTO ` + escapeIdentifier(tableName, Postgres) + ` ("id", "name") VALUES ($1, $2)`
 		_, err = dbs.postgres.Exec(context.Background(), pgInsert, explicitID, "explicit_row")
 		if err != nil {
 			t.Logf("Postgres INSERT with explicit ID failed: %v", err)
@@ -615,7 +615,7 @@ func TestProperty_CrossDB_Autoincrement_ExplicitIDAllowed(t *testing.T) {
 		}
 
 		// MySQL
-		myInsert := fmt.Sprintf("INSERT INTO `%s` (`id`, `name`) VALUES (?, ?)", tableName)
+		myInsert := "INSERT INTO " + escapeIdentifier(tableName, MySQL) + " (`id`, `name`) VALUES (?, ?)"
 		_, err = dbs.mysql.Exec(myInsert, explicitID, "explicit_row")
 		if err != nil {
 			t.Logf("MySQL INSERT with explicit ID failed: %v", err)
@@ -623,7 +623,7 @@ func TestProperty_CrossDB_Autoincrement_ExplicitIDAllowed(t *testing.T) {
 		}
 
 		// SQLite
-		sqInsert := fmt.Sprintf(`INSERT INTO "%s" ("id", "name") VALUES (?, ?)`, tableName)
+		sqInsert := `INSERT INTO ` + escapeIdentifier(tableName, Sqlite) + ` ("id", "name") VALUES (?, ?)`
 		_, err = dbs.sqlite.Exec(sqInsert, explicitID, "explicit_row")
 		if err != nil {
 			t.Logf("SQLite INSERT with explicit ID failed: %v", err)
@@ -633,13 +633,13 @@ func TestProperty_CrossDB_Autoincrement_ExplicitIDAllowed(t *testing.T) {
 		// Verify the rows exist with the explicit ID
 		var pgCount, myCount, sqCount int
 
-		pgQuery := fmt.Sprintf(`SELECT COUNT(*) FROM "%s" WHERE "id" = $1`, tableName)
+		pgQuery := `SELECT COUNT(*) FROM ` + escapeIdentifier(tableName, Postgres) + ` WHERE "id" = $1`
 		dbs.postgres.QueryRow(context.Background(), pgQuery, explicitID).Scan(&pgCount)
 
-		myQuery := fmt.Sprintf("SELECT COUNT(*) FROM `%s` WHERE `id` = ?", tableName)
+		myQuery := "SELECT COUNT(*) FROM " + escapeIdentifier(tableName, MySQL) + " WHERE `id` = ?"
 		dbs.mysql.QueryRow(myQuery, explicitID).Scan(&myCount)
 
-		sqQuery := fmt.Sprintf(`SELECT COUNT(*) FROM "%s" WHERE "id" = ?`, tableName)
+		sqQuery := `SELECT COUNT(*) FROM ` + escapeIdentifier(tableName, Sqlite) + ` WHERE "id" = ?`
 		dbs.sqlite.QueryRow(sqQuery, explicitID).Scan(&sqCount)
 
 		if pgCount != 1 {
