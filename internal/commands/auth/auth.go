@@ -12,6 +12,7 @@ import (
 	"github.com/shipq/shipq/codegen"
 	"github.com/shipq/shipq/codegen/authgen"
 	configpkg "github.com/shipq/shipq/codegen/httpserver/config"
+	codegenMigrate "github.com/shipq/shipq/codegen/migrate"
 	"github.com/shipq/shipq/codegen/seedgen"
 	"github.com/shipq/shipq/dburl"
 	"github.com/shipq/shipq/inifile"
@@ -148,8 +149,9 @@ func AuthCmd() {
 		fmt.Println("Generating auth migrations...")
 		fmt.Println("")
 
-		// Generate timestamps with 1 second increments to ensure correct ordering
-		baseTime := time.Now().UTC()
+		// Generate timestamps with 1 second increments to ensure correct ordering.
+		// Use NextMigrationBaseTime to avoid collisions with existing migrations.
+		baseTime := codegenMigrate.NextMigrationBaseTime(cfg.MigrationsPath)
 		timestamps := make([]string, 7)
 		for i := range timestamps {
 			timestamps[i] = baseTime.Add(time.Duration(i) * time.Second).Format("20060102150405")

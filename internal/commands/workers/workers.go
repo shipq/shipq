@@ -8,7 +8,6 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
-	"time"
 
 	"github.com/shipq/shipq/cli"
 	"github.com/shipq/shipq/codegen"
@@ -17,6 +16,7 @@ import (
 	"github.com/shipq/shipq/codegen/embed"
 	configpkg "github.com/shipq/shipq/codegen/httpserver/config"
 	"github.com/shipq/shipq/codegen/llmgen"
+	codegenMigrate "github.com/shipq/shipq/codegen/migrate"
 	"github.com/shipq/shipq/dburl"
 	"github.com/shipq/shipq/inifile"
 	"github.com/shipq/shipq/internal/commands/db"
@@ -163,7 +163,7 @@ func WorkersCmd() {
 	} else {
 		fmt.Println("  Generating job_results migration...")
 
-		timestamp := time.Now().UTC().Format("20060102150405")
+		timestamp := codegenMigrate.NextMigrationBaseTime(migrationsPath).Format("20060102150405")
 		code := channelgen.GenerateJobResultsMigration(timestamp, importPrefix, hasTenancy)
 		fileName := fmt.Sprintf("%s_job_results.go", timestamp)
 		filePath := filepath.Join(migrationsPath, fileName)

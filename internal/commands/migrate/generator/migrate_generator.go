@@ -5,8 +5,8 @@ import (
 	"fmt"
 	"go/format"
 	"strings"
-	"time"
 
+	codegenMigrate "github.com/shipq/shipq/codegen/migrate"
 	"github.com/shipq/shipq/internal/commands/migrate/parser"
 )
 
@@ -22,9 +22,12 @@ type MigrationConfig struct {
 	ModulePath    string              // e.g., "github.com/example/myproject"
 }
 
-// GenerateTimestamp generates a 14-digit UTC timestamp string.
-func GenerateTimestamp() string {
-	return time.Now().UTC().Format("20060102150405")
+// GenerateTimestamp generates a 14-digit UTC timestamp string that is
+// guaranteed to be strictly after all existing migration files in the given
+// migrations directory. This prevents timestamp collisions when multiple
+// shipq commands generate migrations in rapid succession.
+func GenerateTimestamp(migrationsPath string) string {
+	return codegenMigrate.NextMigrationBaseTime(migrationsPath).Format("20060102150405")
 }
 
 // GenerateMigration generates the migration file content.

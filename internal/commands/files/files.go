@@ -10,6 +10,7 @@ import (
 
 	"github.com/shipq/shipq/codegen"
 	configpkg "github.com/shipq/shipq/codegen/httpserver/config"
+	codegenMigrate "github.com/shipq/shipq/codegen/migrate"
 	"github.com/shipq/shipq/dburl"
 	"github.com/shipq/shipq/inifile"
 	"github.com/shipq/shipq/internal/commands/db"
@@ -182,7 +183,7 @@ func FilesCmd() {
 		fmt.Println("Generating files migrations...")
 		fmt.Println("")
 
-		baseTime := time.Now().UTC()
+		baseTime := codegenMigrate.NextMigrationBaseTime(cfg.MigrationsPath)
 		timestamps := make([]string, 2)
 		for i := range timestamps {
 			timestamps[i] = baseTime.Add(time.Duration(i) * time.Second).Format("20060102150405")

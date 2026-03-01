@@ -6,11 +6,11 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
-	"time"
 
 	"github.com/shipq/shipq/codegen"
 	"github.com/shipq/shipq/codegen/authgen"
 	configpkg "github.com/shipq/shipq/codegen/httpserver/config"
+	codegenMigrate "github.com/shipq/shipq/codegen/migrate"
 	"github.com/shipq/shipq/dburl"
 	"github.com/shipq/shipq/inifile"
 	"github.com/shipq/shipq/internal/commands/db"
@@ -130,7 +130,7 @@ func AuthOAuthCmd(providerName string) {
 		fmt.Println("")
 		fmt.Println("Generating OAuth migrations...")
 
-		ts0 := time.Now().UTC().Format("20060102150405")
+		ts0 := codegenMigrate.NextMigrationBaseTime(cfg.MigrationsPath).Format("20060102150405")
 
 		migrations := []struct {
 			name     string

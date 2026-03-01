@@ -135,7 +135,7 @@ func MigrateNewCmd(args []string) {
 	}
 
 	// Generate timestamp
-	timestamp := generator.GenerateTimestamp()
+	timestamp := generator.GenerateTimestamp(cfg.MigrationsPath)
 
 	// Load scope config from shipq.ini
 	scopeColumn, scopeTable := loadScopeConfig(cfg)

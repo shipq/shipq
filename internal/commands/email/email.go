@@ -11,6 +11,7 @@ import (
 	"github.com/shipq/shipq/codegen"
 	"github.com/shipq/shipq/codegen/authgen"
 	configpkg "github.com/shipq/shipq/codegen/httpserver/config"
+	codegenMigrate "github.com/shipq/shipq/codegen/migrate"
 	"github.com/shipq/shipq/dburl"
 	"github.com/shipq/shipq/inifile"
 	"github.com/shipq/shipq/internal/commands/db"
@@ -187,7 +188,7 @@ func EmailCmd() {
 		fmt.Println("")
 		fmt.Println("Generating email migrations...")
 
-		baseTime := time.Now().UTC()
+		baseTime := codegenMigrate.NextMigrationBaseTime(migrationsPath)
 		ts0 := baseTime.Format("20060102150405")
 		ts1 := baseTime.Add(1 * time.Second).Format("20060102150405")
 		ts2 := baseTime.Add(2 * time.Second).Format("20060102150405")
