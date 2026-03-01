@@ -183,7 +183,7 @@ func TestGenerateMigration_ScopeWithExistingReferences(t *testing.T) {
 }
 
 func TestGenerateTimestamp(t *testing.T) {
-	ts := GenerateTimestamp()
+	ts := GenerateTimestamp("")
 
 	// Should be 14 digits
 	if len(ts) != 14 {
