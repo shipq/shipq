@@ -381,7 +381,7 @@ func TestGenerateJobStatusEndpoint(t *testing.T) {
 	}
 
 	// Should check ownership for authenticated endpoints
-	if !strings.Contains(code, "jobResult.AccountId != accountID") {
+	if !strings.Contains(code, "jobResult.AccountId == nil || *jobResult.AccountId != accountID") {
 		t.Error("expected ownership check in job status handler")
 	}
 }
@@ -630,7 +630,7 @@ func TestGenerateChannelHTTPRoutes_TokenOwnershipVerification(t *testing.T) {
 	}
 
 	// Should verify ownership somewhere in the token code
-	if !strings.Contains(code, "jobResult.AccountId != accountID") {
+	if !strings.Contains(code, "jobResult.AccountId == nil || *jobResult.AccountId != accountID") {
 		t.Error("expected ownership check in token handler")
 	}
 

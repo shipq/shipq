@@ -725,7 +725,7 @@ func TestGenerateLLMQuerydefs_ListCompletedToolsByJob_WhereRoleToolCall(t *testi
 	}
 	section := code[idx:]
 
-	if !strings.Contains(section, `Role().Eq(query.Value("tool_call"))`) {
+	if !strings.Contains(section, `Role().Eq(query.Literal("tool_call"))`) {
 		t.Error("expected ListCompletedToolsByJob to filter by role = 'tool_call'")
 	}
 }
