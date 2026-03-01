@@ -426,11 +426,12 @@ type SignupResponse struct {
 `)
 
 	// Handler function
-	buf.WriteString(`// Signup handles POST /signup
+	buf.WriteString(`// Signup handles POST /signup.
+// All database writes are wrapped in a transaction for atomicity.
 func Signup(ctx context.Context, req *SignupRequest) (*SignupResponse, error) {
 	runner := queries.RunnerFromContext(ctx)
 
-	// Check if email is already taken
+	// Check if email is already taken (read — outside transaction)
 	existing, err := runner.FindAccountByEmail(ctx, queries.FindAccountByEmailParams{
 		Email: req.Email,
 	})
@@ -441,15 +442,22 @@ func Signup(ctx context.Context, req *SignupRequest) (*SignupResponse, error) {
 		return nil, httperror.Conflict("email already taken")
 	}
 
-	// Hash password
+	// Hash password (CPU work — outside transaction)
 	passwordHash, err := crypto.HashPassword(req.Password)
 	if err != nil {
 		return nil, httperror.Wrap(500, "failed to hash password", err)
 	}
 
+	// Start transaction for all write operations
+	txRunner, err := runner.BeginTx(ctx)
+	if err != nil {
+		return nil, httperror.Wrap(500, "failed to start transaction", err)
+	}
+	defer txRunner.Rollback() // no-op after commit
+
 	// Create organization with auto-generated name
 	orgName := fmt.Sprintf("%s's Organization", req.FirstName)
-	org, err := runner.SignupCreateOrganization(ctx, queries.SignupCreateOrganizationParams{
+	org, err := txRunner.SignupCreateOrganization(ctx, queries.SignupCreateOrganizationParams{
 		PublicId:    nanoid.New(),
 		Name:        orgName,
 		Description: "",
@@ -459,7 +467,7 @@ func Signup(ctx context.Context, req *SignupRequest) (*SignupResponse, error) {
 	}
 
 	// Create account linked to organization
-	account, err := runner.SignupCreateAccount(ctx, queries.SignupCreateAccountParams{
+	account, err := txRunner.SignupCreateAccount(ctx, queries.SignupCreateAccountParams{
 		PublicId:              nanoid.New(),
 		FirstName:             req.FirstName,
 		LastName:              req.LastName,
@@ -472,7 +480,7 @@ func Signup(ctx context.Context, req *SignupRequest) (*SignupResponse, error) {
 	}
 
 	// Create organization_users link
-	_, err = runner.SignupCreateOrganizationUser(ctx, queries.SignupCreateOrganizationUserParams{
+	_, err = txRunner.SignupCreateOrganizationUser(ctx, queries.SignupCreateOrganizationUserParams{
 		PublicId:       nanoid.New(),
 		OrganizationId: org.Id,
 		AccountId:      account.Id,
@@ -482,7 +490,7 @@ func Signup(ctx context.Context, req *SignupRequest) (*SignupResponse, error) {
 	}
 
 	// Create session
-	session, err := runner.SignupCreateSession(ctx, queries.SignupCreateSessionParams{
+	session, err := txRunner.SignupCreateSession(ctx, queries.SignupCreateSessionParams{
 		PublicId:  nanoid.New(),
 		AccountId: account.Id,
 		ExpiresAt: time.Now().UTC().Add(14 * 24 * time.Hour).Format("2006-01-02 15:04:05"),
@@ -490,9 +498,6 @@ func Signup(ctx context.Context, req *SignupRequest) (*SignupResponse, error) {
 	if err != nil {
 		return nil, httperror.Wrap(500, "failed to create session", err)
 	}
-
-	// Set session cookie
-	setSessionCookie(ctx, session.PublicId)
 `)
 
 	// When email verification is enabled, send a verification email after signup
@@ -506,7 +511,7 @@ func Signup(ctx context.Context, req *SignupRequest) (*SignupResponse, error) {
 	} else {
 		tokenHash := HashToken(verifyToken)
 
-		_, tokenInsertErr := runner.InsertEmailVerificationToken(ctx, queries.InsertEmailVerificationTokenParams{
+		_, tokenInsertErr := txRunner.InsertEmailVerificationToken(ctx, queries.InsertEmailVerificationTokenParams{
 			PublicId:   nanoid.New(),
 			AccountId:  account.Id,
 			TokenHash:  tokenHash,
@@ -527,7 +532,7 @@ func Signup(ctx context.Context, req *SignupRequest) (*SignupResponse, error) {
 				HTMLBody:        htmlBody,
 				SensitiveTokens: []string{verifyToken},
 			}
-			if sendErr := SendEmail(ctx, runner, sendParams); sendErr != nil {
+			if sendErr := SendEmail(ctx, txRunner, sendParams); sendErr != nil {
 				fmt.Fprintf(os.Stderr, "WARNING: failed to send verification email: %v\n", sendErr)
 			}
 		}
@@ -536,6 +541,13 @@ func Signup(ctx context.Context, req *SignupRequest) (*SignupResponse, error) {
 	}
 
 	buf.WriteString(`
+	if err := txRunner.Commit(); err != nil {
+		return nil, httperror.Wrap(500, "failed to commit", err)
+	}
+
+	// Set session cookie only after successful commit
+	setSessionCookie(ctx, session.PublicId)
+
 	return &SignupResponse{
 		ID:        account.PublicId,
 		Email:     req.Email,

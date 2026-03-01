@@ -1,6 +1,9 @@
 package codegen
 
-import "fmt"
+import (
+	"fmt"
+	"strings"
+)
 
 // CRUDOptions configures CRUD generation behavior.
 type CRUDOptions struct {
@@ -27,9 +30,9 @@ const (
 func QuoteIdentifier(name string, dialect SQLDialect) string {
 	switch dialect {
 	case SQLDialectMySQL:
-		return "`" + name + "`"
+		return "`" + strings.ReplaceAll(name, "`", "``") + "`"
 	default: // Postgres, SQLite use double quotes
-		return `"` + name + `"`
+		return `"` + strings.ReplaceAll(name, `"`, `""`) + `"`
 	}
 }
 

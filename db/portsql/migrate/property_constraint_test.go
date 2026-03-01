@@ -5,7 +5,6 @@ package migrate
 import (
 	"context"
 	"database/sql"
-	"fmt"
 	"strings"
 	"testing"
 
@@ -54,7 +53,7 @@ func TestProperty_Constraint_Postgres_PrimaryKey_RejectsDuplicates(t *testing.T)
 		}
 
 		// Insert first row
-		insertSQL := fmt.Sprintf(`INSERT INTO "%s" (id, name) VALUES ($1, 'first')`, tableName)
+		insertSQL := `INSERT INTO ` + escapeIdentifier(tableName, Postgres) + ` (id, name) VALUES ($1, 'first')`
 		_, err = conn.Exec(context.Background(), insertSQL, pkValue)
 		if err != nil {
 			t.Logf("First insert failed: %v", err)
@@ -106,7 +105,7 @@ func TestProperty_Constraint_Postgres_Unique_RejectsDuplicates(t *testing.T) {
 		}
 
 		// Insert first row
-		insertSQL := fmt.Sprintf(`INSERT INTO "%s" (id, email) VALUES ($1, $2)`, tableName)
+		insertSQL := `INSERT INTO ` + escapeIdentifier(tableName, Postgres) + ` (id, email) VALUES ($1, $2)`
 		_, err = conn.Exec(context.Background(), insertSQL, 1, uniqueValue)
 		if err != nil {
 			t.Logf("First insert failed: %v", err)
@@ -151,7 +150,7 @@ func TestProperty_Constraint_Postgres_NotNull_RejectsNull(t *testing.T) {
 		}
 
 		// Try to insert NULL - should fail
-		insertSQL := fmt.Sprintf(`INSERT INTO "%s" (id, required_field) VALUES ($1, NULL)`, tableName)
+		insertSQL := `INSERT INTO ` + escapeIdentifier(tableName, Postgres) + ` (id, required_field) VALUES ($1, NULL)`
 		_, err = conn.Exec(context.Background(), insertSQL, 1)
 		if err == nil {
 			t.Logf("NULL insert should have failed")
@@ -199,7 +198,7 @@ func TestProperty_Constraint_MySQL_PrimaryKey_RejectsDuplicates(t *testing.T) {
 		}
 
 		// Insert first row
-		insertSQL := fmt.Sprintf("INSERT INTO `%s` (id, name) VALUES (?, 'first')", tableName)
+		insertSQL := "INSERT INTO " + escapeIdentifier(tableName, MySQL) + " (id, name) VALUES (?, 'first')"
 		_, err = db.Exec(insertSQL, pkValue)
 		if err != nil {
 			t.Logf("First insert failed: %v", err)
@@ -243,7 +242,7 @@ func TestProperty_Constraint_MySQL_Unique_RejectsDuplicates(t *testing.T) {
 			return false
 		}
 
-		insertSQL := fmt.Sprintf("INSERT INTO `%s` (id, email) VALUES (?, ?)", tableName)
+		insertSQL := "INSERT INTO " + escapeIdentifier(tableName, MySQL) + " (id, email) VALUES (?, ?)"
 		_, err = db.Exec(insertSQL, 1, uniqueValue)
 		if err != nil {
 			t.Logf("First insert failed: %v", err)
@@ -286,7 +285,7 @@ func TestProperty_Constraint_MySQL_NotNull_RejectsNull(t *testing.T) {
 		}
 
 		// Try to insert NULL
-		insertSQL := fmt.Sprintf("INSERT INTO `%s` (id, required_field) VALUES (?, NULL)", tableName)
+		insertSQL := "INSERT INTO " + escapeIdentifier(tableName, MySQL) + " (id, required_field) VALUES (?, NULL)"
 		_, err = db.Exec(insertSQL, 1)
 		if err == nil {
 			t.Logf("NULL insert should have failed")
@@ -309,8 +308,8 @@ func TestProperty_Constraint_SQLite_PrimaryKey_RejectsDuplicates(t *testing.T) {
 		tableName := GenerateTableName(g)
 		pkValue := g.IntRange(1, 10000)
 
-		db.Exec(fmt.Sprintf(`DROP TABLE IF EXISTS "%s"`, tableName))
-		defer db.Exec(fmt.Sprintf(`DROP TABLE IF EXISTS "%s"`, tableName))
+		db.Exec(`DROP TABLE IF EXISTS ` + escapeIdentifier(tableName, Sqlite))
+		defer db.Exec(`DROP TABLE IF EXISTS ` + escapeIdentifier(tableName, Sqlite))
 
 		plan := &MigrationPlan{Schema: Schema{Tables: map[string]ddl.Table{}}}
 		_, err := plan.AddEmptyTable(tableName, func(tb *ddl.TableBuilder) error {
@@ -327,7 +326,7 @@ func TestProperty_Constraint_SQLite_PrimaryKey_RejectsDuplicates(t *testing.T) {
 			return false
 		}
 
-		insertSQL := fmt.Sprintf(`INSERT INTO "%s" (id, name) VALUES (?, 'first')`, tableName)
+		insertSQL := `INSERT INTO ` + escapeIdentifier(tableName, Sqlite) + ` (id, name) VALUES (?, 'first')`
 		_, err = db.Exec(insertSQL, pkValue)
 		if err != nil {
 			t.Logf("First insert failed: %v", err)
@@ -352,8 +351,8 @@ func TestProperty_Constraint_SQLite_Unique_RejectsDuplicates(t *testing.T) {
 		tableName := GenerateTableName(g)
 		uniqueValue := g.StringAlphaNum(10)
 
-		db.Exec(fmt.Sprintf(`DROP TABLE IF EXISTS "%s"`, tableName))
-		defer db.Exec(fmt.Sprintf(`DROP TABLE IF EXISTS "%s"`, tableName))
+		db.Exec(`DROP TABLE IF EXISTS ` + escapeIdentifier(tableName, Sqlite))
+		defer db.Exec(`DROP TABLE IF EXISTS ` + escapeIdentifier(tableName, Sqlite))
 
 		plan := &MigrationPlan{Schema: Schema{Tables: map[string]ddl.Table{}}}
 		_, err := plan.AddEmptyTable(tableName, func(tb *ddl.TableBuilder) error {
@@ -370,7 +369,7 @@ func TestProperty_Constraint_SQLite_Unique_RejectsDuplicates(t *testing.T) {
 			return false
 		}
 
-		insertSQL := fmt.Sprintf(`INSERT INTO "%s" (id, email) VALUES (?, ?)`, tableName)
+		insertSQL := `INSERT INTO ` + escapeIdentifier(tableName, Sqlite) + ` (id, email) VALUES (?, ?)`
 		_, err = db.Exec(insertSQL, 1, uniqueValue)
 		if err != nil {
 			t.Logf("First insert failed: %v", err)
@@ -394,8 +393,8 @@ func TestProperty_Constraint_SQLite_NotNull_RejectsNull(t *testing.T) {
 	proptest.Check(t, "SQLite NOT NULL rejects NULL values", proptest.Config{NumTrials: 15}, func(g *proptest.Generator) bool {
 		tableName := GenerateTableName(g)
 
-		db.Exec(fmt.Sprintf(`DROP TABLE IF EXISTS "%s"`, tableName))
-		defer db.Exec(fmt.Sprintf(`DROP TABLE IF EXISTS "%s"`, tableName))
+		db.Exec(`DROP TABLE IF EXISTS ` + escapeIdentifier(tableName, Sqlite))
+		defer db.Exec(`DROP TABLE IF EXISTS ` + escapeIdentifier(tableName, Sqlite))
 
 		plan := &MigrationPlan{Schema: Schema{Tables: map[string]ddl.Table{}}}
 		_, err := plan.AddEmptyTable(tableName, func(tb *ddl.TableBuilder) error {
@@ -412,7 +411,7 @@ func TestProperty_Constraint_SQLite_NotNull_RejectsNull(t *testing.T) {
 			return false
 		}
 
-		insertSQL := fmt.Sprintf(`INSERT INTO "%s" (id, required_field) VALUES (?, NULL)`, tableName)
+		insertSQL := `INSERT INTO ` + escapeIdentifier(tableName, Sqlite) + ` (id, required_field) VALUES (?, NULL)`
 		_, err = db.Exec(insertSQL, 1)
 		if err == nil {
 			t.Logf("NULL insert should have failed")
@@ -455,7 +454,7 @@ func TestProperty_Constraint_Postgres_Default_Applied(t *testing.T) {
 		}
 
 		// Insert without specifying the column
-		insertSQL := fmt.Sprintf(`INSERT INTO "%s" (id) VALUES ($1)`, tableName)
+		insertSQL := `INSERT INTO ` + escapeIdentifier(tableName, Postgres) + ` (id) VALUES ($1)`
 		_, err = conn.Exec(context.Background(), insertSQL, 1)
 		if err != nil {
 			t.Logf("Insert failed: %v", err)
@@ -464,7 +463,7 @@ func TestProperty_Constraint_Postgres_Default_Applied(t *testing.T) {
 
 		// Check value
 		var actualValue string
-		selectSQL := fmt.Sprintf(`SELECT name FROM "%s" WHERE id = 1`, tableName)
+		selectSQL := `SELECT name FROM ` + escapeIdentifier(tableName, Postgres) + ` WHERE id = 1`
 		err = conn.QueryRow(context.Background(), selectSQL).Scan(&actualValue)
 		if err != nil {
 			t.Logf("Select failed: %v", err)
@@ -507,7 +506,7 @@ func TestProperty_Constraint_MySQL_Default_Applied(t *testing.T) {
 			return false
 		}
 
-		insertSQL := fmt.Sprintf("INSERT INTO `%s` (id) VALUES (?)", tableName)
+		insertSQL := "INSERT INTO " + escapeIdentifier(tableName, MySQL) + " (id) VALUES (?)"
 		_, err = db.Exec(insertSQL, 1)
 		if err != nil {
 			t.Logf("Insert failed: %v", err)
@@ -515,7 +514,7 @@ func TestProperty_Constraint_MySQL_Default_Applied(t *testing.T) {
 		}
 
 		var actualValue string
-		selectSQL := fmt.Sprintf("SELECT name FROM `%s` WHERE id = 1", tableName)
+		selectSQL := "SELECT name FROM " + escapeIdentifier(tableName, MySQL) + " WHERE id = 1"
 		err = db.QueryRow(selectSQL).Scan(&actualValue)
 		if err != nil {
 			t.Logf("Select failed: %v", err)
@@ -540,8 +539,8 @@ func TestProperty_Constraint_SQLite_Default_Applied(t *testing.T) {
 		// Use StringFromN to ensure at least 1 character (empty string means "no default" in current API)
 		defaultVal := g.StringFromN(proptest.CharsetAlphaNum, 1, 10)
 
-		db.Exec(fmt.Sprintf(`DROP TABLE IF EXISTS "%s"`, tableName))
-		defer db.Exec(fmt.Sprintf(`DROP TABLE IF EXISTS "%s"`, tableName))
+		db.Exec(`DROP TABLE IF EXISTS ` + escapeIdentifier(tableName, Sqlite))
+		defer db.Exec(`DROP TABLE IF EXISTS ` + escapeIdentifier(tableName, Sqlite))
 
 		plan := &MigrationPlan{Schema: Schema{Tables: map[string]ddl.Table{}}}
 		_, err := plan.AddEmptyTable(tableName, func(tb *ddl.TableBuilder) error {
@@ -559,7 +558,7 @@ func TestProperty_Constraint_SQLite_Default_Applied(t *testing.T) {
 			return false
 		}
 
-		insertSQL := fmt.Sprintf(`INSERT INTO "%s" (id) VALUES (?)`, tableName)
+		insertSQL := `INSERT INTO ` + escapeIdentifier(tableName, Sqlite) + ` (id) VALUES (?)`
 		_, err = db.Exec(insertSQL, 1)
 		if err != nil {
 			t.Logf("Insert failed: %v", err)
@@ -567,7 +566,7 @@ func TestProperty_Constraint_SQLite_Default_Applied(t *testing.T) {
 		}
 
 		var actualValue string
-		selectSQL := fmt.Sprintf(`SELECT name FROM "%s" WHERE id = 1`, tableName)
+		selectSQL := `SELECT name FROM ` + escapeIdentifier(tableName, Sqlite) + ` WHERE id = 1`
 		err = db.QueryRow(selectSQL).Scan(&actualValue)
 		if err != nil {
 			t.Logf("Select failed: %v", err)

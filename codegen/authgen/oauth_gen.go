@@ -231,7 +231,7 @@ func exchangeOAuthCode(tokenURL, code, clientID, clientSecret, redirectURI strin
 		buf.WriteString(`// findOrCreateOAuthAccount looks up an account by OAuth provider+ID first,
 // then by email. If no account exists, it creates one with a NULL password
 // hash. In all cases it ensures an oauth_accounts row links the provider to
-// the account.
+// the account. All writes are wrapped in a transaction for atomicity.
 func findOrCreateOAuthAccount(ctx context.Context, runner queries.Runner, provider string, user oauthUser) (int64, string, error) {
 	// 1. Check if this provider+user_id is already linked to an account
 	oauthAcct, err := runner.FindOAuthAccount(ctx, queries.FindOAuthAccountParams{
@@ -254,6 +254,13 @@ func findOrCreateOAuthAccount(ctx context.Context, runner queries.Runner, provid
 		return 0, "", fmt.Errorf("failed to lookup account: %w", err)
 	}
 
+	// 3. Start a transaction for all write operations
+	txRunner, err := runner.BeginTx(ctx)
+	if err != nil {
+		return 0, "", fmt.Errorf("failed to start transaction: %w", err)
+	}
+	defer txRunner.Rollback() // no-op after commit
+
 	var accountID int64
 	var accountPublicID string
 
@@ -263,9 +270,9 @@ func findOrCreateOAuthAccount(ctx context.Context, runner queries.Runner, provid
 		accountID = existing.Id
 		accountPublicID = existing.PublicId
 	} else {
-		// 3. No account found — create org + account with NULL password hash
+		// 4. No account found — create org + account with NULL password hash
 		orgName := fmt.Sprintf("%s's Organization", user.FirstName)
-		org, err := runner.SignupCreateOrganization(ctx, queries.SignupCreateOrganizationParams{
+		org, err := txRunner.SignupCreateOrganization(ctx, queries.SignupCreateOrganizationParams{
 			PublicId:    nanoid.New(),
 			Name:        orgName,
 			Description: "",
@@ -274,7 +281,7 @@ func findOrCreateOAuthAccount(ctx context.Context, runner queries.Runner, provid
 			return 0, "", fmt.Errorf("failed to create organization: %w", err)
 		}
 
-		account, err := runner.OAuthCreateAccount(ctx, queries.OAuthCreateAccountParams{
+		account, err := txRunner.OAuthCreateAccount(ctx, queries.OAuthCreateAccountParams{
 			PublicId:              nanoid.New(),
 			FirstName:             user.FirstName,
 			LastName:              user.LastName,
@@ -289,7 +296,7 @@ func findOrCreateOAuthAccount(ctx context.Context, runner queries.Runner, provid
 		accountPublicID = account.PublicId
 
 		// Link account to organization
-		_, err = runner.SignupCreateOrganizationUser(ctx, queries.SignupCreateOrganizationUserParams{
+		_, err = txRunner.SignupCreateOrganizationUser(ctx, queries.SignupCreateOrganizationUserParams{
 			PublicId:       nanoid.New(),
 			OrganizationId: org.Id,
 			AccountId:      accountID,
@@ -299,8 +306,8 @@ func findOrCreateOAuthAccount(ctx context.Context, runner queries.Runner, provid
 		}
 	}
 
-	// 4. Create the oauth_accounts link
-	_, err = runner.CreateOAuthAccount(ctx, queries.CreateOAuthAccountParams{
+	// 5. Create the oauth_accounts link
+	_, err = txRunner.CreateOAuthAccount(ctx, queries.CreateOAuthAccountParams{
 		PublicId:        nanoid.New(),
 		AccountId:       accountID,
 		AuthorAccountId: accountID,
@@ -311,6 +318,10 @@ func findOrCreateOAuthAccount(ctx context.Context, runner queries.Runner, provid
 	})
 	if err != nil {
 		return 0, "", fmt.Errorf("failed to create oauth account link: %w", err)
+	}
+
+	if err := txRunner.Commit(); err != nil {
+		return 0, "", fmt.Errorf("failed to commit: %w", err)
 	}
 
 	return accountID, accountPublicID, nil

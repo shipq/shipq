@@ -4,7 +4,6 @@ package migrate
 
 import (
 	"database/sql"
-	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
@@ -144,7 +143,7 @@ func mysqlTableExists(t *testing.T, db *sql.DB, tableName string) bool {
 // dropMySQLTableIfExists drops a table if it exists
 func dropMySQLTableIfExists(t *testing.T, db *sql.DB, tableName string) {
 	t.Helper()
-	_, err := db.Exec(fmt.Sprintf("DROP TABLE IF EXISTS `%s`", tableName))
+	_, err := db.Exec("DROP TABLE IF EXISTS " + escapeIdentifier(tableName, MySQL))
 	if err != nil {
 		t.Fatalf("failed to drop table: %v", err)
 	}
@@ -415,12 +414,12 @@ func TestMySQLIntegration_CreateTable_PrimaryKey(t *testing.T) {
 	}
 
 	// Verify primary key exists by trying to insert duplicate
-	_, err = db.Exec(fmt.Sprintf("INSERT INTO `%s` (id, name) VALUES (1, 'test')", tableName))
+	_, err = db.Exec("INSERT INTO " + escapeIdentifier(tableName, MySQL) + " (id, name) VALUES (1, 'test')")
 	if err != nil {
 		t.Fatalf("first insert failed: %v", err)
 	}
 
-	_, err = db.Exec(fmt.Sprintf("INSERT INTO `%s` (id, name) VALUES (1, 'test2')", tableName))
+	_, err = db.Exec("INSERT INTO " + escapeIdentifier(tableName, MySQL) + " (id, name) VALUES (1, 'test2')")
 	if err == nil {
 		t.Error("expected duplicate key error, but insert succeeded")
 	}
@@ -454,12 +453,12 @@ func TestMySQLIntegration_CreateTable_Indexes(t *testing.T) {
 	}
 
 	// Verify unique index on email works by trying to insert duplicates
-	_, err = db.Exec(fmt.Sprintf("INSERT INTO `%s` (email, status, first_name, last_name) VALUES ('test@test.com', 'active', 'John', 'Doe')", tableName))
+	_, err = db.Exec("INSERT INTO " + escapeIdentifier(tableName, MySQL) + " (email, status, first_name, last_name) VALUES ('test@test.com', 'active', 'John', 'Doe')")
 	if err != nil {
 		t.Fatalf("first insert failed: %v", err)
 	}
 
-	_, err = db.Exec(fmt.Sprintf("INSERT INTO `%s` (email, status, first_name, last_name) VALUES ('test@test.com', 'active', 'Jane', 'Doe')", tableName))
+	_, err = db.Exec("INSERT INTO " + escapeIdentifier(tableName, MySQL) + " (email, status, first_name, last_name) VALUES ('test@test.com', 'active', 'Jane', 'Doe')")
 	if err == nil {
 		t.Error("expected unique constraint violation, but insert succeeded")
 	}
@@ -657,12 +656,12 @@ func TestMySQLIntegration_AlterTable_AddIndex(t *testing.T) {
 	}
 
 	// Verify index works by inserting duplicates
-	_, err = db.Exec(fmt.Sprintf("INSERT INTO `%s` (email) VALUES ('test@test.com')", tableName))
+	_, err = db.Exec("INSERT INTO " + escapeIdentifier(tableName, MySQL) + " (email) VALUES ('test@test.com')")
 	if err != nil {
 		t.Fatalf("first insert failed: %v", err)
 	}
 
-	_, err = db.Exec(fmt.Sprintf("INSERT INTO `%s` (email) VALUES ('test@test.com')", tableName))
+	_, err = db.Exec("INSERT INTO " + escapeIdentifier(tableName, MySQL) + " (email) VALUES ('test@test.com')")
 	if err == nil {
 		t.Error("expected unique constraint violation after adding index")
 	}
@@ -710,12 +709,12 @@ func TestMySQLIntegration_AlterTable_DropIndex(t *testing.T) {
 	}
 
 	// Verify index is gone - duplicates should now be allowed
-	_, err = db.Exec(fmt.Sprintf("INSERT INTO `%s` (email) VALUES ('test@test.com')", tableName))
+	_, err = db.Exec("INSERT INTO " + escapeIdentifier(tableName, MySQL) + " (email) VALUES ('test@test.com')")
 	if err != nil {
 		t.Fatalf("first insert failed: %v", err)
 	}
 
-	_, err = db.Exec(fmt.Sprintf("INSERT INTO `%s` (email) VALUES ('test@test.com')", tableName))
+	_, err = db.Exec("INSERT INTO " + escapeIdentifier(tableName, MySQL) + " (email) VALUES ('test@test.com')")
 	if err != nil {
 		t.Error("expected duplicate insert to succeed after dropping index")
 	}
@@ -887,13 +886,13 @@ func TestMySQLIntegration_AddTable_PrimaryKeyConstraint(t *testing.T) {
 	}
 
 	// Insert first row
-	_, err = db.Exec(fmt.Sprintf("INSERT INTO `%s` (id, public_id, created_at, deleted_at, updated_at, name) VALUES (1, 'abc123', '2024-01-01', '2024-01-01', '2024-01-01', 'test')", tableName))
+	_, err = db.Exec("INSERT INTO " + escapeIdentifier(tableName, MySQL) + " (id, public_id, created_at, deleted_at, updated_at, name) VALUES (1, 'abc123', '2024-01-01', '2024-01-01', '2024-01-01', 'test')")
 	if err != nil {
 		t.Fatalf("first insert failed: %v", err)
 	}
 
 	// Try to insert duplicate id - should fail
-	_, err = db.Exec(fmt.Sprintf("INSERT INTO `%s` (id, public_id, created_at, deleted_at, updated_at, name) VALUES (1, 'xyz789', '2024-01-01', '2024-01-01', '2024-01-01', 'test2')", tableName))
+	_, err = db.Exec("INSERT INTO " + escapeIdentifier(tableName, MySQL) + " (id, public_id, created_at, deleted_at, updated_at, name) VALUES (1, 'xyz789', '2024-01-01', '2024-01-01', '2024-01-01', 'test2')")
 	if err == nil {
 		t.Error("expected duplicate id error, but insert succeeded")
 	}
@@ -923,13 +922,13 @@ func TestMySQLIntegration_AddTable_UniquePublicIdConstraint(t *testing.T) {
 	}
 
 	// Insert first row
-	_, err = db.Exec(fmt.Sprintf("INSERT INTO `%s` (id, public_id, created_at, deleted_at, updated_at, name) VALUES (1, 'abc123', '2024-01-01', '2024-01-01', '2024-01-01', 'test')", tableName))
+	_, err = db.Exec("INSERT INTO " + escapeIdentifier(tableName, MySQL) + " (id, public_id, created_at, deleted_at, updated_at, name) VALUES (1, 'abc123', '2024-01-01', '2024-01-01', '2024-01-01', 'test')")
 	if err != nil {
 		t.Fatalf("first insert failed: %v", err)
 	}
 
 	// Try to insert duplicate public_id - should fail due to unique constraint
-	_, err = db.Exec(fmt.Sprintf("INSERT INTO `%s` (id, public_id, created_at, deleted_at, updated_at, name) VALUES (2, 'abc123', '2024-01-01', '2024-01-01', '2024-01-01', 'test2')", tableName))
+	_, err = db.Exec("INSERT INTO " + escapeIdentifier(tableName, MySQL) + " (id, public_id, created_at, deleted_at, updated_at, name) VALUES (2, 'abc123', '2024-01-01', '2024-01-01', '2024-01-01', 'test2')")
 	if err == nil {
 		t.Error("expected duplicate public_id error, but insert succeeded")
 	}

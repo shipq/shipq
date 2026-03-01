@@ -1156,6 +1156,77 @@ func TestGenerateAuthQueryDefs_FindActiveSession_SelectsAccountPublicId(t *testi
 	}
 }
 
+func TestGenerateSignupHandler_WrapsWritesInTransaction(t *testing.T) {
+	cfg := AuthGenConfig{
+		ModulePath: "example.com/myapp",
+	}
+
+	code, err := GenerateSignupHandler(cfg)
+	if err != nil {
+		t.Fatalf("GenerateSignupHandler() error = %v", err)
+	}
+
+	codeStr := string(code)
+
+	if !strings.Contains(codeStr, "runner.BeginTx(ctx)") {
+		t.Error("expected Signup handler to call runner.BeginTx(ctx)")
+	}
+	if !strings.Contains(codeStr, "txRunner.Commit()") {
+		t.Error("expected Signup handler to call txRunner.Commit()")
+	}
+	if !strings.Contains(codeStr, "defer txRunner.Rollback()") {
+		t.Error("expected Signup handler to defer txRunner.Rollback()")
+	}
+
+	// All write operations should use txRunner, not runner
+	if strings.Contains(codeStr, "runner.SignupCreateOrganization(") {
+		t.Error("expected SignupCreateOrganization to use txRunner, not runner")
+	}
+	if strings.Contains(codeStr, "runner.SignupCreateAccount(") {
+		t.Error("expected SignupCreateAccount to use txRunner, not runner")
+	}
+	if strings.Contains(codeStr, "runner.SignupCreateOrganizationUser(") {
+		t.Error("expected SignupCreateOrganizationUser to use txRunner, not runner")
+	}
+	if strings.Contains(codeStr, "runner.SignupCreateSession(") {
+		t.Error("expected SignupCreateSession to use txRunner, not runner")
+	}
+
+	// Verify it's still valid Go
+	_, parseErr := parser.ParseFile(token.NewFileSet(), "signup.go", code, parser.AllErrors)
+	if parseErr != nil {
+		t.Errorf("generated signup.go is not valid Go: %v\n%s", parseErr, string(code))
+	}
+}
+
+func TestGenerateSignupHandler_EmailEnabled_TransactionCoversVerificationToken(t *testing.T) {
+	cfg := AuthGenConfig{
+		ModulePath:   "example.com/myapp",
+		EmailEnabled: true,
+	}
+
+	code, err := GenerateSignupHandler(cfg)
+	if err != nil {
+		t.Fatalf("GenerateSignupHandler() error = %v", err)
+	}
+
+	codeStr := string(code)
+
+	// Verification token insert should use txRunner
+	if strings.Contains(codeStr, "runner.InsertEmailVerificationToken(") {
+		t.Error("expected InsertEmailVerificationToken to use txRunner, not runner")
+	}
+	if !strings.Contains(codeStr, "txRunner.InsertEmailVerificationToken(") {
+		t.Error("expected InsertEmailVerificationToken to be called on txRunner")
+	}
+
+	// Verify it's still valid Go
+	_, parseErr := parser.ParseFile(token.NewFileSet(), "signup.go", code, parser.AllErrors)
+	if parseErr != nil {
+		t.Errorf("generated signup.go with email enabled is not valid Go: %v\n%s", parseErr, string(code))
+	}
+}
+
 func TestGenerateLoginHandler_AlwaysHasNilGuard(t *testing.T) {
 	// Empty config: no OAuth, no email — nil guard must still be present
 	// because password_hash is always nullable.
