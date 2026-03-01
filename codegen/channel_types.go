@@ -31,6 +31,7 @@ type SerializedRateLimitConfig struct {
 type SerializedMessageInfo struct {
 	Direction   string                `json:"direction"`
 	TypeName    string                `json:"type_name"`
+	PackagePath string                `json:"package_path,omitempty"` // import path of the package defining this type
 	Fields      []SerializedFieldInfo `json:"fields"`
 	IsDispatch  bool                  `json:"is_dispatch"`
 	HandlerName string                `json:"handler_name"`

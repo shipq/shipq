@@ -82,6 +82,7 @@ type SerializedRateLimitConfig struct {
 type SerializedMessageInfo struct {
 	Direction   string                ` + "`json:\"direction\"`" + `
 	TypeName    string                ` + "`json:\"type_name\"`" + `
+	PackagePath string                ` + "`json:\"package_path,omitempty\"`" + `
 	Fields      []SerializedFieldInfo ` + "`json:\"fields\"`" + `
 	IsDispatch  bool                  ` + "`json:\"is_dispatch\"`" + `
 	HandlerName string                ` + "`json:\"handler_name\"`" + `
@@ -196,6 +197,7 @@ func convertMessages(msgs []channel.MessageInfo) []SerializedMessageInfo {
 		result[i] = SerializedMessageInfo{
 			Direction:   dir,
 			TypeName:    m.TypeName,
+			PackagePath: m.Package,
 			Fields:      convertChannelFields(m.Fields),
 			IsDispatch:  m.IsDispatch,
 			HandlerName: m.HandlerName,

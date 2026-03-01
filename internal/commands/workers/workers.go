@@ -58,11 +58,6 @@ func WorkersCmd() {
 		cli.FatalErr("failed to parse shipq.ini", err)
 	}
 
-	// Verify [auth] section exists
-	if ini.Section("auth") == nil {
-		cli.Fatal("shipq workers requires auth -- run 'shipq auth' first")
-	}
-
 	// Verify redis-server on $PATH
 	if _, err := exec.LookPath("redis-server"); err != nil {
 		cli.Fatal("redis-server not found on $PATH -- add it to your shell.nix")

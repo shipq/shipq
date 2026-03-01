@@ -10,11 +10,21 @@ import (
 
 // generateHTTPMain generates the main.go entrypoint file for the HTTP server.
 func generateHTTPMain(cfg CompileConfig) error {
+	// Determine if any channel requires auth (i.e., is not public)
+	channelsNeedAuth := false
+	for _, ch := range cfg.Channels {
+		if !ch.IsPublic {
+			channelsNeedAuth = true
+			break
+		}
+	}
+
 	mainCfg := server.HTTPMainGenConfig{
 		ModulePath:  cfg.ModulePath,
 		OutputPkg:   cfg.OutputPkg,
 		DBDialect:   cfg.DBDialect,
 		HasChannels: cfg.WorkersEnabled && len(cfg.Channels) > 0,
+		HasAuth:     cfg.HasAuth && channelsNeedAuth,
 	}
 
 	mainCode, err := server.GenerateHTTPMain(mainCfg)

@@ -112,7 +112,7 @@ LLM Tool Packages (Go) ───────────────────
 - `shipq/lib/llmpersist/zz_generated_persister.go` — persister adapter wrapping `queries.Runner` → `llm.Persister`
 - `migrations/*_llm_tables.go` — migration for `llm_conversations` + `llm_messages` tables
 - `querydefs/` — querydefs for LLM persistence (insert/update/list conversations and messages)
-- LLM stream message types (`LLMTextDelta`, `LLMToolCallStart`, `LLMToolCallResult`, `LLMDone`) injected as `FromServer` types on LLM-enabled channels
+- LLM stream message types (`LLMTextDelta`, `LLMToolCallStart`, `LLMToolCallResult`, `LLMDone`) auto-injected into the **TypeScript** channel client for LLM-enabled channels. These types are _not_ added to `FromServer(...)` in Go — the LLM library publishes them directly through the raw `channel.Channel` internally. The channel compiler's TypeScript codegen reads the `.shipq/llm_channels.json` marker to determine which channels are LLM-enabled.
 
 **Key point:** The LLM compiler follows the same temporary-compile-program pattern as the schema and query compilers — generate a Go program, build and run it, capture its output. Provider and model selection are **not** part of the compiler; they live in the user's hand-written `Setup` function as ordinary Go code.
 
@@ -126,7 +126,7 @@ The compilers form a directed pipeline:
 
 3. **Handlers → Everything Else:** The handler compiler reads your handler registrations and generates the full serving stack. It must run last because it needs to know about all your routes.
 
-4. **LLM → Channels:** The LLM compiler generates tool registries, persistence infrastructure, and stream message types that integrate with the existing channel/worker system. It depends on the workers/channels infrastructure being set up first, and its generated stream types are consumed by the channel compiler's TypeScript codegen.
+4. **LLM → Channels:** The LLM compiler generates tool registries, persistence infrastructure, and stream type metadata that integrate with the existing channel/worker system. It depends on the workers/channels infrastructure being set up first. Its generated stream type metadata (`.shipq/llm_channels.json`) is consumed by the channel compiler's **TypeScript** codegen to inject typed `on<LLMType>` handlers on the frontend. On the Go side, the LLM library publishes stream events directly via the raw `channel.Channel` — no Go-side injection or `FromServer` registration is needed.
 
 ## When to Re-Run Each Compiler
 
