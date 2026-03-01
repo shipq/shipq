@@ -479,7 +479,7 @@ func WorkersCmd() {
 		}
 
 		if registry.HasFramework(tsFrameworks, "svelte") {
-			if err := channelgen.WriteSvelteChannelHooks(channels, roots.ShipqRoot, tsOutputDir); err != nil {
+			if err := channelgen.WriteSvelteChannelHooks(channels, roots.ShipqRoot, tsOutputDir, llmCfg); err != nil {
 				cli.FatalErr("failed to generate Svelte channel hooks", err)
 			}
 			fmt.Printf("  Generated %s/svelte/shipq-channels.ts\n", tsOutputDir)

@@ -61,6 +61,6 @@ func TestGolden_ReactChannelHooks(t *testing.T) {
 func TestGolden_SvelteChannelHooks(t *testing.T) {
 	channels := makeMultiChannelSet()
 	runChannelGoldenTest(t, "svelte-shipq-channels.ts", func() ([]byte, error) {
-		return GenerateSvelteChannelHooks(channels)
+		return GenerateSvelteChannelHooks(channels, nil)
 	})
 }

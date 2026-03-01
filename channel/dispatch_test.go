@@ -936,6 +936,248 @@ func TestWrapDispatchHandlerWithUpdater_NilUpdateFunc_NilDB_ReturnsError(t *test
 	}
 }
 
+// TestWrapDispatchHandlerWithUpdater_WithDispatchDB_InjectsDBIntoSetup verifies
+// that WithDispatchDB provides a non-nil *sql.DB to the Setup function's context
+// when using WrapDispatchHandlerWithUpdater (which passes nil for the db parameter).
+func TestWrapDispatchHandlerWithUpdater_WithDispatchDB_InjectsDBIntoSetup(t *testing.T) {
+	db := setupTestDB(t)
+	defer db.Close()
+
+	transport := NewTestRecorder()
+
+	var capturedDB *sql.DB
+
+	handler := func(ctx context.Context, req *testRequest) error {
+		return nil
+	}
+
+	setupFn := func(ctx context.Context) context.Context {
+		capturedDB = DBFromContext(ctx)
+		return ctx
+	}
+
+	var updateCalls []string
+	updateFn := func(publicID, status string, startedAt, completedAt, errorMessage, resultPayload *string, retryCount int) error {
+		updateCalls = append(updateCalls, status)
+		return nil
+	}
+
+	wrapped := WrapDispatchHandlerWithUpdater(handler, transport, updateFn, "testchan",
+		WithSetup(setupFn),
+		WithDispatchDB(db),
+	)
+
+	dp := DispatchPayload{
+		JobID:       "db-opt-001",
+		ChannelName: "testchan",
+		AccountID:   1,
+		OrgID:       0,
+		IsPublic:    false,
+		Request:     json.RawMessage(`{"prompt":"hello"}`),
+	}
+	payload, _ := json.Marshal(dp)
+
+	err := wrapped(string(payload))
+	if err != nil {
+		t.Fatalf("wrapped handler returned error: %v", err)
+	}
+
+	if capturedDB == nil {
+		t.Fatal("expected non-nil *sql.DB in context during Setup when using WithDispatchDB")
+	}
+	if capturedDB != db {
+		t.Error("expected same *sql.DB pointer that was passed to WithDispatchDB")
+	}
+}
+
+// TestWrapDispatchHandlerWithUpdater_WithDispatchDB_InjectsDBIntoHandler verifies
+// that WithDispatchDB provides a non-nil *sql.DB to the handler's context
+// when using WrapDispatchHandlerWithUpdater (which passes nil for the db parameter).
+func TestWrapDispatchHandlerWithUpdater_WithDispatchDB_InjectsDBIntoHandler(t *testing.T) {
+	db := setupTestDB(t)
+	defer db.Close()
+
+	transport := NewTestRecorder()
+
+	var handlerDB *sql.DB
+
+	handler := func(ctx context.Context, req *testRequest) error {
+		handlerDB = DBFromContext(ctx)
+		return nil
+	}
+
+	var updateCalls []string
+	updateFn := func(publicID, status string, startedAt, completedAt, errorMessage, resultPayload *string, retryCount int) error {
+		updateCalls = append(updateCalls, status)
+		return nil
+	}
+
+	wrapped := WrapDispatchHandlerWithUpdater(handler, transport, updateFn, "testchan",
+		WithDispatchDB(db),
+	)
+
+	dp := DispatchPayload{
+		JobID:       "db-opt-002",
+		ChannelName: "testchan",
+		AccountID:   1,
+		OrgID:       0,
+		IsPublic:    false,
+		Request:     json.RawMessage(`{"prompt":"hello"}`),
+	}
+	payload, _ := json.Marshal(dp)
+
+	err := wrapped(string(payload))
+	if err != nil {
+		t.Fatalf("wrapped handler returned error: %v", err)
+	}
+
+	if handlerDB == nil {
+		t.Fatal("expected non-nil *sql.DB in handler context when using WithDispatchDB")
+	}
+	if handlerDB != db {
+		t.Error("expected same *sql.DB pointer that was passed to WithDispatchDB")
+	}
+}
+
+// TestWrapDispatchHandlerWithUpdater_WithoutDispatchDB_DBIsNil verifies that
+// without WithDispatchDB, WrapDispatchHandlerWithUpdater injects nil for the DB
+// (this is the bug scenario before the fix — the test documents the behavior).
+func TestWrapDispatchHandlerWithUpdater_WithoutDispatchDB_DBIsNil(t *testing.T) {
+	transport := NewTestRecorder()
+
+	var capturedDB *sql.DB
+	capturedDBSet := false
+
+	handler := func(ctx context.Context, req *testRequest) error {
+		capturedDB = DBFromContext(ctx)
+		capturedDBSet = true
+		return nil
+	}
+
+	var updateCalls []string
+	updateFn := func(publicID, status string, startedAt, completedAt, errorMessage, resultPayload *string, retryCount int) error {
+		updateCalls = append(updateCalls, status)
+		return nil
+	}
+
+	wrapped := WrapDispatchHandlerWithUpdater(handler, transport, updateFn, "testchan")
+
+	dp := DispatchPayload{
+		JobID:       "db-opt-003",
+		ChannelName: "testchan",
+		AccountID:   1,
+		OrgID:       0,
+		IsPublic:    false,
+		Request:     json.RawMessage(`{"prompt":"hello"}`),
+	}
+	payload, _ := json.Marshal(dp)
+
+	err := wrapped(string(payload))
+	if err != nil {
+		t.Fatalf("wrapped handler returned error: %v", err)
+	}
+
+	if !capturedDBSet {
+		t.Fatal("handler was not called")
+	}
+	if capturedDB != nil {
+		t.Error("expected nil *sql.DB when WithDispatchDB is not used")
+	}
+}
+
+// TestWrapDispatchHandler_DBParamTakesPrecedence verifies that the legacy
+// WrapDispatchHandler still injects the db parameter even without WithDispatchDB,
+// ensuring backward compatibility.
+func TestWrapDispatchHandler_DBParamTakesPrecedence(t *testing.T) {
+	db := setupTestDB(t)
+	defer db.Close()
+
+	transport := NewTestRecorder()
+
+	var capturedDB *sql.DB
+
+	handler := func(ctx context.Context, req *testRequest) error {
+		capturedDB = DBFromContext(ctx)
+		return nil
+	}
+
+	reqJSON, _ := json.Marshal(testRequest{Prompt: "precedence test"})
+	insertPendingJob(t, db, "db-prec-001", "testchan", 1, string(reqJSON))
+
+	wrapped := WrapDispatchHandler(handler, transport, db, "testchan")
+
+	dp := DispatchPayload{
+		JobID:       "db-prec-001",
+		ChannelName: "testchan",
+		AccountID:   1,
+		OrgID:       0,
+		IsPublic:    false,
+		Request:     reqJSON,
+	}
+	payload, _ := json.Marshal(dp)
+
+	err := wrapped(string(payload))
+	if err != nil {
+		t.Fatalf("wrapped handler returned error: %v", err)
+	}
+
+	if capturedDB == nil {
+		t.Fatal("expected non-nil *sql.DB from db parameter")
+	}
+	if capturedDB != db {
+		t.Error("expected same *sql.DB pointer that was passed as db parameter")
+	}
+}
+
+// TestWithDispatchDB_OverridesNilDBParam verifies that WithDispatchDB takes
+// effect when the db parameter is nil (the WrapDispatchHandlerWithUpdater path).
+func TestWithDispatchDB_OverridesNilDBParam(t *testing.T) {
+	db := setupTestDB(t)
+	defer db.Close()
+
+	transport := NewTestRecorder()
+
+	var capturedDB *sql.DB
+
+	handler := func(ctx context.Context, req *testRequest) error {
+		capturedDB = DBFromContext(ctx)
+		return nil
+	}
+
+	var updateCalls []string
+	updateFn := func(publicID, status string, startedAt, completedAt, errorMessage, resultPayload *string, retryCount int) error {
+		updateCalls = append(updateCalls, status)
+		return nil
+	}
+
+	// Use the internal function directly with nil db but WithDispatchDB set.
+	wrapped := wrapDispatchHandlerInternal(handler, transport, nil, updateFn, "testchan",
+		WithDispatchDB(db),
+	)
+
+	dp := DispatchPayload{
+		JobID:       "db-override-001",
+		ChannelName: "testchan",
+		AccountID:   1,
+		OrgID:       0,
+		IsPublic:    false,
+		Request:     json.RawMessage(`{"prompt":"hello"}`),
+	}
+	payload, _ := json.Marshal(dp)
+
+	err := wrapped(string(payload))
+	if err != nil {
+		t.Fatalf("wrapped handler returned error: %v", err)
+	}
+
+	if capturedDB == nil {
+		t.Fatal("expected non-nil *sql.DB when WithDispatchDB overrides nil db parameter")
+	}
+	if capturedDB != db {
+		t.Error("expected same *sql.DB pointer from WithDispatchDB")
+	}
+}
+
 func TestDispatchPayload_RoundTrip(t *testing.T) {
 	reqJSON := json.RawMessage(`{"prompt":"hello"}`)
 	dp := DispatchPayload{

@@ -1,6 +1,7 @@
 package channelgen
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 
@@ -592,5 +593,47 @@ func TestGenerateReactChannelHooks_NilLLMConfig_NoLLMHandlers(t *testing.T) {
 
 	if strings.Contains(output, "onLLMTextDelta") {
 		t.Error("nil LLM config should not produce LLM handlers")
+	}
+}
+
+func TestGenerateReactChannelHooks_LLMChannel_ImportsLLMTypes(t *testing.T) {
+	channels := []codegen.SerializedChannelInfo{
+		makePublicAssistantChannel(),
+	}
+	llmCfg := &LLMConfig{
+		LLMChannelPkgs: map[string]bool{
+			"myapp/channels/assistant": true,
+		},
+	}
+
+	result, err := GenerateReactChannelHooks(channels, llmCfg)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	output := string(result)
+
+	for _, llmType := range llmStreamTypeNames() {
+		importLine := fmt.Sprintf("type %s,", llmType)
+		if !strings.Contains(output, importLine) {
+			t.Errorf("LLM channel react hooks should import %q from base client", llmType)
+		}
+	}
+}
+
+func TestGenerateReactChannelHooks_NonLLM_DoesNotImportLLMTypes(t *testing.T) {
+	channels := []codegen.SerializedChannelInfo{
+		makeUnidirectionalEmailChannel(),
+	}
+
+	result, err := GenerateReactChannelHooks(channels, nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	output := string(result)
+
+	for _, llmType := range llmStreamTypeNames() {
+		if strings.Contains(output, llmType) {
+			t.Errorf("non-LLM react hooks should not reference %q", llmType)
+		}
 	}
 }

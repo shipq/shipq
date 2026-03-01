@@ -527,6 +527,147 @@ func TestGenerateWorkerMain_MixedSetup_OnlyAppliesWherePresent(t *testing.T) {
 	}
 }
 
+func TestGenerateWorkerMain_WithSetup_EmitsWithDispatchDB(t *testing.T) {
+	cfg := WorkerGenConfig{
+		Channels: []codegen.SerializedChannelInfo{
+			{
+				Name:        "llmchat",
+				PackagePath: "example.com/myapp/channels/llmchat",
+				PackageName: "llmchat",
+				HasSetup:    true,
+				Messages: []codegen.SerializedMessageInfo{
+					{Direction: "client_to_server", TypeName: "ChatRequest", IsDispatch: true, HandlerName: "HandleChatRequest"},
+					{Direction: "server_to_client", TypeName: "ChatResponse"},
+				},
+			},
+		},
+		ModulePath: "example.com/myapp",
+		DBDialect:  "postgres",
+	}
+
+	code, err := GenerateWorkerMain(cfg)
+	if err != nil {
+		t.Fatalf("GenerateWorkerMain() error = %v", err)
+	}
+	codeStr := string(code)
+
+	// Should include channel.WithDispatchDB(db) in the RegisterTask call
+	if !strings.Contains(codeStr, "channel.WithDispatchDB(db)") {
+		t.Error("expected channel.WithDispatchDB(db) option in generated worker code")
+	}
+}
+
+func TestGenerateWorkerMain_WithoutSetup_EmitsWithDispatchDB(t *testing.T) {
+	cfg := WorkerGenConfig{
+		Channels: []codegen.SerializedChannelInfo{
+			{
+				Name:        "chatbot",
+				PackagePath: "example.com/myapp/channels/chatbot",
+				PackageName: "chatbot",
+				HasSetup:    false,
+				Messages: []codegen.SerializedMessageInfo{
+					{Direction: "client_to_server", TypeName: "ChatRequest", IsDispatch: true, HandlerName: "HandleChatRequest"},
+					{Direction: "server_to_client", TypeName: "ChatResponse"},
+				},
+			},
+		},
+		ModulePath: "example.com/myapp",
+		DBDialect:  "postgres",
+	}
+
+	code, err := GenerateWorkerMain(cfg)
+	if err != nil {
+		t.Fatalf("GenerateWorkerMain() error = %v", err)
+	}
+	codeStr := string(code)
+
+	// Even without Setup, WithDispatchDB(db) should be emitted
+	if !strings.Contains(codeStr, "channel.WithDispatchDB(db)") {
+		t.Error("expected channel.WithDispatchDB(db) option even when HasSetup is false")
+	}
+}
+
+func TestGenerateWorkerMain_WithDispatchDB_ValidGo(t *testing.T) {
+	cfg := WorkerGenConfig{
+		Channels: []codegen.SerializedChannelInfo{
+			{
+				Name:        "llmchat",
+				PackagePath: "example.com/myapp/channels/llmchat",
+				PackageName: "llmchat",
+				HasSetup:    true,
+				Messages: []codegen.SerializedMessageInfo{
+					{Direction: "client_to_server", TypeName: "ChatRequest", IsDispatch: true, HandlerName: "HandleChatRequest"},
+					{Direction: "server_to_client", TypeName: "ChatResponse"},
+				},
+			},
+			{
+				Name:        "email",
+				PackagePath: "example.com/myapp/channels/email",
+				PackageName: "email",
+				HasSetup:    false,
+				Messages: []codegen.SerializedMessageInfo{
+					{Direction: "client_to_server", TypeName: "EmailRequest", IsDispatch: true, HandlerName: "HandleEmailRequest"},
+					{Direction: "server_to_client", TypeName: "EmailStatus"},
+				},
+			},
+		},
+		ModulePath: "example.com/myapp",
+		DBDialect:  "postgres",
+	}
+
+	code, err := GenerateWorkerMain(cfg)
+	if err != nil {
+		t.Fatalf("GenerateWorkerMain() error = %v", err)
+	}
+
+	fset := token.NewFileSet()
+	_, err = parser.ParseFile(fset, "main.go", code, parser.AllErrors)
+	if err != nil {
+		t.Errorf("generated worker main with WithDispatchDB is not valid Go: %v\ncode:\n%s", err, string(code))
+	}
+}
+
+func TestGenerateWorkerMain_AllChannelsGetWithDispatchDB(t *testing.T) {
+	cfg := WorkerGenConfig{
+		Channels: []codegen.SerializedChannelInfo{
+			{
+				Name:        "llmchat",
+				PackagePath: "example.com/myapp/channels/llmchat",
+				PackageName: "llmchat",
+				HasSetup:    true,
+				Messages: []codegen.SerializedMessageInfo{
+					{Direction: "client_to_server", TypeName: "ChatRequest", IsDispatch: true, HandlerName: "HandleChatRequest"},
+					{Direction: "server_to_client", TypeName: "ChatResponse"},
+				},
+			},
+			{
+				Name:        "email",
+				PackagePath: "example.com/myapp/channels/email",
+				PackageName: "email",
+				HasSetup:    false,
+				Messages: []codegen.SerializedMessageInfo{
+					{Direction: "client_to_server", TypeName: "EmailRequest", IsDispatch: true, HandlerName: "HandleEmailRequest"},
+					{Direction: "server_to_client", TypeName: "EmailStatus"},
+				},
+			},
+		},
+		ModulePath: "example.com/myapp",
+		DBDialect:  "postgres",
+	}
+
+	code, err := GenerateWorkerMain(cfg)
+	if err != nil {
+		t.Fatalf("GenerateWorkerMain() error = %v", err)
+	}
+	codeStr := string(code)
+
+	// Count occurrences of WithDispatchDB(db) — should match number of channels with dispatch messages
+	count := strings.Count(codeStr, "channel.WithDispatchDB(db)")
+	if count != 2 {
+		t.Errorf("expected 2 occurrences of channel.WithDispatchDB(db), got %d", count)
+	}
+}
+
 func TestGenerateWorkerMain_DuplicatePackagePaths_ImportedOnce(t *testing.T) {
 	cfg := WorkerGenConfig{
 		Channels: []codegen.SerializedChannelInfo{

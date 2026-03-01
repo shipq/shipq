@@ -1,6 +1,7 @@
 package channelgen
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 
@@ -8,7 +9,7 @@ import (
 )
 
 func TestGenerateSvelteChannelHooks_EmptyChannels(t *testing.T) {
-	result, err := GenerateSvelteChannelHooks(nil)
+	result, err := GenerateSvelteChannelHooks(nil, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -21,7 +22,7 @@ func TestGenerateSvelteChannelHooks_SkipsBackendChannels(t *testing.T) {
 	channels := []codegen.SerializedChannelInfo{
 		makeBackendBillingChannel(),
 	}
-	result, err := GenerateSvelteChannelHooks(channels)
+	result, err := GenerateSvelteChannelHooks(channels, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -34,7 +35,7 @@ func TestGenerateSvelteChannelHooks_Header(t *testing.T) {
 	channels := []codegen.SerializedChannelInfo{
 		makeUnidirectionalEmailChannel(),
 	}
-	result, err := GenerateSvelteChannelHooks(channels)
+	result, err := GenerateSvelteChannelHooks(channels, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -48,7 +49,7 @@ func TestGenerateSvelteChannelHooks_SvelteImports(t *testing.T) {
 	channels := []codegen.SerializedChannelInfo{
 		makeUnidirectionalEmailChannel(),
 	}
-	result, err := GenerateSvelteChannelHooks(channels)
+	result, err := GenerateSvelteChannelHooks(channels, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -72,7 +73,7 @@ func TestGenerateSvelteChannelHooks_BaseChannelImports(t *testing.T) {
 	channels := []codegen.SerializedChannelInfo{
 		makeUnidirectionalEmailChannel(),
 	}
-	result, err := GenerateSvelteChannelHooks(channels)
+	result, err := GenerateSvelteChannelHooks(channels, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -96,7 +97,7 @@ func TestGenerateSvelteChannelHooks_UnidirectionalStoreStructure(t *testing.T) {
 	channels := []codegen.SerializedChannelInfo{
 		makeUnidirectionalEmailChannel(),
 	}
-	result, err := GenerateSvelteChannelHooks(channels)
+	result, err := GenerateSvelteChannelHooks(channels, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -151,7 +152,7 @@ func TestGenerateSvelteChannelHooks_OnDestroyCleanup(t *testing.T) {
 	channels := []codegen.SerializedChannelInfo{
 		makeUnidirectionalEmailChannel(),
 	}
-	result, err := GenerateSvelteChannelHooks(channels)
+	result, err := GenerateSvelteChannelHooks(channels, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -169,7 +170,7 @@ func TestGenerateSvelteChannelHooks_DispatchFunction(t *testing.T) {
 	channels := []codegen.SerializedChannelInfo{
 		makeUnidirectionalEmailChannel(),
 	}
-	result, err := GenerateSvelteChannelHooks(channels)
+	result, err := GenerateSvelteChannelHooks(channels, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -194,7 +195,7 @@ func TestGenerateSvelteChannelHooks_ErrorHandling(t *testing.T) {
 	channels := []codegen.SerializedChannelInfo{
 		makeUnidirectionalEmailChannel(),
 	}
-	result, err := GenerateSvelteChannelHooks(channels)
+	result, err := GenerateSvelteChannelHooks(channels, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -218,7 +219,7 @@ func TestGenerateSvelteChannelHooks_DisconnectFunction(t *testing.T) {
 	channels := []codegen.SerializedChannelInfo{
 		makeUnidirectionalEmailChannel(),
 	}
-	result, err := GenerateSvelteChannelHooks(channels)
+	result, err := GenerateSvelteChannelHooks(channels, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -241,7 +242,7 @@ func TestGenerateSvelteChannelHooks_ReadableStoreReturn(t *testing.T) {
 	channels := []codegen.SerializedChannelInfo{
 		makeUnidirectionalEmailChannel(),
 	}
-	result, err := GenerateSvelteChannelHooks(channels)
+	result, err := GenerateSvelteChannelHooks(channels, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -266,7 +267,7 @@ func TestGenerateSvelteChannelHooks_BidirectionalChannel(t *testing.T) {
 	channels := []codegen.SerializedChannelInfo{
 		makeBidirectionalChatbotChannel(),
 	}
-	result, err := GenerateSvelteChannelHooks(channels)
+	result, err := GenerateSvelteChannelHooks(channels, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -337,7 +338,7 @@ func TestGenerateSvelteChannelHooks_UnidirectionalNoSendMethods(t *testing.T) {
 	channels := []codegen.SerializedChannelInfo{
 		makeUnidirectionalEmailChannel(),
 	}
-	result, err := GenerateSvelteChannelHooks(channels)
+	result, err := GenerateSvelteChannelHooks(channels, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -355,7 +356,7 @@ func TestGenerateSvelteChannelHooks_MultipleChannels(t *testing.T) {
 		makeBidirectionalChatbotChannel(),
 		makeBackendBillingChannel(), // should be skipped
 	}
-	result, err := GenerateSvelteChannelHooks(channels)
+	result, err := GenerateSvelteChannelHooks(channels, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -379,7 +380,7 @@ func TestGenerateSvelteChannelHooks_FactoryNaming(t *testing.T) {
 	channels := []codegen.SerializedChannelInfo{
 		makeUnidirectionalEmailChannel(),
 	}
-	result, err := GenerateSvelteChannelHooks(channels)
+	result, err := GenerateSvelteChannelHooks(channels, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -401,7 +402,7 @@ func TestGenerateSvelteChannelHooks_PublicChannel(t *testing.T) {
 	channels := []codegen.SerializedChannelInfo{
 		makePublicAssistantChannel(),
 	}
-	result, err := GenerateSvelteChannelHooks(channels)
+	result, err := GenerateSvelteChannelHooks(channels, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -423,7 +424,7 @@ func TestGenerateSvelteChannelHooks_NoUseCallbackOrUseRef(t *testing.T) {
 	channels := []codegen.SerializedChannelInfo{
 		makeBidirectionalChatbotChannel(),
 	}
-	result, err := GenerateSvelteChannelHooks(channels)
+	result, err := GenerateSvelteChannelHooks(channels, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -448,7 +449,7 @@ func TestGenerateSvelteChannelHooks_DispatchResetsState(t *testing.T) {
 	channels := []codegen.SerializedChannelInfo{
 		makeUnidirectionalEmailChannel(),
 	}
-	result, err := GenerateSvelteChannelHooks(channels)
+	result, err := GenerateSvelteChannelHooks(channels, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -475,7 +476,7 @@ func TestGenerateSvelteChannelHooks_DispatchIsAsync(t *testing.T) {
 	channels := []codegen.SerializedChannelInfo{
 		makeUnidirectionalEmailChannel(),
 	}
-	result, err := GenerateSvelteChannelHooks(channels)
+	result, err := GenerateSvelteChannelHooks(channels, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -494,7 +495,7 @@ func TestGenerateSvelteChannelHooks_StoreInterfaceDispatchReturnsPromise(t *test
 	channels := []codegen.SerializedChannelInfo{
 		makeUnidirectionalEmailChannel(),
 	}
-	result, err := GenerateSvelteChannelHooks(channels)
+	result, err := GenerateSvelteChannelHooks(channels, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -510,7 +511,7 @@ func TestGenerateSvelteChannelHooks_BidirectionalReturnObject(t *testing.T) {
 	channels := []codegen.SerializedChannelInfo{
 		makeBidirectionalChatbotChannel(),
 	}
-	result, err := GenerateSvelteChannelHooks(channels)
+	result, err := GenerateSvelteChannelHooks(channels, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -535,7 +536,7 @@ func TestGenerateSvelteChannelHooks_SendMethodReturnType(t *testing.T) {
 	channels := []codegen.SerializedChannelInfo{
 		makeBidirectionalChatbotChannel(),
 	}
-	result, err := GenerateSvelteChannelHooks(channels)
+	result, err := GenerateSvelteChannelHooks(channels, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -551,7 +552,7 @@ func TestGenerateSvelteChannelHooks_DisconnectReturnType(t *testing.T) {
 	channels := []codegen.SerializedChannelInfo{
 		makeUnidirectionalEmailChannel(),
 	}
-	result, err := GenerateSvelteChannelHooks(channels)
+	result, err := GenerateSvelteChannelHooks(channels, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -559,5 +560,128 @@ func TestGenerateSvelteChannelHooks_DisconnectReturnType(t *testing.T) {
 
 	if !strings.Contains(output, "function disconnect(): void {") {
 		t.Error("disconnect should have explicit void return type")
+	}
+}
+
+// ── LLM hook injection tests ────────────────────────────────────────────────
+
+func TestGenerateSvelteChannelHooks_LLMChannel_ImportsLLMTypes(t *testing.T) {
+	channels := []codegen.SerializedChannelInfo{
+		makePublicAssistantChannel(),
+	}
+	llmCfg := &LLMConfig{
+		LLMChannelPkgs: map[string]bool{
+			"myapp/channels/assistant": true,
+		},
+	}
+
+	result, err := GenerateSvelteChannelHooks(channels, llmCfg)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	output := string(result)
+
+	for _, llmType := range llmStreamTypeNames() {
+		importLine := fmt.Sprintf("type %s,", llmType)
+		if !strings.Contains(output, importLine) {
+			t.Errorf("LLM channel svelte hooks should import %q from base client", llmType)
+		}
+	}
+}
+
+func TestGenerateSvelteChannelHooks_LLMChannel_HasLLMHandlersInOptions(t *testing.T) {
+	channels := []codegen.SerializedChannelInfo{
+		makePublicAssistantChannel(),
+	}
+	llmCfg := &LLMConfig{
+		LLMChannelPkgs: map[string]bool{
+			"myapp/channels/assistant": true,
+		},
+	}
+
+	result, err := GenerateSvelteChannelHooks(channels, llmCfg)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	output := string(result)
+
+	mustContain := []string{
+		"onLLMTextDelta?: (msg: LLMTextDelta) => void;",
+		"onLLMToolCallStart?: (msg: LLMToolCallStart) => void;",
+		"onLLMToolCallResult?: (msg: LLMToolCallResult) => void;",
+		"onLLMDone?: (msg: LLMDone) => void;",
+		"onLLMToolsAvailable?: (msg: LLMToolsAvailable) => void;",
+	}
+	for _, s := range mustContain {
+		if !strings.Contains(output, s) {
+			t.Errorf("LLM channel svelte options should contain %q", s)
+		}
+	}
+}
+
+func TestGenerateSvelteChannelHooks_LLMChannel_WiresUpLLMHandlers(t *testing.T) {
+	channels := []codegen.SerializedChannelInfo{
+		makePublicAssistantChannel(),
+	}
+	llmCfg := &LLMConfig{
+		LLMChannelPkgs: map[string]bool{
+			"myapp/channels/assistant": true,
+		},
+	}
+
+	result, err := GenerateSvelteChannelHooks(channels, llmCfg)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	output := string(result)
+
+	mustContain := []string{
+		"ch.onLLMTextDelta((msg) => currentOptions?.onLLMTextDelta?.(msg));",
+		"ch.onLLMToolCallStart((msg) => currentOptions?.onLLMToolCallStart?.(msg));",
+		"ch.onLLMToolCallResult((msg) => currentOptions?.onLLMToolCallResult?.(msg));",
+		"ch.onLLMDone((msg) => currentOptions?.onLLMDone?.(msg));",
+		"ch.onLLMToolsAvailable((msg) => currentOptions?.onLLMToolsAvailable?.(msg));",
+	}
+	for _, s := range mustContain {
+		if !strings.Contains(output, s) {
+			t.Errorf("LLM channel svelte hook should wire up handler: %q", s)
+		}
+	}
+}
+
+func TestGenerateSvelteChannelHooks_NonLLMChannel_NoLLMHandlers(t *testing.T) {
+	channels := []codegen.SerializedChannelInfo{
+		makeUnidirectionalEmailChannel(),
+	}
+	llmCfg := &LLMConfig{
+		LLMChannelPkgs: map[string]bool{
+			"myapp/channels/some_other": true,
+		},
+	}
+
+	result, err := GenerateSvelteChannelHooks(channels, llmCfg)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	output := string(result)
+
+	if strings.Contains(output, "onLLMTextDelta") {
+		t.Error("non-LLM channel should not have LLM handlers")
+	}
+}
+
+func TestGenerateSvelteChannelHooks_NilLLMConfig_NoLLMHandlers(t *testing.T) {
+	channels := []codegen.SerializedChannelInfo{
+		makePublicAssistantChannel(),
+	}
+
+	result, err := GenerateSvelteChannelHooks(channels, nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	output := string(result)
+
+	if strings.Contains(output, "onLLMTextDelta") {
+		t.Error("nil LLM config should not produce LLM handlers")
 	}
 }
