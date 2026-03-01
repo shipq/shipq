@@ -92,6 +92,7 @@ func MigrateUpCmd() {
 	if err := embed.EmbedAllPackages(roots.ShipqRoot, importPrefix, embed.EmbedOptions{
 		FilesEnabled:   filesEnabled,
 		WorkersEnabled: workersEnabled,
+		DBDialect:      dialect,
 	}); err != nil {
 		cli.FatalErr("failed to embed library packages", err)
 	}

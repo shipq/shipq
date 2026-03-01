@@ -109,6 +109,7 @@ func LLMCompileCmd() {
 		FilesEnabled:   filesEnabled,
 		WorkersEnabled: true, // LLM requires workers
 		LLMEnabled:     true,
+		DBDialect:      dialect,
 	}); err != nil {
 		cli.FatalErr("failed to embed LLM library packages", err)
 	}

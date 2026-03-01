@@ -1217,9 +1217,15 @@ func TestEndToEnd_SignupThenOAuth(t *testing.T) {
 	}
 }
 
-// scenarioAuthGoogleThenSignup verifies that running "shipq auth google" followed
-// by "shipq signup" does NOT strip RegisterOAuthRoutes from register.go.
-// This is the exact sequence that triggered Bug 1 before the fix.
+// -------------------------------------------------------------------------
+// Scenario: OAuth then Signup (regression test — reverse of SignupThenOAuth)
+//
+// Running `shipq auth google` followed by `shipq signup` must preserve the
+// RegisterOAuthRoutes declaration in register.go AND add the /signup route.
+// This is the mirror of scenarioSignupThenOAuth: it verifies the opposite
+// ordering works without clobbering either feature.
+// -------------------------------------------------------------------------
+
 func scenarioAuthGoogleThenSignup(t *testing.T, shipq string, db dbConfig) {
 	t.Helper()
 
@@ -1237,7 +1243,11 @@ func scenarioAuthGoogleThenSignup(t *testing.T, shipq string, db dbConfig) {
 	runWithEnv(t, proj.CleanDir, dbEnv, shipq, "auth", "google")
 	run(t, proj.CleanDir, "go", "mod", "tidy")
 
-	// 3. Verify register.go contains RegisterOAuthRoutes after auth google
+	// 3. Verify the project compiles after auth google
+	t.Log("Verifying project compiles after auth google...")
+	run(t, proj.CleanDir, "go", "build", "./...")
+
+	// 4. Verify register.go contains RegisterOAuthRoutes after auth google
 	t.Log("Verifying register.go contains RegisterOAuthRoutes after auth google...")
 	registerContent, err := os.ReadFile(filepath.Join(proj.CleanDir, "api", "auth", "register.go"))
 	if err != nil {
@@ -1247,19 +1257,9 @@ func scenarioAuthGoogleThenSignup(t *testing.T, shipq string, db dbConfig) {
 		t.Fatalf("register.go missing RegisterOAuthRoutes after auth google:\n%s", registerContent)
 	}
 
-	// 4. shipq signup (must NOT strip RegisterOAuthRoutes from register.go)
+	// 5. shipq signup (must NOT strip RegisterOAuthRoutes from register.go)
 	t.Log("Generating signup handler...")
 	runWithEnv(t, proj.CleanDir, dbEnv, shipq, "signup")
-
-	// 5. Verify register.go STILL contains RegisterOAuthRoutes after signup
-	t.Log("Verifying register.go still contains RegisterOAuthRoutes after signup...")
-	registerContent, err = os.ReadFile(filepath.Join(proj.CleanDir, "api", "auth", "register.go"))
-	if err != nil {
-		t.Fatalf("failed to read register.go after signup: %v", err)
-	}
-	if !strings.Contains(string(registerContent), "func RegisterOAuthRoutes(") {
-		t.Fatalf("register.go missing RegisterOAuthRoutes after signup — signup clobbered OAuth routes:\n%s", registerContent)
-	}
 
 	// 6. Verify the project compiles (this was the failing step before the fix)
 	t.Log("Verifying project compiles after auth google + signup...")
@@ -1269,9 +1269,44 @@ func scenarioAuthGoogleThenSignup(t *testing.T, shipq string, db dbConfig) {
 	t.Log("Running go vet...")
 	run(t, proj.CleanDir, "go", "vet", "./...")
 
-	// 8. Run all tests in the generated project
+	// 8. Verify register.go STILL contains RegisterOAuthRoutes after signup
+	t.Log("Verifying register.go still contains RegisterOAuthRoutes after signup...")
+	registerContent, err = os.ReadFile(filepath.Join(proj.CleanDir, "api", "auth", "register.go"))
+	if err != nil {
+		t.Fatalf("failed to read register.go after signup: %v", err)
+	}
+	if !strings.Contains(string(registerContent), "func RegisterOAuthRoutes(") {
+		t.Fatalf("register.go missing RegisterOAuthRoutes after signup — signup clobbered OAuth routes:\n%s", registerContent)
+	}
+
+	// 9. Verify register.go contains the /signup route (not omitted)
+	t.Log("Verifying register.go contains /signup route...")
+	if !strings.Contains(string(registerContent), "/signup") {
+		t.Fatalf("register.go missing /signup route after signup:\n%s", registerContent)
+	}
+
+	// 10. Verify OAuth files still exist after signup
+	t.Log("Verifying generated OAuth files still exist after signup...")
+	for _, f := range []string{
+		filepath.Join("api", "auth", "oauth_shared.go"),
+		filepath.Join("api", "auth", "oauth_google.go"),
+		filepath.Join("api", "auth", "signup.go"),
+	} {
+		fp := filepath.Join(proj.CleanDir, f)
+		if _, err := os.Stat(fp); os.IsNotExist(err) {
+			t.Fatalf("expected generated file %s, but it does not exist", f)
+		}
+	}
+
+	// 11. Run all tests in the generated project
 	t.Log("Running all tests in generated project...")
 	runWithEnv(t, proj.CleanDir, tEnv, "go", "test", "./...", "-v", "-count=1")
+
+	// 12. Verify idempotency: run auth google + signup again
+	t.Log("Verifying idempotency (running auth google + signup again)...")
+	runWithEnv(t, proj.CleanDir, dbEnv, shipq, "auth", "google")
+	runWithEnv(t, proj.CleanDir, dbEnv, shipq, "signup")
+	run(t, proj.CleanDir, "go", "build", "./...")
 
 	t.Log("Auth Google then Signup scenario passed!")
 }

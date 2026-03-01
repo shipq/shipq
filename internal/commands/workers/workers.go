@@ -251,6 +251,7 @@ func WorkersCmd() {
 	if err := embed.EmbedAllPackages(roots.ShipqRoot, importPrefix, embed.EmbedOptions{
 		FilesEnabled:   filesEnabled,
 		WorkersEnabled: true,
+		DBDialect:      dialect,
 	}); err != nil {
 		cli.FatalErr("failed to embed packages", err)
 	}
