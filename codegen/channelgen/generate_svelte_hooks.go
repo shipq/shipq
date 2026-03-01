@@ -11,7 +11,7 @@ import (
 // GenerateSvelteChannelHooks generates the Svelte integration layer for channels
 // (svelte/shipq-channels.ts). It produces a Svelte store factory per frontend channel
 // that wraps the base dispatch function with writable stores and onDestroy cleanup.
-func GenerateSvelteChannelHooks(channels []codegen.SerializedChannelInfo) ([]byte, error) {
+func GenerateSvelteChannelHooks(channels []codegen.SerializedChannelInfo, llmCfg *LLMConfig) ([]byte, error) {
 	// Filter to frontend-only channels
 	var frontendChannels []codegen.SerializedChannelInfo
 	for _, ch := range channels {
@@ -33,16 +33,34 @@ func GenerateSvelteChannelHooks(channels []codegen.SerializedChannelInfo) ([]byt
 	buf.WriteString("import { writable, type Readable } from \"svelte/store\";\n")
 	buf.WriteString("import { onDestroy } from \"svelte\";\n")
 
+	// Determine if any frontend channel is LLM-enabled
+	hasLLMChannel := false
+	if llmCfg != nil {
+		for _, ch := range frontendChannels {
+			if llmCfg.isLLMChannel(ch) {
+				hasLLMChannel = true
+				break
+			}
+		}
+	}
+
 	// Collect all type/function imports from the base channel client
 	buf.WriteString("import {\n")
 	for _, ch := range frontendChannels {
 		writeSvelteChannelImports(&buf, ch)
 	}
+	// Import LLM stream types if any frontend channel is LLM-enabled
+	if hasLLMChannel {
+		for _, llmType := range llmStreamTypeNames() {
+			fmt.Fprintf(&buf, "  type %s,\n", llmType)
+		}
+	}
 	buf.WriteString("} from \"../shipq-channels\";\n")
 
 	// Generate per-channel store factories
 	for _, ch := range frontendChannels {
-		if err := generateSvelteChannelHook(&buf, ch); err != nil {
+		isLLM := llmCfg != nil && llmCfg.isLLMChannel(ch)
+		if err := generateSvelteChannelHook(&buf, ch, isLLM); err != nil {
 			return nil, fmt.Errorf("generate svelte hook for channel %q: %w", ch.Name, err)
 		}
 	}
@@ -68,7 +86,7 @@ func writeSvelteChannelImports(buf *bytes.Buffer, ch codegen.SerializedChannelIn
 }
 
 // generateSvelteChannelHook generates the Svelte store factory for a single channel.
-func generateSvelteChannelHook(buf *bytes.Buffer, ch codegen.SerializedChannelInfo) error {
+func generateSvelteChannelHook(buf *bytes.Buffer, ch codegen.SerializedChannelInfo, isLLM bool) error {
 	pascalName := tsutil.ToPascalCase(ch.Name)
 	factoryName := "create" + pascalName + "Channel"
 
@@ -101,6 +119,12 @@ func generateSvelteChannelHook(buf *bytes.Buffer, ch codegen.SerializedChannelIn
 	fmt.Fprintf(buf, "\nexport interface %sChannelOptions {\n", pascalName)
 	for _, msg := range fromServerMsgs {
 		fmt.Fprintf(buf, "  on%s?: (msg: %s) => void;\n", msg.TypeName, msg.TypeName)
+	}
+	// LLM stream event handlers (auto-injected for LLM-enabled channels)
+	if isLLM {
+		for _, llmType := range llmStreamTypeNames() {
+			fmt.Fprintf(buf, "  on%s?: (msg: %s) => void;\n", llmType, llmType)
+		}
 	}
 	fmt.Fprintf(buf, "  onError?: (error: Error) => void;\n")
 	buf.WriteString("}\n")
@@ -153,6 +177,12 @@ func generateSvelteChannelHook(buf *bytes.Buffer, ch codegen.SerializedChannelIn
 	// Wire up FromServer handlers
 	for _, msg := range fromServerMsgs {
 		fmt.Fprintf(buf, "      ch.on%s((msg) => currentOptions?.on%s?.(msg));\n", msg.TypeName, msg.TypeName)
+	}
+	// Wire up LLM stream handlers
+	if isLLM {
+		for _, llmType := range llmStreamTypeNames() {
+			fmt.Fprintf(buf, "      ch.on%s((msg) => currentOptions?.on%s?.(msg));\n", llmType, llmType)
+		}
 	}
 
 	buf.WriteString("    } catch (err) {\n")

@@ -33,10 +33,27 @@ func GenerateReactChannelHooks(channels []codegen.SerializedChannelInfo, llmCfg 
 	// React imports
 	buf.WriteString("import { useEffect, useRef, useCallback, useState } from \"react\";\n")
 
+	// Determine if any frontend channel is LLM-enabled
+	hasLLMChannel := false
+	if llmCfg != nil {
+		for _, ch := range frontendChannels {
+			if llmCfg.isLLMChannel(ch) {
+				hasLLMChannel = true
+				break
+			}
+		}
+	}
+
 	// Collect all type/function imports from the base channel client
 	buf.WriteString("import {\n")
 	for _, ch := range frontendChannels {
 		writeReactChannelImports(&buf, ch)
+	}
+	// Import LLM stream types if any frontend channel is LLM-enabled
+	if hasLLMChannel {
+		for _, llmType := range llmStreamTypeNames() {
+			fmt.Fprintf(&buf, "  type %s,\n", llmType)
+		}
 	}
 	buf.WriteString("} from \"../shipq-channels\";\n")
 

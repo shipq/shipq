@@ -38,6 +38,11 @@ type dispatchOptions struct {
 	// enrich the context with dependencies (e.g., API clients). This is the
 	// convention-based Setup function detected by static analysis.
 	SetupFunc func(context.Context) context.Context
+
+	// DB, when non-nil, is injected into the handler context via WithDB.
+	// This allows WrapDispatchHandlerWithUpdater callers to provide a *sql.DB
+	// without changing the function signature (the db parameter is nil in that path).
+	DB *sql.DB
 }
 
 // WithSetup returns a DispatchOption that installs a Setup function. The Setup
@@ -53,6 +58,24 @@ type dispatchOptions struct {
 func WithSetup(fn func(context.Context) context.Context) DispatchOption {
 	return func(o *dispatchOptions) {
 		o.SetupFunc = fn
+	}
+}
+
+// WithDispatchDB returns a DispatchOption that provides a *sql.DB to inject
+// into the handler context. This is primarily used with WrapDispatchHandlerWithUpdater,
+// which passes nil for the db parameter internally — without this option,
+// DBFromContext(ctx) would return nil inside Setup and handler functions.
+//
+// Usage in generated worker code:
+//
+//	channel.WrapDispatchHandlerWithUpdater(
+//	    handler, transport, updateJob, "assistant",
+//	    channel.WithSetup(assistant.Setup),
+//	    channel.WithDispatchDB(db),
+//	)
+func WithDispatchDB(db *sql.DB) DispatchOption {
+	return func(o *dispatchOptions) {
+		o.DB = db
 	}
 }
 
@@ -188,9 +211,17 @@ func wrapDispatchHandlerInternal(handler any, transport RealtimeTransport, db *s
 			cleanup,
 		)
 
+		// Prefer DB from options (set via WithDispatchDB) over the db parameter.
+		// WrapDispatchHandlerWithUpdater passes nil for db, so options.DB is the
+		// only way to get a valid *sql.DB into the context in that path.
+		actualDB := db
+		if options.DB != nil {
+			actualDB = options.DB
+		}
+
 		ctx := context.Background()
 		ctx = WithChannel(ctx, ch)
-		ctx = WithDB(ctx, db)
+		ctx = WithDB(ctx, actualDB)
 		ctx = WithAccountID(ctx, dp.AccountID)
 		ctx = WithOrgID(ctx, dp.OrgID)
 

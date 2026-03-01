@@ -177,9 +177,9 @@ func generateWorkerMainFunc(buf *bytes.Buffer, cfg WorkerGenConfig) {
 
 		if ch.HasSetup {
 			setupRef := ch.PackageName + ".Setup"
-			fmt.Fprintf(buf, "\tif err := queue.RegisterTask(%q, channel.WrapDispatchHandlerWithUpdater(%s, transport, updateJob, %q, channel.WithSetup(%s))); err != nil {\n", ch.Name, handlerRef, ch.Name, setupRef)
+			fmt.Fprintf(buf, "\tif err := queue.RegisterTask(%q, channel.WrapDispatchHandlerWithUpdater(%s, transport, updateJob, %q, channel.WithSetup(%s), channel.WithDispatchDB(db))); err != nil {\n", ch.Name, handlerRef, ch.Name, setupRef)
 		} else {
-			fmt.Fprintf(buf, "\tif err := queue.RegisterTask(%q, channel.WrapDispatchHandlerWithUpdater(%s, transport, updateJob, %q)); err != nil {\n", ch.Name, handlerRef, ch.Name)
+			fmt.Fprintf(buf, "\tif err := queue.RegisterTask(%q, channel.WrapDispatchHandlerWithUpdater(%s, transport, updateJob, %q, channel.WithDispatchDB(db))); err != nil {\n", ch.Name, handlerRef, ch.Name)
 		}
 		fmt.Fprintf(buf, "\t\tconfig.Logger.Error(\"failed to register task\", \"task\", %q, \"error\", err.Error())\n", ch.Name)
 		buf.WriteString("\t\tos.Exit(1)\n")

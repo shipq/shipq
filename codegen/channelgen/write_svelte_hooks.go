@@ -11,8 +11,8 @@ import (
 // It writes to <shipqRoot>/<tsOutputDir>/svelte/shipq-channels.ts.
 // If tsOutputDir is empty, it defaults to "." (project root).
 // Uses codegen.WriteFileIfChanged() for idempotency.
-func WriteSvelteChannelHooks(channels []codegen.SerializedChannelInfo, shipqRoot, tsOutputDir string) error {
-	code, err := GenerateSvelteChannelHooks(channels)
+func WriteSvelteChannelHooks(channels []codegen.SerializedChannelInfo, shipqRoot, tsOutputDir string, llmCfg *LLMConfig) error {
+	code, err := GenerateSvelteChannelHooks(channels, llmCfg)
 	if err != nil {
 		return fmt.Errorf("generate svelte channel hooks: %w", err)
 	}
