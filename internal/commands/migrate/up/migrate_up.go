@@ -18,10 +18,10 @@ import (
 	"github.com/shipq/shipq/codegen/embed"
 	codegenMigrate "github.com/shipq/shipq/codegen/migrate"
 	portsqlcodegen "github.com/shipq/shipq/db/portsql/codegen"
-	"github.com/shipq/shipq/db/portsql/codegen/queryrunner"
 	"github.com/shipq/shipq/db/portsql/migrate"
 	"github.com/shipq/shipq/dburl"
 	"github.com/shipq/shipq/inifile"
+	"github.com/shipq/shipq/internal/commands/db"
 	shipqdag "github.com/shipq/shipq/internal/dag"
 	"github.com/shipq/shipq/internal/dbops"
 	"github.com/shipq/shipq/project"
@@ -175,59 +175,14 @@ func MigrateUpCmd() {
 	}
 	cli.Success("Generated shipq/db/schema/schema.go")
 
-	// Step 11: Generate query runner (in shipq root)
-	cli.Info("Generating shipq/queries package...")
-	if err := generateQueryRunner(roots.ShipqRoot, importPrefix, plan, dialect); err != nil {
-		cli.FatalErr("failed to generate query runner", err)
-	}
-	cli.Successf("Generated shipq/queries/%s/runner.go", dialect)
+	// Step 11: Compile queries (discovers querydefs and generates full runner)
+	// This must use db compile rather than generating a bare runner with
+	// UserQueries: nil, because user-defined queries (e.g. auth queries from
+	// querydefs/auth/queries.go) would otherwise be silently dropped.
+	cli.Info("Compiling queries...")
+	db.DBCompileCmd()
 
 	cli.Success("migrate up complete")
-}
-
-// generateQueryRunner generates the shipq/queries package with the unified query runner.
-func generateQueryRunner(shipqRoot, modulePath string, plan *migrate.MigrationPlan, dialect string) error {
-	// Create output directories (in shipq root)
-	queriesDir := filepath.Join(shipqRoot, "shipq", "queries")
-	if err := codegen.EnsureDir(queriesDir); err != nil {
-		return fmt.Errorf("failed to create queries directory: %w", err)
-	}
-
-	dialectDir := filepath.Join(queriesDir, dialect)
-	if err := codegen.EnsureDir(dialectDir); err != nil {
-		return fmt.Errorf("failed to create dialect directory: %w", err)
-	}
-
-	// Build config for the runner generator
-	runnerCfg := queryrunner.UnifiedRunnerConfig{
-		ModulePath:  modulePath,
-		Dialect:     dialect,
-		UserQueries: nil, // No user queries from migrate up - use db compile for that
-	}
-
-	// Generate and write types.go
-	typesCode, err := queryrunner.GenerateSharedTypes(runnerCfg)
-	if err != nil {
-		return fmt.Errorf("failed to generate types.go: %w", err)
-	}
-
-	typesPath := filepath.Join(queriesDir, "types.go")
-	if _, err := codegen.WriteFileIfChanged(typesPath, typesCode); err != nil {
-		return fmt.Errorf("failed to write types.go: %w", err)
-	}
-
-	// Generate and write runner.go
-	runnerCode, err := queryrunner.GenerateUnifiedRunner(runnerCfg)
-	if err != nil {
-		return fmt.Errorf("failed to generate runner.go: %w", err)
-	}
-
-	runnerPath := filepath.Join(dialectDir, "runner.go")
-	if _, err := codegen.WriteFileIfChanged(runnerPath, runnerCode); err != nil {
-		return fmt.Errorf("failed to write runner.go: %w", err)
-	}
-
-	return nil
 }
 
 // generateSchemaPackage generates the shipq/db/schema package with typed table/column references.
