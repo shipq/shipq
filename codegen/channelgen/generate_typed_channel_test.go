@@ -532,3 +532,288 @@ func TestGenerateTypedChannel_RawChannelUsed(t *testing.T) {
 		t.Error("expected ReceiveAny to delegate to raw.ReceiveAny")
 	}
 }
+
+// ── Zero FromServer tests (Part B) ──────────────────────────────────────────
+
+// makeZeroFromServerChannel creates a channel with only FromClient messages and zero FromServer messages.
+func makeZeroFromServerChannel() codegen.SerializedChannelInfo {
+	return codegen.SerializedChannelInfo{
+		Name:        "assistant",
+		Visibility:  "frontend",
+		PackagePath: "myapp/channels/assistant",
+		PackageName: "assistant",
+		Messages: []codegen.SerializedMessageInfo{
+			{
+				Direction:   "client_to_server",
+				TypeName:    "ChatRequest",
+				IsDispatch:  true,
+				HandlerName: "HandleChatRequest",
+				Fields: []codegen.SerializedFieldInfo{
+					{Name: "Message", Type: "string", JSONName: "message", Required: true},
+				},
+			},
+		},
+	}
+}
+
+func TestGenerateTypedChannel_ZeroFromServer_GeneratesValidCode(t *testing.T) {
+	ch := makeZeroFromServerChannel()
+	code, err := GenerateTypedChannel(ch, "myapp")
+	if err != nil {
+		t.Fatalf("GenerateTypedChannel failed: %v", err)
+	}
+
+	src := string(code)
+
+	// Should NOT contain ServerMessage interface or Send methods
+	if strings.Contains(src, "ServerMessage") {
+		t.Error("zero FromServer channel should not contain ServerMessage interface")
+	}
+	if strings.Contains(src, "serverMessage()") {
+		t.Error("zero FromServer channel should not contain serverMessage() marker method")
+	}
+	if strings.Contains(src, "func (tc *TypedChannel) Send(") {
+		t.Error("zero FromServer channel should not contain Send method")
+	}
+
+	// Should NOT import encoding/json or fmt (no server msgs and no mid-stream client msgs)
+	if strings.Contains(src, `"encoding/json"`) {
+		t.Error("zero FromServer channel should not import encoding/json")
+	}
+	if strings.Contains(src, `"fmt"`) {
+		t.Error("zero FromServer channel should not import fmt")
+	}
+
+	// Should still contain TypedChannel and TypedChannelFromContext
+	if !strings.Contains(src, "type TypedChannel struct") {
+		t.Error("expected TypedChannel struct")
+	}
+	if !strings.Contains(src, "func TypedChannelFromContext(") {
+		t.Error("expected TypedChannelFromContext function")
+	}
+
+	// Should still import context and channel
+	if !strings.Contains(src, `"context"`) {
+		t.Error("expected context import")
+	}
+	if !strings.Contains(src, `"myapp/shipq/lib/channel"`) {
+		t.Error("expected channel import")
+	}
+}
+
+func TestGenerateTypedChannel_ZeroFromServer_Compiles(t *testing.T) {
+	ch := makeZeroFromServerChannel()
+	code, err := GenerateTypedChannel(ch, "myapp")
+	if err != nil {
+		t.Fatalf("GenerateTypedChannel failed: %v", err)
+	}
+
+	fset := token.NewFileSet()
+	_, err = parser.ParseFile(fset, "zz_generated_channel.go", code, parser.AllErrors)
+	if err != nil {
+		t.Errorf("generated code is not valid Go: %v\n%s", err, string(code))
+	}
+}
+
+// ── Cross-package type detection tests (Part C) ─────────────────────────────
+
+func TestGenerateTypedChannel_CrossPackageFromServer_ReturnsError(t *testing.T) {
+	ch := codegen.SerializedChannelInfo{
+		Name:        "chatbot",
+		Visibility:  "frontend",
+		PackagePath: "myapp/channels/chatbot",
+		PackageName: "chatbot",
+		Messages: []codegen.SerializedMessageInfo{
+			{
+				Direction:   "client_to_server",
+				TypeName:    "ChatRequest",
+				IsDispatch:  true,
+				HandlerName: "HandleChatRequest",
+			},
+			{
+				Direction:   "server_to_client",
+				TypeName:    "ChatResponse",
+				PackagePath: "myapp/channels/chatbot", // local — OK
+			},
+			{
+				Direction:   "server_to_client",
+				TypeName:    "LLMTextDelta",
+				PackagePath: "myapp/shipq/lib/llm", // external — should error
+			},
+		},
+	}
+
+	_, err := GenerateTypedChannel(ch, "myapp")
+	if err == nil {
+		t.Fatal("expected error for cross-package FromServer type, got nil")
+	}
+
+	errStr := err.Error()
+	if !strings.Contains(errStr, "LLMTextDelta") {
+		t.Errorf("expected error to mention type name 'LLMTextDelta', got: %s", errStr)
+	}
+	if !strings.Contains(errStr, "myapp/shipq/lib/llm") {
+		t.Errorf("expected error to mention external package path, got: %s", errStr)
+	}
+	if !strings.Contains(errStr, "myapp/channels/chatbot") {
+		t.Errorf("expected error to mention channel package path, got: %s", errStr)
+	}
+	if !strings.Contains(errStr, "LLM") {
+		t.Errorf("expected error to mention LLM guidance, got: %s", errStr)
+	}
+}
+
+func TestGenerateTypedChannel_CrossPackageMidStream_ReturnsError(t *testing.T) {
+	ch := codegen.SerializedChannelInfo{
+		Name:        "chatbot",
+		Visibility:  "frontend",
+		PackagePath: "myapp/channels/chatbot",
+		PackageName: "chatbot",
+		Messages: []codegen.SerializedMessageInfo{
+			{
+				Direction:   "client_to_server",
+				TypeName:    "ChatRequest",
+				IsDispatch:  true,
+				HandlerName: "HandleChatRequest",
+			},
+			{
+				Direction:   "client_to_server",
+				TypeName:    "SharedApproval",
+				IsDispatch:  false,
+				HandlerName: "HandleSharedApproval",
+				PackagePath: "myapp/shared", // external mid-stream type
+			},
+			{
+				Direction: "server_to_client",
+				TypeName:  "ChatResponse",
+			},
+		},
+	}
+
+	_, err := GenerateTypedChannel(ch, "myapp")
+	if err == nil {
+		t.Fatal("expected error for cross-package mid-stream FromClient type, got nil")
+	}
+
+	if !strings.Contains(err.Error(), "SharedApproval") {
+		t.Errorf("expected error to mention 'SharedApproval', got: %s", err.Error())
+	}
+	if !strings.Contains(err.Error(), "myapp/shared") {
+		t.Errorf("expected error to mention external package 'myapp/shared', got: %s", err.Error())
+	}
+}
+
+func TestGenerateTypedChannel_LocalTypes_StillWork(t *testing.T) {
+	// A channel with only local FromServer types (empty PackagePath or matching channel's own).
+	ch := codegen.SerializedChannelInfo{
+		Name:        "email",
+		Visibility:  "frontend",
+		PackagePath: "myapp/channels/email",
+		PackageName: "email",
+		Messages: []codegen.SerializedMessageInfo{
+			{
+				Direction:   "client_to_server",
+				TypeName:    "SendEmailRequest",
+				IsDispatch:  true,
+				HandlerName: "HandleSendEmailRequest",
+				PackagePath: "myapp/channels/email", // local — matches channel
+			},
+			{
+				Direction:   "server_to_client",
+				TypeName:    "EmailProgress",
+				PackagePath: "myapp/channels/email", // local — matches channel
+			},
+		},
+	}
+
+	code, err := GenerateTypedChannel(ch, "myapp")
+	if err != nil {
+		t.Fatalf("expected no error for local types, got: %v", err)
+	}
+
+	src := string(code)
+	if !strings.Contains(src, "ServerMessage") {
+		t.Error("expected ServerMessage interface for local FromServer types")
+	}
+	if !strings.Contains(src, "func (*EmailProgress) serverMessage()") {
+		t.Error("expected serverMessage() implementation for EmailProgress")
+	}
+
+	fset := token.NewFileSet()
+	_, err = parser.ParseFile(fset, "zz_generated_channel.go", code, parser.AllErrors)
+	if err != nil {
+		t.Errorf("generated code is not valid Go: %v", err)
+	}
+}
+
+func TestGenerateTypedChannel_EmptyPackagePath_TreatedAsLocal(t *testing.T) {
+	// When PackagePath is empty (not set), the type is treated as local.
+	ch := codegen.SerializedChannelInfo{
+		Name:        "email",
+		Visibility:  "frontend",
+		PackagePath: "myapp/channels/email",
+		PackageName: "email",
+		Messages: []codegen.SerializedMessageInfo{
+			{
+				Direction:   "client_to_server",
+				TypeName:    "SendEmailRequest",
+				IsDispatch:  true,
+				HandlerName: "HandleSendEmailRequest",
+				PackagePath: "", // empty — treated as local
+			},
+			{
+				Direction:   "server_to_client",
+				TypeName:    "EmailProgress",
+				PackagePath: "", // empty — treated as local
+			},
+		},
+	}
+
+	code, err := GenerateTypedChannel(ch, "myapp")
+	if err != nil {
+		t.Fatalf("expected no error for types with empty PackagePath, got: %v", err)
+	}
+
+	fset := token.NewFileSet()
+	_, err = parser.ParseFile(fset, "zz_generated_channel.go", code, parser.AllErrors)
+	if err != nil {
+		t.Errorf("generated code is not valid Go: %v", err)
+	}
+}
+
+func TestGenerateTypedChannel_MixedLocalAndExternal_ErrorsOnFirstExternal(t *testing.T) {
+	ch := codegen.SerializedChannelInfo{
+		Name:        "chatbot",
+		Visibility:  "frontend",
+		PackagePath: "myapp/channels/chatbot",
+		PackageName: "chatbot",
+		Messages: []codegen.SerializedMessageInfo{
+			{
+				Direction:   "client_to_server",
+				TypeName:    "ChatRequest",
+				IsDispatch:  true,
+				HandlerName: "HandleChatRequest",
+			},
+			{
+				Direction:   "server_to_client",
+				TypeName:    "ChatResponse",
+				PackagePath: "myapp/channels/chatbot", // local — OK
+			},
+			{
+				Direction:   "server_to_client",
+				TypeName:    "ExternalEvent",
+				PackagePath: "myapp/shared/events", // external — should error
+			},
+		},
+	}
+
+	_, err := GenerateTypedChannel(ch, "myapp")
+	if err == nil {
+		t.Fatal("expected error for mixed local/external types, got nil")
+	}
+
+	// Should error on the external type
+	if !strings.Contains(err.Error(), "ExternalEvent") {
+		t.Errorf("expected error to mention 'ExternalEvent', got: %s", err.Error())
+	}
+}

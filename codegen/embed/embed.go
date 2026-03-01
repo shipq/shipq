@@ -33,9 +33,16 @@ type EmbedOptions struct {
 	FilesEnabled   bool
 	WorkersEnabled bool
 	LLMEnabled     bool
+	DBDialect      string // "sqlite", "postgres", or "mysql"
 }
 
 func EmbedAllPackages(shipqRoot, modulePath string, opts EmbedOptions) error {
+	// Default to sqlite when dialect is empty (backwards compatibility).
+	dialect := opts.DBDialect
+	if dialect == "" {
+		dialect = "sqlite"
+	}
+
 	packages := []embeddedPackage{
 		{fs: shipqsrc.HandlerFS, srcDir: "handler", destDir: filepath.Join("shipq", "lib", "handler")},
 		{fs: shipqsrc.HttperrorFS, srcDir: "httperror", destDir: filepath.Join("shipq", "lib", "httperror")},
@@ -89,7 +96,7 @@ func EmbedAllPackages(shipqRoot, modulePath string, opts EmbedOptions) error {
 	}
 
 	for _, pkg := range packages {
-		if err := copyEmbeddedPackage(pkg, shipqRoot, modulePath); err != nil {
+		if err := copyEmbeddedPackage(pkg, shipqRoot, modulePath, dialect); err != nil {
 			return err
 		}
 	}
@@ -162,7 +169,7 @@ var AdminJS []byte
 	return os.WriteFile(filepath.Join(destDir, "embed.go"), content, 0o644)
 }
 
-func copyEmbeddedPackage(pkg embeddedPackage, shipqRoot, modulePath string) error {
+func copyEmbeddedPackage(pkg embeddedPackage, shipqRoot, modulePath, dialect string) error {
 	entries, err := fs.ReadDir(pkg.fs, pkg.srcDir)
 	if err != nil {
 		return fmt.Errorf("read embedded dir %q: %w", pkg.srcDir, err)
@@ -181,11 +188,32 @@ func copyEmbeddedPackage(pkg embeddedPackage, shipqRoot, modulePath string) erro
 		if entry.IsDir() || filepath.Ext(entry.Name()) != ".go" {
 			continue
 		}
-		if strings.HasSuffix(entry.Name(), "_test.go") {
-			continue
+
+		name := entry.Name()
+
+		if strings.HasSuffix(name, "_test.go") {
+			base := strings.TrimSuffix(name, "_test.go")
+
+			// 1. Always skip infra-heavy test categories
+			if strings.HasSuffix(base, "_integration") ||
+				strings.HasSuffix(base, "_e2e") ||
+				strings.HasSuffix(base, "_crossdb") ||
+				strings.HasSuffix(base, "_fuzz") {
+				continue
+			}
+
+			// 2. Skip test files that import the wrong driver
+			srcPath := filepath.Join(pkg.srcDir, name)
+			content, err := fs.ReadFile(pkg.fs, srcPath)
+			if err != nil {
+				return fmt.Errorf("read embedded file %q: %w", srcPath, err)
+			}
+			if importsWrongDriver(content, dialect) {
+				continue
+			}
 		}
 
-		srcPath := filepath.Join(pkg.srcDir, entry.Name())
+		srcPath := filepath.Join(pkg.srcDir, name)
 		content, err := fs.ReadFile(pkg.fs, srcPath)
 		if err != nil {
 			return fmt.Errorf("read embedded file %q: %w", srcPath, err)
@@ -196,11 +224,29 @@ func copyEmbeddedPackage(pkg embeddedPackage, shipqRoot, modulePath string) erro
 		// fully self-contained.
 		content = bytes.ReplaceAll(content, oldImport, newImport)
 
-		destPath := filepath.Join(destDir, entry.Name())
+		destPath := filepath.Join(destDir, name)
 		if err := os.WriteFile(destPath, content, 0o644); err != nil {
 			return fmt.Errorf("write embedded file %q: %w", destPath, err)
 		}
 	}
 
 	return nil
+}
+
+// driverImports maps dialect names to their blank-import strings.
+var driverImports = map[string][]byte{
+	"sqlite":   []byte(`"modernc.org/sqlite"`),
+	"postgres": []byte(`"github.com/jackc/pgx/v5`),
+	"mysql":    []byte(`"github.com/go-sql-driver/mysql"`),
+}
+
+// importsWrongDriver returns true if the file content contains a
+// blank import for a database driver that does NOT match the project dialect.
+func importsWrongDriver(content []byte, dialect string) bool {
+	for d, importBytes := range driverImports {
+		if d != dialect && bytes.Contains(content, importBytes) {
+			return true
+		}
+	}
+	return false
 }

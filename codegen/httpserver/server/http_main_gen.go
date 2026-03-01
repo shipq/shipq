@@ -12,6 +12,7 @@ type HTTPMainGenConfig struct {
 	OutputPkg   string // package containing generated HTTP server (e.g., "api")
 	DBDialect   string // "mysql", "postgres", or "sqlite"
 	HasChannels bool   // true when [workers] channels exist; wires channel routes into the server
+	HasAuth     bool   // true when at least one channel requires auth (i.e., is not public)
 }
 
 // GenerateHTTPMain generates the main.go entrypoint for the HTTP server.
@@ -49,7 +50,7 @@ func generateMainImports(buf *bytes.Buffer, cfg HTTPMainGenConfig) {
 	fmt.Fprintf(buf, "\t%q\n", apiPkg)
 
 	// Auth package import (needed for channel auth wrappers)
-	if cfg.HasChannels {
+	if cfg.HasChannels && cfg.HasAuth {
 		authPkg := cfg.ModulePath + "/" + cfg.OutputPkg + "/auth"
 		fmt.Fprintf(buf, "\t%q\n", authPkg)
 	}
@@ -62,15 +63,19 @@ func generateMainImports(buf *bytes.Buffer, cfg HTTPMainGenConfig) {
 		// Channel library import
 		channelPkg := cfg.ModulePath + "/shipq/lib/channel"
 		fmt.Fprintf(buf, "\t%q\n", channelPkg)
-		// HTTP server import (for WithRequestCookies in channel auth wrappers)
-		httpserverPkg := cfg.ModulePath + "/shipq/lib/httpserver"
-		fmt.Fprintf(buf, "\t%q\n", httpserverPkg)
+		if cfg.HasAuth {
+			// HTTP server import (for WithRequestCookies in channel auth wrappers)
+			httpserverPkg := cfg.ModulePath + "/shipq/lib/httpserver"
+			fmt.Fprintf(buf, "\t%q\n", httpserverPkg)
+		}
 		// Logging import (for manual Decorate call)
 		loggingPkg := cfg.ModulePath + "/shipq/lib/logging"
 		fmt.Fprintf(buf, "\t%q\n", loggingPkg)
-		// Queries import (for runner type in auth wrappers)
-		queriesPkg := cfg.ModulePath + "/shipq/queries"
-		fmt.Fprintf(buf, "\t%q\n", queriesPkg)
+		if cfg.HasAuth {
+			// Queries import (for runner type in auth wrappers)
+			queriesPkg := cfg.ModulePath + "/shipq/queries"
+			fmt.Fprintf(buf, "\t%q\n", queriesPkg)
+		}
 	}
 
 	// Dialect-specific query runner import
@@ -149,32 +154,38 @@ func generateMainFuncWithChannels(buf *bytes.Buffer, cfg HTTPMainGenConfig) {
 	buf.WriteString("\t\tos.Exit(1)\n")
 	buf.WriteString("\t}\n\n")
 
-	// Build auth wrappers that adapt the auth package's context-based functions
-	// to the *http.Request-based signatures expected by RegisterChannelRoutes.
-	buf.WriteString("\t// Auth wrappers for channel routes\n")
-	buf.WriteString("\tcheckAuth := func(r *http.Request) (accountID int64, orgID int64, accountPublicID string, err error) {\n")
-	buf.WriteString("\t\tctx := queries.NewContextWithRunner(r.Context(), runner)\n")
-	buf.WriteString("\t\tctx = httpserver.WithRequestCookies(ctx, r.Cookies())\n")
-	buf.WriteString("\t\tsession, err := auth.GetCurrentSession(ctx, runner)\n")
-	buf.WriteString("\t\tif err != nil {\n")
-	buf.WriteString("\t\t\treturn 0, 0, \"\", err\n")
-	buf.WriteString("\t\t}\n")
-	buf.WriteString("\t\tvar defaultOrgID int64\n")
-	buf.WriteString("\t\tif session.DefaultOrganizationId != nil {\n")
-	buf.WriteString("\t\t\tdefaultOrgID = *session.DefaultOrganizationId\n")
-	buf.WriteString("\t\t}\n")
-	buf.WriteString("\t\treturn session.AccountId, defaultOrgID, session.AccountPublicId, nil\n")
-	buf.WriteString("\t}\n\n")
+	if cfg.HasAuth {
+		// Build auth wrappers that adapt the auth package's context-based functions
+		// to the *http.Request-based signatures expected by RegisterChannelRoutes.
+		buf.WriteString("\t// Auth wrappers for channel routes\n")
+		buf.WriteString("\tcheckAuth := func(r *http.Request) (accountID int64, orgID int64, accountPublicID string, err error) {\n")
+		buf.WriteString("\t\tctx := queries.NewContextWithRunner(r.Context(), runner)\n")
+		buf.WriteString("\t\tctx = httpserver.WithRequestCookies(ctx, r.Cookies())\n")
+		buf.WriteString("\t\tsession, err := auth.GetCurrentSession(ctx, runner)\n")
+		buf.WriteString("\t\tif err != nil {\n")
+		buf.WriteString("\t\t\treturn 0, 0, \"\", err\n")
+		buf.WriteString("\t\t}\n")
+		buf.WriteString("\t\tvar defaultOrgID int64\n")
+		buf.WriteString("\t\tif session.DefaultOrganizationId != nil {\n")
+		buf.WriteString("\t\t\tdefaultOrgID = *session.DefaultOrganizationId\n")
+		buf.WriteString("\t\t}\n")
+		buf.WriteString("\t\treturn session.AccountId, defaultOrgID, session.AccountPublicId, nil\n")
+		buf.WriteString("\t}\n\n")
 
-	buf.WriteString("\tcheckRBAC := func(r *http.Request, accountID int64, orgID int64, routePath, method string) error {\n")
-	buf.WriteString("\t\tctx := queries.NewContextWithRunner(r.Context(), runner)\n")
-	buf.WriteString("\t\treturn auth.CheckRBAC(ctx, runner, accountID, orgID, routePath, method)\n")
-	buf.WriteString("\t}\n\n")
+		buf.WriteString("\tcheckRBAC := func(r *http.Request, accountID int64, orgID int64, routePath, method string) error {\n")
+		buf.WriteString("\t\tctx := queries.NewContextWithRunner(r.Context(), runner)\n")
+		buf.WriteString("\t\treturn auth.CheckRBAC(ctx, runner, accountID, orgID, routePath, method)\n")
+		buf.WriteString("\t}\n\n")
+	}
 
 	// Use SetupMux to get the raw mux, register channel routes, then wrap
 	buf.WriteString("\t// Build mux: handler routes + channel routes + logging middleware\n")
 	buf.WriteString("\tmux := api.SetupMux(db, runner)\n")
-	buf.WriteString("\tapi.RegisterChannelRoutes(mux, queue, transport, db, runner, checkAuth, checkRBAC)\n")
+	if cfg.HasAuth {
+		buf.WriteString("\tapi.RegisterChannelRoutes(mux, queue, transport, db, runner, checkAuth, checkRBAC)\n")
+	} else {
+		buf.WriteString("\tapi.RegisterChannelRoutes(mux, queue, transport, db, runner)\n")
+	}
 	buf.WriteString("\thandler := logging.Decorate([]string{\"/health\"}, config.Logger, mux)\n\n")
 
 	buf.WriteString("\taddr := \":\" + config.Settings.PORT\n")

@@ -64,12 +64,14 @@ func ValidateChannels(channels []codegen.SerializedChannelInfo) error {
 			))
 		}
 
-		// Error if a channel has zero FromServer types (nothing to stream)
+		// Warn (but do not error) if a channel has zero FromServer types.
+		// This is valid for LLM-enabled channels where all server→client messages
+		// are stream events published by the LLM library via the raw channel.
 		if fromServerCount == 0 {
-			errs = append(errs, fmt.Sprintf(
-				"channel %q: must have at least one FromServer message type",
-				ch.Name,
-			))
+			log.Printf("WARNING: channel %q has no FromServer message types. "+
+				"If this is an LLM channel, this is expected — the LLM library "+
+				"sends stream events automatically. Otherwise, consider adding "+
+				"at least one FromServer type.", ch.Name)
 		}
 
 		// Error if a FromClient dispatch type has no matching handler function

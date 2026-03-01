@@ -7,7 +7,7 @@ import (
 	"testing"
 )
 
-// ── HasChannels tests ────────────────────────────────────────────────────────
+// ── HasChannels + HasAuth tests ──────────────────────────────────────────────
 
 func TestGenerateHTTPMain_HasChannels_ValidGo(t *testing.T) {
 	dialects := []string{"mysql", "postgres", "sqlite"}
@@ -19,6 +19,7 @@ func TestGenerateHTTPMain_HasChannels_ValidGo(t *testing.T) {
 				OutputPkg:   "api",
 				DBDialect:   dialect,
 				HasChannels: true,
+				HasAuth:     true,
 			}
 
 			code, err := GenerateHTTPMain(cfg)
@@ -40,6 +41,7 @@ func TestGenerateHTTPMain_HasChannels_ImportsChannelLibrary(t *testing.T) {
 		OutputPkg:   "api",
 		DBDialect:   "mysql",
 		HasChannels: true,
+		HasAuth:     true,
 	}
 
 	code, err := GenerateHTTPMain(cfg)
@@ -69,6 +71,7 @@ func TestGenerateHTTPMain_HasChannels_CreatesTransportAndQueue(t *testing.T) {
 		OutputPkg:   "api",
 		DBDialect:   "mysql",
 		HasChannels: true,
+		HasAuth:     true,
 	}
 
 	code, err := GenerateHTTPMain(cfg)
@@ -98,6 +101,7 @@ func TestGenerateHTTPMain_HasChannels_RegistersChannelRoutes(t *testing.T) {
 		OutputPkg:   "api",
 		DBDialect:   "mysql",
 		HasChannels: true,
+		HasAuth:     true,
 	}
 
 	code, err := GenerateHTTPMain(cfg)
@@ -124,6 +128,7 @@ func TestGenerateHTTPMain_HasChannels_AuthWrappers(t *testing.T) {
 		OutputPkg:   "api",
 		DBDialect:   "mysql",
 		HasChannels: true,
+		HasAuth:     true,
 	}
 
 	code, err := GenerateHTTPMain(cfg)
@@ -159,6 +164,7 @@ func TestGenerateHTTPMain_HasChannels_DoesNotCallNewMux(t *testing.T) {
 		OutputPkg:   "api",
 		DBDialect:   "mysql",
 		HasChannels: true,
+		HasAuth:     true,
 	}
 
 	code, err := GenerateHTTPMain(cfg)
@@ -173,6 +179,209 @@ func TestGenerateHTTPMain_HasChannels_DoesNotCallNewMux(t *testing.T) {
 		t.Error("HasChannels main should use api.SetupMux, not api.NewMux")
 	}
 }
+
+// ── HasChannels: true, HasAuth: false tests ──────────────────────────────────
+
+func TestGenerateHTTPMain_HasChannelsNoAuth_ValidGo(t *testing.T) {
+	dialects := []string{"mysql", "postgres", "sqlite"}
+
+	for _, dialect := range dialects {
+		t.Run(dialect, func(t *testing.T) {
+			cfg := HTTPMainGenConfig{
+				ModulePath:  "example.com/myapp",
+				OutputPkg:   "api",
+				DBDialect:   dialect,
+				HasChannels: true,
+				HasAuth:     false,
+			}
+
+			code, err := GenerateHTTPMain(cfg)
+			if err != nil {
+				t.Fatalf("GenerateHTTPMain() error = %v", err)
+			}
+
+			_, err = parser.ParseFile(token.NewFileSet(), "", code, parser.AllErrors)
+			if err != nil {
+				t.Errorf("generated code is not valid Go: %v\n%s", err, string(code))
+			}
+		})
+	}
+}
+
+func TestGenerateHTTPMain_HasChannelsNoAuth_NoAuthImports(t *testing.T) {
+	cfg := HTTPMainGenConfig{
+		ModulePath:  "example.com/myapp",
+		OutputPkg:   "api",
+		DBDialect:   "mysql",
+		HasChannels: true,
+		HasAuth:     false,
+	}
+
+	code, err := GenerateHTTPMain(cfg)
+	if err != nil {
+		t.Fatalf("GenerateHTTPMain() error = %v", err)
+	}
+
+	codeStr := string(code)
+
+	// Should still have channel library import
+	if !strings.Contains(codeStr, `"example.com/myapp/shipq/lib/channel"`) {
+		t.Error("missing channel library import")
+	}
+	// Should still have logging import (for Decorate)
+	if !strings.Contains(codeStr, `"example.com/myapp/shipq/lib/logging"`) {
+		t.Error("missing logging import")
+	}
+
+	// Should NOT have auth package import
+	if strings.Contains(codeStr, `"example.com/myapp/api/auth"`) {
+		t.Error("should not import auth package when HasAuth is false")
+	}
+	// Should NOT have httpserver import
+	if strings.Contains(codeStr, `"example.com/myapp/shipq/lib/httpserver"`) {
+		t.Error("should not import httpserver when HasAuth is false")
+	}
+	// Should NOT have queries import (used by auth wrappers)
+	if strings.Contains(codeStr, `"example.com/myapp/shipq/queries"`) {
+		t.Error("should not import queries package when HasAuth is false")
+	}
+}
+
+func TestGenerateHTTPMain_HasChannelsNoAuth_NoAuthWrappers(t *testing.T) {
+	cfg := HTTPMainGenConfig{
+		ModulePath:  "example.com/myapp",
+		OutputPkg:   "api",
+		DBDialect:   "mysql",
+		HasChannels: true,
+		HasAuth:     false,
+	}
+
+	code, err := GenerateHTTPMain(cfg)
+	if err != nil {
+		t.Fatalf("GenerateHTTPMain() error = %v", err)
+	}
+
+	codeStr := string(code)
+
+	// Should NOT have checkAuth or checkRBAC wrapper functions
+	if strings.Contains(codeStr, "checkAuth") {
+		t.Error("should not have checkAuth wrapper when HasAuth is false")
+	}
+	if strings.Contains(codeStr, "checkRBAC") {
+		t.Error("should not have checkRBAC wrapper when HasAuth is false")
+	}
+	if strings.Contains(codeStr, "auth.GetCurrentSession") {
+		t.Error("should not reference auth.GetCurrentSession when HasAuth is false")
+	}
+	if strings.Contains(codeStr, "auth.CheckRBAC") {
+		t.Error("should not reference auth.CheckRBAC when HasAuth is false")
+	}
+	if strings.Contains(codeStr, "httpserver.WithRequestCookies") {
+		t.Error("should not reference httpserver.WithRequestCookies when HasAuth is false")
+	}
+}
+
+func TestGenerateHTTPMain_HasChannelsNoAuth_RegisterChannelRoutesWithFiveArgs(t *testing.T) {
+	cfg := HTTPMainGenConfig{
+		ModulePath:  "example.com/myapp",
+		OutputPkg:   "api",
+		DBDialect:   "mysql",
+		HasChannels: true,
+		HasAuth:     false,
+	}
+
+	code, err := GenerateHTTPMain(cfg)
+	if err != nil {
+		t.Fatalf("GenerateHTTPMain() error = %v", err)
+	}
+
+	codeStr := string(code)
+
+	// Should call RegisterChannelRoutes with 5 args (no checkAuth, checkRBAC)
+	if !strings.Contains(codeStr, "api.RegisterChannelRoutes(mux, queue, transport, db, runner)") {
+		t.Errorf("expected RegisterChannelRoutes with 5 args (no auth), got:\n%s", codeStr)
+	}
+}
+
+func TestGenerateHTTPMain_HasChannelsNoAuth_StillCreatesTransportAndQueue(t *testing.T) {
+	cfg := HTTPMainGenConfig{
+		ModulePath:  "example.com/myapp",
+		OutputPkg:   "api",
+		DBDialect:   "mysql",
+		HasChannels: true,
+		HasAuth:     false,
+	}
+
+	code, err := GenerateHTTPMain(cfg)
+	if err != nil {
+		t.Fatalf("GenerateHTTPMain() error = %v", err)
+	}
+
+	codeStr := string(code)
+
+	if !strings.Contains(codeStr, "channel.NewCentrifugoTransport") {
+		t.Error("missing CentrifugoTransport creation")
+	}
+	if !strings.Contains(codeStr, "channel.NewMachineryQueue") {
+		t.Error("missing MachineryQueue creation")
+	}
+	if !strings.Contains(codeStr, "config.Settings.REDIS_URL") {
+		t.Error("missing REDIS_URL config usage")
+	}
+}
+
+func TestGenerateHTTPMain_HasChannelsNoAuth_UsesSetupMux(t *testing.T) {
+	cfg := HTTPMainGenConfig{
+		ModulePath:  "example.com/myapp",
+		OutputPkg:   "api",
+		DBDialect:   "mysql",
+		HasChannels: true,
+		HasAuth:     false,
+	}
+
+	code, err := GenerateHTTPMain(cfg)
+	if err != nil {
+		t.Fatalf("GenerateHTTPMain() error = %v", err)
+	}
+
+	codeStr := string(code)
+
+	if !strings.Contains(codeStr, "api.SetupMux(db, runner)") {
+		t.Error("missing api.SetupMux call")
+	}
+	if !strings.Contains(codeStr, "logging.Decorate(") {
+		t.Error("missing logging.Decorate call")
+	}
+	if strings.Contains(codeStr, "api.NewMux(") {
+		t.Error("HasChannels main should use api.SetupMux, not api.NewMux")
+	}
+}
+
+// ── HasChannels: true, HasAuth: true (7-arg call) tests ──────────────────────
+
+func TestGenerateHTTPMain_HasChannelsWithAuth_RegisterChannelRoutesWithSevenArgs(t *testing.T) {
+	cfg := HTTPMainGenConfig{
+		ModulePath:  "example.com/myapp",
+		OutputPkg:   "api",
+		DBDialect:   "mysql",
+		HasChannels: true,
+		HasAuth:     true,
+	}
+
+	code, err := GenerateHTTPMain(cfg)
+	if err != nil {
+		t.Fatalf("GenerateHTTPMain() error = %v", err)
+	}
+
+	codeStr := string(code)
+
+	// Should call RegisterChannelRoutes with 7 args (including checkAuth, checkRBAC)
+	if !strings.Contains(codeStr, "api.RegisterChannelRoutes(mux, queue, transport, db, runner, checkAuth, checkRBAC)") {
+		t.Errorf("expected RegisterChannelRoutes with 7 args (with auth), got:\n%s", codeStr)
+	}
+}
+
+// ── No-channel tests ─────────────────────────────────────────────────────────
 
 func TestGenerateHTTPMain_NoChannels_DoesNotImportChannelLib(t *testing.T) {
 	cfg := HTTPMainGenConfig{
@@ -501,6 +710,7 @@ func TestGenerateHTTPMain_HasChannels_CheckAuthUsesAccountPublicId(t *testing.T)
 		OutputPkg:   "api",
 		DBDialect:   "mysql",
 		HasChannels: true,
+		HasAuth:     true,
 	}
 
 	code, err := GenerateHTTPMain(cfg)

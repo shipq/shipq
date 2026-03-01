@@ -182,7 +182,7 @@ func TestCreateShipqIni(t *testing.T) {
 	t.Run("creates shipq.ini with db section", func(t *testing.T) {
 		tmpDir := t.TempDir()
 
-		err := createShipqIni(tmpDir)
+		err := createShipqIni(tmpDir, "myproject", "sqlite")
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
@@ -205,7 +205,7 @@ func TestCreateShipqIni(t *testing.T) {
 func TestCreateShipqIni_HasTypescriptSection(t *testing.T) {
 	tmpDir := t.TempDir()
 
-	err := createShipqIni(tmpDir)
+	err := createShipqIni(tmpDir, "myproject", "sqlite")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -243,7 +243,7 @@ func TestCreateShipqIni_HasTypescriptSection(t *testing.T) {
 func TestCreateShipqIni_HasTypescriptHTTPOutput(t *testing.T) {
 	tmpDir := t.TempDir()
 
-	err := createShipqIni(tmpDir)
+	err := createShipqIni(tmpDir, "myproject", "sqlite")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -259,6 +259,139 @@ func TestCreateShipqIni_HasTypescriptHTTPOutput(t *testing.T) {
 	httpOutput := ini.Get("typescript", "http_output")
 	if httpOutput != "." {
 		t.Errorf("ini.Get(\"typescript\", \"http_output\") = %q, want \".\"", httpOutput)
+	}
+}
+
+func TestCreateShipqIni_SQLiteDialect(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	err := createShipqIni(tmpDir, "myproject", "sqlite")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	shipqIniPath := filepath.Join(tmpDir, project.ShipqIniFile)
+	ini, err := inifile.ParseFile(shipqIniPath)
+	if err != nil {
+		t.Fatalf("failed to parse shipq.ini: %v", err)
+	}
+
+	dbURL := ini.Get("db", "database_url")
+	if dbURL == "" {
+		t.Fatal("expected database_url to be set, got empty string")
+	}
+	if !strings.HasPrefix(dbURL, "sqlite:") {
+		t.Errorf("expected sqlite: URL, got %q", dbURL)
+	}
+	if !strings.Contains(dbURL, "myproject.db") {
+		t.Errorf("expected myproject.db in URL, got %q", dbURL)
+	}
+}
+
+func TestCreateShipqIni_PostgresDialect(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	err := createShipqIni(tmpDir, "myproject", "postgres")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	shipqIniPath := filepath.Join(tmpDir, project.ShipqIniFile)
+	ini, err := inifile.ParseFile(shipqIniPath)
+	if err != nil {
+		t.Fatalf("failed to parse shipq.ini: %v", err)
+	}
+
+	dbURL := ini.Get("db", "database_url")
+	if dbURL == "" {
+		t.Fatal("expected database_url to be set, got empty string")
+	}
+	expected := "postgres://postgres@localhost:5432/myproject"
+	if dbURL != expected {
+		t.Errorf("expected %q, got %q", expected, dbURL)
+	}
+}
+
+func TestCreateShipqIni_MySQLDialect(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	err := createShipqIni(tmpDir, "myproject", "mysql")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	shipqIniPath := filepath.Join(tmpDir, project.ShipqIniFile)
+	ini, err := inifile.ParseFile(shipqIniPath)
+	if err != nil {
+		t.Fatalf("failed to parse shipq.ini: %v", err)
+	}
+
+	dbURL := ini.Get("db", "database_url")
+	if dbURL == "" {
+		t.Fatal("expected database_url to be set, got empty string")
+	}
+	expected := "mysql://root@localhost:3306/myproject"
+	if dbURL != expected {
+		t.Errorf("expected %q, got %q", expected, dbURL)
+	}
+}
+
+func TestDefaultDatabaseURL_SQLite(t *testing.T) {
+	tmpDir := t.TempDir()
+	url := defaultDatabaseURL("sqlite", "myapp", tmpDir)
+
+	if !strings.HasPrefix(url, "sqlite:") {
+		t.Errorf("expected sqlite: prefix, got %q", url)
+	}
+	if !strings.Contains(url, "myapp.db") {
+		t.Errorf("expected myapp.db in URL, got %q", url)
+	}
+	if !strings.Contains(url, ".shipq/data/") {
+		t.Errorf("expected .shipq/data/ in URL, got %q", url)
+	}
+}
+
+func TestDefaultDatabaseURL_Postgres(t *testing.T) {
+	url := defaultDatabaseURL("postgres", "myapp", "/tmp/test")
+	expected := "postgres://postgres@localhost:5432/myapp"
+	if url != expected {
+		t.Errorf("expected %q, got %q", expected, url)
+	}
+}
+
+func TestDefaultDatabaseURL_MySQL(t *testing.T) {
+	url := defaultDatabaseURL("mysql", "myapp", "/tmp/test")
+	expected := "mysql://root@localhost:3306/myapp"
+	if url != expected {
+		t.Errorf("expected %q, got %q", expected, url)
+	}
+}
+
+func TestParseDialectFlag(t *testing.T) {
+	tests := []struct {
+		name     string
+		args     []string
+		expected string
+	}{
+		{"no flags defaults to sqlite", []string{"shipq", "init"}, "sqlite"},
+		{"--sqlite flag", []string{"shipq", "init", "--sqlite"}, "sqlite"},
+		{"--postgres flag", []string{"shipq", "init", "--postgres"}, "postgres"},
+		{"--mysql flag", []string{"shipq", "init", "--mysql"}, "mysql"},
+		{"last flag wins", []string{"shipq", "init", "--postgres", "--mysql"}, "mysql"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// Save and restore os.Args
+			origArgs := os.Args
+			defer func() { os.Args = origArgs }()
+
+			os.Args = tt.args
+			got := parseDialectFlag()
+			if got != tt.expected {
+				t.Errorf("parseDialectFlag() = %q, want %q", got, tt.expected)
+			}
+		})
 	}
 }
 
@@ -286,7 +419,7 @@ func TestInitInEmptyDirectory(t *testing.T) {
 	}
 
 	if !project.HasShipqIni(tmpDir) {
-		if err := createShipqIni(tmpDir); err != nil {
+		if err := createShipqIni(tmpDir, projectName, "sqlite"); err != nil {
 			t.Fatalf("failed to create shipq.ini: %v", err)
 		}
 	}
@@ -317,7 +450,7 @@ func TestInitWithExistingGoMod(t *testing.T) {
 	}
 
 	if !project.HasShipqIni(tmpDir) {
-		if err := createShipqIni(tmpDir); err != nil {
+		if err := createShipqIni(tmpDir, "testproject", "sqlite"); err != nil {
 			t.Fatalf("failed to create shipq.ini: %v", err)
 		}
 	}
@@ -346,7 +479,7 @@ func TestInitIsIdempotent(t *testing.T) {
 	if err := createGoMod(tmpDir, projectName); err != nil {
 		t.Fatalf("first createGoMod failed: %v", err)
 	}
-	if err := createShipqIni(tmpDir); err != nil {
+	if err := createShipqIni(tmpDir, projectName, "sqlite"); err != nil {
 		t.Fatalf("first createShipqIni failed: %v", err)
 	}
 

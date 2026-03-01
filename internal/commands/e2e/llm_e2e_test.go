@@ -1,3 +1,5 @@
+//go:build e2e
+
 package e2e
 
 import (
@@ -349,18 +351,21 @@ func Register(app *channel.App) {
 
 import (
     "context"
-    "encoding/json"
 
-    "`+mod+`/shipq/lib/channel"
     "`+mod+`/shipq/lib/llm"
 )
 
 // HandleChatRequest is the dispatch handler for the chatbot channel.
 // It retrieves the LLM client wired by Setup, runs the conversation
 // (which streams LLM events to the channel automatically), then sends
-// the final ChatResponse.
+// the final ChatResponse using the typed channel.
+//
+// Note: LLM stream events (LLMTextDelta, LLMToolCallStart, etc.) are
+// published automatically by the LLM library via the raw channel —
+// they are NOT registered in FromServer() and are NOT sent through
+// the typed channel.
 func HandleChatRequest(ctx context.Context, req *ChatRequest) error {
-    ch := channel.FromContext(ctx)
+    tc := TypedChannelFromContext(ctx)
     client := llm.ClientFromContext(ctx)
 
     resp, err := client.Chat(ctx, req.Message)
@@ -368,11 +373,7 @@ func HandleChatRequest(ctx context.Context, req *ChatRequest) error {
         return err
     }
 
-    data, err := json.Marshal(ChatResponse{Text: resp.Text})
-    if err != nil {
-        return err
-    }
-    return ch.Send(ctx, "ChatResponse", data)
+    return tc.SendChatResponse(ctx, &ChatResponse{Text: resp.Text})
 }
 `)
 

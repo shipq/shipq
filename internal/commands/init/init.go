@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/shipq/shipq/cli"
+	"github.com/shipq/shipq/dburl"
 	"github.com/shipq/shipq/inifile"
 	"github.com/shipq/shipq/project"
 )
@@ -16,6 +17,12 @@ import (
 // It initializes a new shipq project by creating go.mod (if needed) and shipq.ini.
 // In a monorepo setup, if a go.mod exists in a parent directory, it will be used
 // instead of creating a new one.
+//
+// Flags:
+//
+//	--postgres   Use PostgreSQL as the database dialect
+//	--mysql      Use MySQL as the database dialect
+//	--sqlite     Use SQLite as the database dialect (default)
 func InitCmd() {
 	cwd, err := os.Getwd()
 	if err != nil {
@@ -27,6 +34,9 @@ func InitCmd() {
 	createdShipqIni := false
 	updatedGitignore := false
 	existingGoModRoot := ""
+
+	// Parse dialect flag from os.Args
+	dialect := parseDialectFlag()
 
 	// Check if a go.mod exists anywhere up the directory tree (monorepo support)
 	goModRoot, err := project.FindGoModRootFrom(cwd)
@@ -45,7 +55,7 @@ func InitCmd() {
 
 	// Create shipq.ini if it doesn't exist in current directory
 	if !project.HasShipqIni(cwd) {
-		if err := createShipqIni(cwd); err != nil {
+		if err := createShipqIni(cwd, projectName, dialect); err != nil {
 			cli.FatalErr("failed to create shipq.ini", err)
 		}
 		createdShipqIni = true
@@ -62,7 +72,7 @@ func InitCmd() {
 	if createdGoMod && createdShipqIni {
 		cli.Success("Initialized new shipq project")
 		cli.Infof("  Created go.mod (module: com.%s)", projectName)
-		cli.Info("  Created shipq.ini")
+		cli.Infof("  Created shipq.ini (dialect: %s)", dialect)
 		if updatedGitignore {
 			cli.Info("  Updated .gitignore")
 		}
@@ -74,6 +84,7 @@ func InitCmd() {
 		}
 	} else if createdShipqIni {
 		cli.Success("Created shipq.ini")
+		cli.Infof("  Dialect: %s", dialect)
 		if existingGoModRoot != "" && existingGoModRoot != cwd {
 			cli.Infof("  Using existing go.mod from %s", existingGoModRoot)
 		}
@@ -84,6 +95,37 @@ func InitCmd() {
 		cli.Success("Updated .gitignore")
 	} else {
 		cli.Info("Project already initialized (go.mod and shipq.ini exist)")
+	}
+}
+
+// parseDialectFlag inspects os.Args for --postgres, --mysql, or --sqlite.
+// Defaults to "sqlite" when no flag is provided.
+func parseDialectFlag() string {
+	dialect := "sqlite"
+	for _, arg := range os.Args[2:] {
+		switch arg {
+		case "--postgres":
+			dialect = "postgres"
+		case "--mysql":
+			dialect = "mysql"
+		case "--sqlite":
+			dialect = "sqlite"
+		}
+	}
+	return dialect
+}
+
+// defaultDatabaseURL builds a default database URL for the given dialect.
+func defaultDatabaseURL(dialect, projectName, dir string) string {
+	switch dialect {
+	case "postgres":
+		return fmt.Sprintf("postgres://postgres@localhost:5432/%s", projectName)
+	case "mysql":
+		return fmt.Sprintf("mysql://root@localhost:3306/%s", projectName)
+	default: // "sqlite"
+		dataDir := filepath.Join(dir, ".shipq", "data")
+		dbPath := filepath.Join(dataDir, projectName+".db")
+		return dburl.BuildSQLiteURL(dbPath)
 	}
 }
 
@@ -98,12 +140,20 @@ func createGoMod(dir, projectName string) error {
 	return os.WriteFile(goModPath, []byte(content), 0644)
 }
 
-// createShipqIni creates a new shipq.ini file with an empty [db] section
-func createShipqIni(dir string) error {
+// createShipqIni creates a new shipq.ini file with a [db] section containing
+// a default database_url for the chosen dialect, and a [typescript] section
+// with default framework settings.
+func createShipqIni(dir, projectName, dialect string) error {
 	f := &inifile.File{}
-	// Create empty db section by setting a placeholder that we'll leave empty
-	// The Set function will create the section
-	f.Sections = append(f.Sections, inifile.Section{Name: "db"})
+
+	dbURL := defaultDatabaseURL(dialect, projectName, dir)
+
+	f.Sections = append(f.Sections, inifile.Section{
+		Name: "db",
+		Values: []inifile.KeyValue{
+			{Key: "database_url", Value: dbURL},
+		},
+	})
 
 	// Add [typescript] section with default framework
 	f.Sections = append(f.Sections, inifile.Section{

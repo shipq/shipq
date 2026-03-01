@@ -257,6 +257,37 @@ func TestGenerateChannelCompileProgram_JSONTags(t *testing.T) {
 	}
 }
 
+func TestGenerateChannelCompileProgram_MessagePackagePath(t *testing.T) {
+	cfg := ChannelCompileProgramConfig{
+		ModulePath: "myapp",
+		ChannelPkgs: []string{
+			"myapp/channels/email",
+		},
+	}
+
+	result, err := GenerateChannelCompileProgram(cfg)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	code := string(result)
+
+	// The generated SerializedMessageInfo struct should have a PackagePath field
+	if !strings.Contains(code, "PackagePath") {
+		t.Error("expected SerializedMessageInfo to have PackagePath field")
+	}
+
+	// The generated convertMessages function should populate PackagePath from m.Package
+	if !strings.Contains(code, "PackagePath: m.Package") {
+		t.Error("expected convertMessages to populate PackagePath from m.Package")
+	}
+
+	// The PackagePath field should have a json tag
+	if !strings.Contains(code, "`json:\"package_path,omitempty\"`") {
+		t.Error("expected PackagePath to have json tag")
+	}
+}
+
 func TestGenerateChannelCompileProgram_PackagePathAssignment(t *testing.T) {
 	cfg := ChannelCompileProgramConfig{
 		ModulePath: "myapp",

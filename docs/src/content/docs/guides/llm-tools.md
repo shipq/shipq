@@ -129,7 +129,13 @@ This generates:
 | Persister adapter | `shipq/lib/llmpersist/zz_generated_persister.go` | Wraps `queries.Runner` to satisfy `llm.Persister` |
 | Migration | `migrations/` | `llm_conversations` + `llm_messages` tables |
 | Querydefs | `querydefs/` | Insert/update/list queries for LLM persistence |
-| Stream types | Channel packages | `LLMTextDelta`, `LLMToolCallStart`, `LLMToolCallResult`, `LLMDone` as `FromServer` types |
+| Stream types (TypeScript only) | Generated TypeScript channel client | `LLMTextDelta`, `LLMToolCallStart`, `LLMToolCallResult`, `LLMDone` auto-injected into the TypeScript client for LLM-enabled channels |
+
+:::note
+LLM stream types (`LLMTextDelta`, `LLMToolCallStart`, `LLMToolCallResult`, `LLMDone`) are **not** added to `FromServer(...)` in your Go channel registration. The LLM library publishes them automatically via the raw `channel.Channel` internally. They are only auto-injected into the **TypeScript** client so the frontend can handle them with typed `on<Type>` callbacks.
+
+A channel is detected as "LLM-enabled" when any Go file in its package imports the `llm` package and calls `llm.WithClient` or `llm.WithNamedClient`. This detection is used only for TypeScript codegen, not for Go.
+:::
 
 After compiling, run migrations and tidy dependencies:
 
@@ -223,12 +229,31 @@ package chatbot
 import "myapp/shipq/lib/channel"
 
 func Register(app *channel.App) {
-    app.FromClient("StartChat", ChatRequest{})
-    app.FromServer("BotMessage", BotMessage{})
-    app.Handler(HandleChatRequest)
-    app.Setup(Setup)
+    app.DefineChannel("chatbot",
+        channel.FromClient(ChatRequest{}),
+        channel.FromServer(ChatResponse{}),
+        // LLM stream types (LLMTextDelta, LLMToolCallStart, etc.) are NOT
+        // registered here. The LLM client publishes them automatically via
+        // the raw channel. They are auto-injected into the TypeScript client
+        // by `shipq workers compile`.
+    ).Public(channel.RateLimitConfig{RequestsPerMinute: 60, BurstSize: 10})
 }
 ```
+
+:::tip[LLM-only channels]
+If the **only** server→client messages are LLM stream events (no custom response type), you can omit `FromServer` arguments entirely:
+
+```go
+func Register(app *channel.App) {
+    app.DefineChannel("assistant",
+        channel.FromClient(ChatRequest{}),
+        channel.FromServer(), // No custom server types — all server messages
+        // are LLM stream events (LLMTextDelta, LLMToolCallStart, etc.)
+        // published automatically by the LLM library.
+    ).Public(channel.RateLimitConfig{RequestsPerMinute: 60, BurstSize: 10})
+}
+```
+:::
 
 ## Client Options
 

@@ -47,7 +47,26 @@ func GenerateTypedChannel(ch codegen.SerializedChannelInfo, modulePath string) (
 	}
 
 	hasMidStreamClient := len(fromClientMidStream) > 0
+	hasServerMsgs := len(fromServerMsgs) > 0
 	_ = fromClientDispatch // dispatch type is used by the worker, not the generated channel wrapper
+
+	// Check for cross-package types that the codegen can't handle.
+	// Go doesn't allow defining methods on types from another package, so the
+	// sealed-interface pattern (func (*T) serverMessage() {}) is impossible
+	// for external types.
+	allMessages := append(fromServerMsgs, fromClientMidStream...)
+	for _, msg := range allMessages {
+		if msg.PackagePath != "" && msg.PackagePath != ch.PackagePath {
+			return nil, fmt.Errorf(
+				"channel %q: message type %q is defined in package %q, not in the channel package %q. "+
+					"The typed channel codegen cannot define methods on types from other packages. "+
+					"Define the struct locally in the channel package, or use ch.Send() directly for cross-package types. "+
+					"If this is an LLM stream type (LLMTextDelta, etc.), do NOT add it to FromServer() — "+
+					"the LLM library publishes these automatically via the raw channel.",
+				ch.Name, msg.TypeName, msg.PackagePath, ch.PackagePath,
+			)
+		}
+	}
 
 	channelImport := modulePath + "/shipq/lib/channel"
 
@@ -57,24 +76,28 @@ func GenerateTypedChannel(ch codegen.SerializedChannelInfo, modulePath string) (
 
 	fmt.Fprintf(&buf, "import (\n")
 	fmt.Fprintf(&buf, "\t\"context\"\n")
-	fmt.Fprintf(&buf, "\t\"encoding/json\"\n")
-	fmt.Fprintf(&buf, "\t\"fmt\"\n")
+	if hasServerMsgs || hasMidStreamClient {
+		fmt.Fprintf(&buf, "\t\"encoding/json\"\n")
+		fmt.Fprintf(&buf, "\t\"fmt\"\n")
+	}
 	fmt.Fprintf(&buf, "\n")
 	fmt.Fprintf(&buf, "\t%q\n", channelImport)
 	fmt.Fprintf(&buf, ")\n\n")
 
-	// --- Sealed ServerMessage interface ---
-	fmt.Fprintf(&buf, "// ServerMessage is a sealed interface representing messages the server can send.\n")
-	fmt.Fprintf(&buf, "// Only types defined in this package may implement it.\n")
-	fmt.Fprintf(&buf, "type ServerMessage interface {\n")
-	fmt.Fprintf(&buf, "\tserverMessage()\n")
-	fmt.Fprintf(&buf, "\tTypeName() string\n")
-	fmt.Fprintf(&buf, "}\n\n")
+	// --- Sealed ServerMessage interface (only if FromServer types exist) ---
+	if hasServerMsgs {
+		fmt.Fprintf(&buf, "// ServerMessage is a sealed interface representing messages the server can send.\n")
+		fmt.Fprintf(&buf, "// Only types defined in this package may implement it.\n")
+		fmt.Fprintf(&buf, "type ServerMessage interface {\n")
+		fmt.Fprintf(&buf, "\tserverMessage()\n")
+		fmt.Fprintf(&buf, "\tTypeName() string\n")
+		fmt.Fprintf(&buf, "}\n\n")
 
-	// Implement ServerMessage for each FromServer type
-	for _, msg := range fromServerMsgs {
-		fmt.Fprintf(&buf, "func (*%s) serverMessage() {}\n", msg.TypeName)
-		fmt.Fprintf(&buf, "func (*%s) TypeName() string { return %q }\n\n", msg.TypeName, msg.TypeName)
+		// Implement ServerMessage for each FromServer type
+		for _, msg := range fromServerMsgs {
+			fmt.Fprintf(&buf, "func (*%s) serverMessage() {}\n", msg.TypeName)
+			fmt.Fprintf(&buf, "func (*%s) TypeName() string { return %q }\n\n", msg.TypeName, msg.TypeName)
+		}
 	}
 
 	// --- Sealed ClientMessage interface (only if mid-stream types exist) ---
@@ -105,22 +128,24 @@ func GenerateTypedChannel(ch codegen.SerializedChannelInfo, modulePath string) (
 	fmt.Fprintf(&buf, "\treturn &TypedChannel{raw: channel.FromContext(ctx)}\n")
 	fmt.Fprintf(&buf, "}\n\n")
 
-	// --- Send(ctx, msg ServerMessage) error ---
-	fmt.Fprintf(&buf, "// Send marshals a ServerMessage and sends it over the channel.\n")
-	fmt.Fprintf(&buf, "func (tc *TypedChannel) Send(ctx context.Context, msg ServerMessage) error {\n")
-	fmt.Fprintf(&buf, "\tdata, err := json.Marshal(msg)\n")
-	fmt.Fprintf(&buf, "\tif err != nil {\n")
-	fmt.Fprintf(&buf, "\t\treturn fmt.Errorf(\"marshal %%s: %%w\", msg.TypeName(), err)\n")
-	fmt.Fprintf(&buf, "\t}\n")
-	fmt.Fprintf(&buf, "\treturn tc.raw.Send(ctx, msg.TypeName(), data)\n")
-	fmt.Fprintf(&buf, "}\n\n")
-
-	// --- Convenience Send<Type> methods ---
-	for _, msg := range fromServerMsgs {
-		fmt.Fprintf(&buf, "// Send%s is a convenience method that sends a %s message.\n", msg.TypeName, msg.TypeName)
-		fmt.Fprintf(&buf, "func (tc *TypedChannel) Send%s(ctx context.Context, msg *%s) error {\n", msg.TypeName, msg.TypeName)
-		fmt.Fprintf(&buf, "\treturn tc.Send(ctx, msg)\n")
+	// --- Send(ctx, msg ServerMessage) error (only if FromServer types exist) ---
+	if hasServerMsgs {
+		fmt.Fprintf(&buf, "// Send marshals a ServerMessage and sends it over the channel.\n")
+		fmt.Fprintf(&buf, "func (tc *TypedChannel) Send(ctx context.Context, msg ServerMessage) error {\n")
+		fmt.Fprintf(&buf, "\tdata, err := json.Marshal(msg)\n")
+		fmt.Fprintf(&buf, "\tif err != nil {\n")
+		fmt.Fprintf(&buf, "\t\treturn fmt.Errorf(\"marshal %%s: %%w\", msg.TypeName(), err)\n")
+		fmt.Fprintf(&buf, "\t}\n")
+		fmt.Fprintf(&buf, "\treturn tc.raw.Send(ctx, msg.TypeName(), data)\n")
 		fmt.Fprintf(&buf, "}\n\n")
+
+		// --- Convenience Send<Type> methods ---
+		for _, msg := range fromServerMsgs {
+			fmt.Fprintf(&buf, "// Send%s is a convenience method that sends a %s message.\n", msg.TypeName, msg.TypeName)
+			fmt.Fprintf(&buf, "func (tc *TypedChannel) Send%s(ctx context.Context, msg *%s) error {\n", msg.TypeName, msg.TypeName)
+			fmt.Fprintf(&buf, "\treturn tc.Send(ctx, msg)\n")
+			fmt.Fprintf(&buf, "}\n\n")
+		}
 	}
 
 	// --- Type-specific Receive<Type> methods for non-dispatch FromClient types ---
@@ -182,17 +207,6 @@ func GenerateTypedChannel(ch codegen.SerializedChannelInfo, modulePath string) (
 		fmt.Fprintf(&buf, "\t\treturn fmt.Errorf(\"unknown client message type: %%s\", typeName)\n")
 		fmt.Fprintf(&buf, "\t}\n")
 		fmt.Fprintf(&buf, "}\n\n")
-	}
-
-	// Ensure fmt and json imports are used. The generated code always uses them,
-	// so no need for blank imports.
-
-	// Suppress unused import warnings if no messages of certain types exist.
-	// In practice, every valid channel has at least one FromServer and one FromClient,
-	// so the imports are always used. But just in case, we add usage guarantees.
-	if len(fromServerMsgs) == 0 && !hasMidStreamClient {
-		fmt.Fprintf(&buf, "var _ = json.Marshal\n")
-		fmt.Fprintf(&buf, "var _ = fmt.Sprintf\n")
 	}
 
 	formatted, err := format.Source(buf.Bytes())

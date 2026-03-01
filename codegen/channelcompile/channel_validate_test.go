@@ -74,7 +74,7 @@ func TestValidate_NoFromClient_Rejects(t *testing.T) {
 	}
 }
 
-func TestValidate_NoFromServer_Rejects(t *testing.T) {
+func TestValidate_NoFromServer_Warns(t *testing.T) {
 	channels := []codegen.SerializedChannelInfo{
 		{
 			Name: "test_channel",
@@ -85,11 +85,8 @@ func TestValidate_NoFromServer_Rejects(t *testing.T) {
 	}
 
 	err := ValidateChannels(channels)
-	if err == nil {
-		t.Fatal("expected error for channel with no FromServer types, got nil")
-	}
-	if !strings.Contains(err.Error(), "must have at least one FromServer") {
-		t.Errorf("unexpected error message: %v", err)
+	if err != nil {
+		t.Fatalf("expected no error for channel with no FromServer types (should warn only), got: %v", err)
 	}
 }
 
@@ -191,7 +188,7 @@ func TestValidate_MultipleErrors_ReportsAll(t *testing.T) {
 
 	errStr := err.Error()
 
-	// Should report multiple issues
+	// Should report multiple issues (FromServer is now a warning, not an error)
 	if !strings.Contains(errStr, "cannot be both public and require role") {
 		t.Error("expected public+role conflict error")
 	}
@@ -201,8 +198,9 @@ func TestValidate_MultipleErrors_ReportsAll(t *testing.T) {
 	if !strings.Contains(errStr, "must have at least one FromClient") {
 		t.Error("expected FromClient error")
 	}
-	if !strings.Contains(errStr, "must have at least one FromServer") {
-		t.Error("expected FromServer error")
+	// FromServer check is now a warning, so it should NOT appear in the error
+	if strings.Contains(errStr, "must have at least one FromServer") {
+		t.Error("FromServer check should be a warning, not an error")
 	}
 }
 
