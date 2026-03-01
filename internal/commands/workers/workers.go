@@ -365,6 +365,15 @@ func WorkersCmd() {
 	// Extract redis host:port from URL for worker config
 	redisAddr := extractRedisAddr(redisURL)
 
+	// Detect auto_migrate setting from [db] section
+	autoMigrate := false
+	if strings.ToLower(ini.Get("db", "auto_migrate")) == "true" {
+		schemaJSONPath := filepath.Join(roots.ShipqRoot, "shipq", "db", "migrate", "schema.json")
+		if _, err := os.Stat(schemaJSONPath); err == nil {
+			autoMigrate = true
+		}
+	}
+
 	workerCfg := channelgen.WorkerGenConfig{
 		Channels:             channels,
 		ModulePath:           importPrefix,
@@ -374,6 +383,7 @@ func WorkersCmd() {
 		CentrifugoAPIKey:     centrifugoAPIKey,
 		CentrifugoHMACSecret: centrifugoHMACSecret,
 		CentrifugoWSURL:      centrifugoWSURL,
+		AutoMigrate:          autoMigrate,
 	}
 
 	if err := channelgen.WriteWorkerMain(workerCfg, roots.ShipqRoot); err != nil {

@@ -99,6 +99,18 @@ func Run(shipqRoot, goModRoot string) error {
 		}
 	}
 
+	// Read auto_migrate setting from [db] section
+	autoMigrate := false
+	if ini, err := inifile.ParseFile(shipqIniPath); err == nil {
+		if strings.ToLower(ini.Get("db", "auto_migrate")) == "true" {
+			// Only emit migrate code if schema.json actually exists
+			schemaJSONPath := filepath.Join(shipqRoot, "shipq", "db", "migrate", "schema.json")
+			if _, err := os.Stat(schemaJSONPath); err == nil {
+				autoMigrate = true
+			}
+		}
+	}
+
 	// Read global scope column for RBAC
 	scopeColumn := ""
 	filesEnabled := false
@@ -175,6 +187,7 @@ func Run(shipqRoot, goModRoot string) error {
 		DatabaseURL:     databaseURL,
 		TableScopes:     tableScopes,
 		ScopeColumn:     scopeColumn,
+		AutoMigrate:     autoMigrate,
 		FilesEnabled:    filesEnabled,
 		WorkersEnabled:  workersEnabled,
 		HasAuth:         hasAuth,

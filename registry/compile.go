@@ -36,6 +36,11 @@ type CompileConfig struct {
 	// GenerateResourceTests enables generation of CRUD tests for full resources.
 	// A "full resource" is a package that implements all 5 CRUD operations.
 	GenerateResourceTests bool
+	// AutoMigrate is true when [db] auto_migrate = true in shipq.ini AND
+	// shipq/db/migrate/schema.json exists. When true, the generated
+	// cmd/server/main.go and cmd/worker/main.go call dbmigrate.RunWithDB
+	// on startup before serving traffic.
+	AutoMigrate bool
 	// FilesEnabled is true if [files] section exists in shipq.ini.
 	// When true, S3 config fields are added to the generated SettingsConfig.
 	FilesEnabled bool

@@ -148,6 +148,48 @@ Migrations are Go source files, so you can edit them after generation. However, 
 - **The schema compiler re-executes all migrations** on every `shipq migrate up` to build the canonical plan. Changing an existing migration changes the schema for all subsequent steps.
 - **In production**, you should treat applied migrations as immutable. Create new migrations to alter existing tables.
 
+## Auto-Migrate on Startup
+
+For simpler deployments (single-binary deploys, Docker Compose, small VPS), you can configure ShipQ to run all pending migrations automatically when the server or worker starts. Add `auto_migrate = true` to the `[db]` section of `shipq.ini`:
+
+```ini
+[db]
+database_url = postgres://localhost:5432/myapp_dev
+auto_migrate = true
+```
+
+When this is set, the next `shipq handler compile` (or any command that triggers codegen) will generate `cmd/server/main.go` and `cmd/worker/main.go` with an automatic migration block that runs before the application starts serving traffic.
+
+### How it works
+
+1. The generated main calls `dbmigrate.RunWithDB(ctx, db)` **after** `db.Ping()` succeeds and **before** any HTTP handler or worker task is registered.
+2. The underlying migrator is idempotent — it checks the `_portsql_migrations` tracking table and only applies unapplied migrations. Calling it on every startup is safe by design.
+3. If a migration fails, the process exits immediately with a non-zero status code. The server will not start with a partially-migrated schema.
+4. Migration start and completion are logged via the structured logger so operators can see migration activity.
+
+### Gating conditions
+
+Auto-migrate codegen is only emitted when **both** conditions hold:
+
+- `auto_migrate = true` is set in `shipq.ini`
+- `shipq/db/migrate/schema.json` exists (i.e., `shipq migrate up` has been run at least once)
+
+If `schema.json` doesn't exist yet, the setting is silently ignored to prevent generating code that imports a package that doesn't exist.
+
+### When to use it
+
+Auto-migrate is ideal for:
+
+- **Docker Compose** setups where you don't want a separate migration container
+- **Single-binary deploys** on a VPS or PaaS (Fly.io, Railway, Render)
+- **Development** to avoid forgetting `shipq migrate up` after pulling new migrations
+
+For more complex production environments (Kubernetes with multiple replicas, blue-green deployments), you may prefer running migrations as a separate step (e.g., a Kubernetes Job or init container) to avoid race conditions when multiple instances start simultaneously.
+
+:::tip
+The decision is made at codegen time, not at runtime. There are no CLI flags or environment variables to check — if `auto_migrate = true` is in your `shipq.ini`, the generated binary unconditionally runs migrations on boot.
+:::
+
 ## Multi-Database Support
 
 The same migration code works across Postgres, MySQL, and SQLite. The schema compiler generates dialect-specific SQL from the canonical plan in `schema.json`. You don't need to write different DDL for different databases.

@@ -668,6 +668,150 @@ func TestGenerateWorkerMain_AllChannelsGetWithDispatchDB(t *testing.T) {
 	}
 }
 
+// ── AutoMigrate tests ────────────────────────────────────────────────────────
+
+func TestGenerateWorkerMain_AutoMigrate_ValidGo(t *testing.T) {
+	dialects := []string{"mysql", "postgres", "sqlite"}
+
+	for _, dialect := range dialects {
+		t.Run(dialect, func(t *testing.T) {
+			cfg := WorkerGenConfig{
+				Channels: []codegen.SerializedChannelInfo{
+					{
+						Name:        "chatbot",
+						PackagePath: "example.com/myapp/channels/chatbot",
+						PackageName: "chatbot",
+						Messages: []codegen.SerializedMessageInfo{
+							{Direction: "client_to_server", TypeName: "ChatRequest", IsDispatch: true, HandlerName: "HandleChatRequest"},
+						},
+					},
+				},
+				ModulePath:  "example.com/myapp",
+				DBDialect:   dialect,
+				AutoMigrate: true,
+			}
+
+			code, err := GenerateWorkerMain(cfg)
+			if err != nil {
+				t.Fatalf("GenerateWorkerMain() error = %v", err)
+			}
+
+			_, err = parser.ParseFile(token.NewFileSet(), "", code, parser.AllErrors)
+			if err != nil {
+				t.Errorf("generated code is not valid Go: %v\n%s", err, string(code))
+			}
+		})
+	}
+}
+
+func TestGenerateWorkerMain_AutoMigrate_ImportsDBMigrate(t *testing.T) {
+	dialects := []string{"mysql", "postgres", "sqlite"}
+
+	for _, dialect := range dialects {
+		t.Run(dialect, func(t *testing.T) {
+			cfg := WorkerGenConfig{
+				Channels: []codegen.SerializedChannelInfo{
+					{
+						Name:        "chatbot",
+						PackagePath: "example.com/myapp/channels/chatbot",
+						PackageName: "chatbot",
+						Messages: []codegen.SerializedMessageInfo{
+							{Direction: "client_to_server", TypeName: "ChatRequest", IsDispatch: true, HandlerName: "HandleChatRequest"},
+						},
+					},
+				},
+				ModulePath:  "example.com/myapp",
+				DBDialect:   dialect,
+				AutoMigrate: true,
+			}
+
+			code, err := GenerateWorkerMain(cfg)
+			if err != nil {
+				t.Fatalf("GenerateWorkerMain() error = %v", err)
+			}
+
+			codeStr := string(code)
+
+			if !strings.Contains(codeStr, `dbmigrate "example.com/myapp/shipq/db/migrate"`) {
+				t.Error("expected dbmigrate alias import for shipq/db/migrate")
+			}
+		})
+	}
+}
+
+func TestGenerateWorkerMain_AutoMigrate_CallsRunWithDB(t *testing.T) {
+	dialects := []string{"mysql", "postgres", "sqlite"}
+
+	for _, dialect := range dialects {
+		t.Run(dialect, func(t *testing.T) {
+			cfg := WorkerGenConfig{
+				Channels: []codegen.SerializedChannelInfo{
+					{
+						Name:        "chatbot",
+						PackagePath: "example.com/myapp/channels/chatbot",
+						PackageName: "chatbot",
+						Messages: []codegen.SerializedMessageInfo{
+							{Direction: "client_to_server", TypeName: "ChatRequest", IsDispatch: true, HandlerName: "HandleChatRequest"},
+						},
+					},
+				},
+				ModulePath:  "example.com/myapp",
+				DBDialect:   dialect,
+				AutoMigrate: true,
+			}
+
+			code, err := GenerateWorkerMain(cfg)
+			if err != nil {
+				t.Fatalf("GenerateWorkerMain() error = %v", err)
+			}
+
+			codeStr := string(code)
+
+			if !strings.Contains(codeStr, "dbmigrate.RunWithDB(context.Background(), db)") {
+				t.Error("expected dbmigrate.RunWithDB(context.Background(), db) call")
+			}
+		})
+	}
+}
+
+func TestGenerateWorkerMain_NoAutoMigrate_NoMigrateCode(t *testing.T) {
+	dialects := []string{"mysql", "postgres", "sqlite"}
+
+	for _, dialect := range dialects {
+		t.Run(dialect, func(t *testing.T) {
+			cfg := WorkerGenConfig{
+				Channels: []codegen.SerializedChannelInfo{
+					{
+						Name:        "chatbot",
+						PackagePath: "example.com/myapp/channels/chatbot",
+						PackageName: "chatbot",
+						Messages: []codegen.SerializedMessageInfo{
+							{Direction: "client_to_server", TypeName: "ChatRequest", IsDispatch: true, HandlerName: "HandleChatRequest"},
+						},
+					},
+				},
+				ModulePath:  "example.com/myapp",
+				DBDialect:   dialect,
+				AutoMigrate: false,
+			}
+
+			code, err := GenerateWorkerMain(cfg)
+			if err != nil {
+				t.Fatalf("GenerateWorkerMain() error = %v", err)
+			}
+
+			codeStr := string(code)
+
+			if strings.Contains(codeStr, "dbmigrate") {
+				t.Error("expected no dbmigrate import or reference when AutoMigrate is false")
+			}
+			if strings.Contains(codeStr, "RunWithDB") {
+				t.Error("expected no RunWithDB call when AutoMigrate is false")
+			}
+		})
+	}
+}
+
 func TestGenerateWorkerMain_DuplicatePackagePaths_ImportedOnce(t *testing.T) {
 	cfg := WorkerGenConfig{
 		Channels: []codegen.SerializedChannelInfo{

@@ -152,6 +152,24 @@ ShipQ-generated servers behave differently in production:
 
 The environment is typically determined by a `GO_ENV` or equivalent environment variable. Check your generated `cmd/server/main.go` for the specific mechanism.
 
+## Auto-Migrate on Startup
+
+For simpler deployments, ShipQ can run all pending migrations automatically when the server or worker starts. Set `auto_migrate = true` in the `[db]` section of `shipq.ini`:
+
+```ini
+[db]
+database_url = postgres://localhost:5432/myapp_dev
+auto_migrate = true
+```
+
+After recompiling (`shipq handler compile` or any codegen-triggering command), the generated `cmd/server/main.go` and `cmd/worker/main.go` will call `dbmigrate.RunWithDB()` on startup — after connecting to the database but before serving any traffic. The migrator is idempotent and only applies unapplied migrations, so it's safe to call on every boot.
+
+This eliminates the need for a separate migration step (init container, release-phase command, wrapper script) in environments like Docker Compose, single-binary VPS deploys, and PaaS platforms (Fly.io, Railway, Render).
+
+:::caution
+For multi-replica deployments (e.g., Kubernetes with horizontal scaling), running migrations from every replica simultaneously can cause race conditions. In those environments, prefer running migrations as a separate Kubernetes Job or init container instead.
+:::
+
 ## Docker Compose Example
 
 For local development that mirrors production, you can use Docker Compose:
@@ -186,6 +204,8 @@ services:
     depends_on:
       - db
       - redis
+    # If auto_migrate = true in shipq.ini, migrations run automatically on boot.
+    # No separate migration container needed.
 
   worker:
     build:
@@ -225,6 +245,7 @@ Before deploying to production, make sure you have:
 - [ ] All `[env]` required variables present
 - [ ] TLS/SSL enabled for database connections
 - [ ] A reverse proxy (nginx, Caddy, or a cloud load balancer) in front of the Go server
+- [ ] Migration strategy decided: either `auto_migrate = true` in `shipq.ini` for single-instance deploys, or a separate migration step for multi-replica environments
 
 ## CI/CD
 
