@@ -153,7 +153,7 @@ func TestGenerateSvelteHooks_CreateGetPostQuery(t *testing.T) {
 		"export function createGetPostQuery(",
 		"id: string,",
 		"options?: Partial<CreateQueryOptions<GetPostResponse>>",
-		"return createQuery({",
+		"return createQuery(() => ({",
 		"queryKey: postsKeys.getPost(id),",
 		"queryFn: () => getPost(id),",
 		"...options,",
@@ -197,7 +197,7 @@ func TestGenerateSvelteHooks_CreateCreatePostMutation(t *testing.T) {
 		"export function createCreatePostMutation(",
 		"options?: CreateMutationOptions<CreatePostResponse, Error, CreatePostRequest>",
 		"const queryClient = useQueryClient();",
-		"return createMutation({",
+		"return createMutation(() => ({",
 		"onSuccess: () => {",
 		"queryClient.invalidateQueries({ queryKey: postsKeys.all });",
 		"...options,",
@@ -448,8 +448,8 @@ func TestGenerateSvelteHooks_UsesCreateQueryNotUseQuery(t *testing.T) {
 	output := string(result)
 
 	// Svelte hooks should use createQuery, not useQuery
-	if !strings.Contains(output, "return createQuery({") {
-		t.Error("GET hooks should use createQuery")
+	if !strings.Contains(output, "return createQuery(() => ({") {
+		t.Error("GET hooks should use createQuery with thunk syntax")
 	}
 	// Make sure useQuery is not used as a function call (it's only imported for the type)
 	if strings.Contains(output, "return useQuery({") {
@@ -464,8 +464,8 @@ func TestGenerateSvelteHooks_UsesCreateMutationNotUseMutation(t *testing.T) {
 	}
 	output := string(result)
 
-	if !strings.Contains(output, "return createMutation({") {
-		t.Error("non-GET hooks should use createMutation")
+	if !strings.Contains(output, "return createMutation(() => ({") {
+		t.Error("non-GET hooks should use createMutation with thunk syntax")
 	}
 	if strings.Contains(output, "return useMutation({") {
 		t.Error("Svelte hooks should NOT use useMutation")
@@ -683,5 +683,94 @@ func TestGenerateSvelteHooks_QueryKeysSameAsReact(t *testing.T) {
 
 	if reactKeys != svelteKeys {
 		t.Errorf("Query keys should be identical between React and Svelte.\nReact:\n%s\n\nSvelte:\n%s", reactKeys, svelteKeys)
+	}
+}
+
+// ─── Svelte Query v6 thunk syntax tests ───
+
+func TestGenerateSvelteHooks_QueryThunkSyntax(t *testing.T) {
+	result, err := GenerateSvelteHooks(makePostsHandlers())
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	output := string(result)
+
+	// Svelte Query v6 requires options wrapped in a getter function: () => ({...})
+	// Every createQuery call must use the thunk syntax.
+	if strings.Contains(output, "return createQuery({") {
+		t.Error("createQuery must use thunk syntax: createQuery(() => ({...})), not createQuery({...})")
+	}
+	if !strings.Contains(output, "return createQuery(() => ({") {
+		t.Error("createQuery should use thunk syntax for Svelte Query v6")
+	}
+	// The closing should be })) not })
+	if !strings.Contains(output, "}));") {
+		t.Error("createQuery thunk should close with }));")
+	}
+}
+
+func TestGenerateSvelteHooks_MutationThunkSyntax(t *testing.T) {
+	result, err := GenerateSvelteHooks(makePostsHandlers())
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	output := string(result)
+
+	// Svelte Query v6 requires options wrapped in a getter function: () => ({...})
+	// Every createMutation call must use the thunk syntax.
+	if strings.Contains(output, "return createMutation({") {
+		t.Error("createMutation must use thunk syntax: createMutation(() => ({...})), not createMutation({...})")
+	}
+	if !strings.Contains(output, "return createMutation(() => ({") {
+		t.Error("createMutation should use thunk syntax for Svelte Query v6")
+	}
+}
+
+func TestGenerateSvelteHooks_AllHooksUseThunkSyntax(t *testing.T) {
+	// Comprehensive test: generate hooks for multiple packages with all handler
+	// types and verify no plain-object calls remain.
+	handlers := append(makePostsHandlers(), makeCustomHandler())
+	handlers = append(handlers, makeCustomGetHandler())
+	result, err := GenerateSvelteHooks(handlers)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	output := string(result)
+
+	// Count thunk-style calls vs plain-object calls
+	plainQueryCalls := strings.Count(output, "return createQuery({")
+	plainMutationCalls := strings.Count(output, "return createMutation({")
+	thunkQueryCalls := strings.Count(output, "return createQuery(() => ({")
+	thunkMutationCalls := strings.Count(output, "return createMutation(() => ({")
+
+	if plainQueryCalls > 0 {
+		t.Errorf("found %d plain createQuery({...}) calls; all must use thunk syntax for Svelte Query v6", plainQueryCalls)
+	}
+	if plainMutationCalls > 0 {
+		t.Errorf("found %d plain createMutation({...}) calls; all must use thunk syntax for Svelte Query v6", plainMutationCalls)
+	}
+	if thunkQueryCalls == 0 {
+		t.Error("expected at least one createQuery(() => ({...})) call")
+	}
+	if thunkMutationCalls == 0 {
+		t.Error("expected at least one createMutation(() => ({...})) call")
+	}
+}
+
+func TestGenerateSvelteHooks_ThunkClosingParens(t *testing.T) {
+	result, err := GenerateSvelteHooks(makePostsHandlers())
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	output := string(result)
+
+	// Every thunk-opened block should close with })); not });
+	// Count opening thunks
+	openCount := strings.Count(output, "() => ({")
+	// Count proper closings — the closing })) appears on its own line as "  }));"
+	closeCount := strings.Count(output, "}));")
+
+	if openCount != closeCount {
+		t.Errorf("mismatched thunk parens: %d openings (() => ({) vs %d closings (})));", openCount, closeCount)
 	}
 }
