@@ -272,8 +272,20 @@ func parseDatabaseURL(rawURL string) (driver, dsn string) {
 		hostPort = hostAndDB[:slashIdx]
 		dbName = hostAndDB[slashIdx+1:]
 	}
+	// Separate existing query params from the database name so we can
+	// merge parseTime=true without introducing a second '?'.
+	queryParams := ""
+	if qIdx := strings.Index(dbName, "?"); qIdx >= 0 {
+		queryParams = dbName[qIdx+1:]
+		dbName = dbName[:qIdx]
+	}
 	// parseTime=true is required so the driver scans DATETIME columns into time.Time.
-	return "mysql", fmt.Sprintf("%s@tcp(%s)/%s?parseTime=true", user, hostPort, dbName)
+	if queryParams == "" {
+		queryParams = "parseTime=true"
+	} else if !strings.Contains(queryParams, "parseTime=") {
+		queryParams += "&parseTime=true"
+	}
+	return "mysql", fmt.Sprintf("%s@tcp(%s)/%s?%s", user, hostPort, dbName, queryParams)
 }
 `
 
@@ -349,8 +361,20 @@ func ParseDatabaseURL(rawURL string) (driver, dsn string) {
 		hostPort = hostAndDB[:slashIdx]
 		dbName = hostAndDB[slashIdx+1:]
 	}
+	// Separate existing query params from the database name so we can
+	// merge parseTime=true without introducing a second '?'.
+	queryParams := ""
+	if qIdx := strings.Index(dbName, "?"); qIdx >= 0 {
+		queryParams = dbName[qIdx+1:]
+		dbName = dbName[:qIdx]
+	}
 	// parseTime=true is required so the driver scans DATETIME columns into time.Time.
-	return "mysql", fmt.Sprintf("%s@tcp(%s)/%s?parseTime=true", user, hostPort, dbName)
+	if queryParams == "" {
+		queryParams = "parseTime=true"
+	} else if !strings.Contains(queryParams, "parseTime=") {
+		queryParams += "&parseTime=true"
+	}
+	return "mysql", fmt.Sprintf("%s@tcp(%s)/%s?%s", user, hostPort, dbName, queryParams)
 }
 `
 

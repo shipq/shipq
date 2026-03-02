@@ -216,7 +216,7 @@ func writeSvelteQueryHook(buf *bytes.Buffer, pkgName string, h codegen.Serialize
 		for _, pp := range h.PathParams {
 			keyArgs = append(keyArgs, pp.Name)
 		}
-		buf.WriteString("  return createQuery({\n")
+		buf.WriteString("  return createQuery(() => ({\n")
 		if len(keyArgs) > 0 {
 			fmt.Fprintf(buf, "    queryKey: [...%sKeys.%s(%s), params] as const,\n", pkgName, funcName, strings.Join(keyArgs, ", "))
 		} else {
@@ -227,7 +227,7 @@ func writeSvelteQueryHook(buf *bytes.Buffer, pkgName string, h codegen.Serialize
 		for _, pp := range h.PathParams {
 			keyArgs = append(keyArgs, pp.Name)
 		}
-		buf.WriteString("  return createQuery({\n")
+		buf.WriteString("  return createQuery(() => ({\n")
 		fmt.Fprintf(buf, "    queryKey: %sKeys.%s(%s),\n", pkgName, funcName, strings.Join(keyArgs, ", "))
 	}
 
@@ -242,7 +242,7 @@ func writeSvelteQueryHook(buf *bytes.Buffer, pkgName string, h codegen.Serialize
 	fmt.Fprintf(buf, "    queryFn: () => %s(%s),\n", baseFuncRef, strings.Join(callArgs, ", "))
 
 	buf.WriteString("    ...options,\n")
-	buf.WriteString("  });\n")
+	buf.WriteString("  }));\n")
 	buf.WriteString("}\n")
 }
 
@@ -296,7 +296,7 @@ func writeSvelteMutationHook(buf *bytes.Buffer, pkgName string, h codegen.Serial
 		buf.WriteString("  const queryClient = useQueryClient();\n")
 	}
 
-	buf.WriteString("  return createMutation({\n")
+	buf.WriteString("  return createMutation(() => ({\n")
 
 	// mutationFn
 	if hasPathParams && hasBody {
@@ -343,6 +343,6 @@ func writeSvelteMutationHook(buf *bytes.Buffer, pkgName string, h codegen.Serial
 	}
 
 	buf.WriteString("    ...options,\n")
-	buf.WriteString("  });\n")
+	buf.WriteString("  }));\n")
 	buf.WriteString("}\n")
 }

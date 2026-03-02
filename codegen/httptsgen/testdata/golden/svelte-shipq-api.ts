@@ -45,37 +45,37 @@ export function createCreateCommentMutation(
   options?: CreateMutationOptions<CreateCommentResponse, Error, CreateCommentRequest>,
 ) {
   const queryClient = useQueryClient();
-  return createMutation({
+  return createMutation(() => ({
     mutationFn: (req: CreateCommentRequest) => createComment(req),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: commentsKeys.all });
     },
     ...options,
-  });
+  }));
 }
 
 export function createListCommentsQuery(
   params?: { cursor?: string; limit?: number },
   options?: Partial<CreateQueryOptions<ListCommentsResponse>>,
 ) {
-  return createQuery({
+  return createQuery(() => ({
     queryKey: [...commentsKeys.listComments(), params] as const,
     queryFn: () => listComments(params),
     ...options,
-  });
+  }));
 }
 
 export function createSoftDeleteCommentMutation(
   options?: CreateMutationOptions<void, Error, string>,
 ) {
   const queryClient = useQueryClient();
-  return createMutation({
+  return createMutation(() => ({
     mutationFn: (id: string) => softDeleteComment(id),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: commentsKeys.all });
     },
     ...options,
-  });
+  }));
 }
 
 // ─── Query Keys: posts ───
@@ -95,79 +95,79 @@ export function createAdminListPostsQuery(
   params?: { cursor?: string; limit?: number },
   options?: Partial<CreateQueryOptions<AdminListPostsResponse>>,
 ) {
-  return createQuery({
+  return createQuery(() => ({
     queryKey: [...postsKeys.adminListPosts(), params] as const,
     queryFn: () => adminListPosts(params),
     ...options,
-  });
+  }));
 }
 
 export function createCreatePostMutation(
   options?: CreateMutationOptions<CreatePostResponse, Error, CreatePostRequest>,
 ) {
   const queryClient = useQueryClient();
-  return createMutation({
+  return createMutation(() => ({
     mutationFn: (req: CreatePostRequest) => createPost(req),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: postsKeys.all });
     },
     ...options,
-  });
+  }));
 }
 
 export function createGetPostQuery(
   id: string,
   options?: Partial<CreateQueryOptions<GetPostResponse>>,
 ) {
-  return createQuery({
+  return createQuery(() => ({
     queryKey: postsKeys.getPost(id),
     queryFn: () => getPost(id),
     ...options,
-  });
+  }));
 }
 
 export function createListPostsQuery(
   params?: { cursor?: string; limit?: number },
   options?: Partial<CreateQueryOptions<ListPostsResponse>>,
 ) {
-  return createQuery({
+  return createQuery(() => ({
     queryKey: [...postsKeys.listPosts(), params] as const,
     queryFn: () => listPosts(params),
     ...options,
-  });
+  }));
 }
 
 export function createPublishPostMutation(
   options?: CreateMutationOptions<PublishPostResponse, Error, string>,
 ) {
-  return createMutation({
+  return createMutation(() => ({
     mutationFn: (id: string) => publishPost(id),
     ...options,
-  });
+  }));
 }
 
 export function createSoftDeletePostMutation(
   options?: CreateMutationOptions<void, Error, string>,
 ) {
   const queryClient = useQueryClient();
-  return createMutation({
+  return createMutation(() => ({
     mutationFn: (id: string) => softDeletePost(id),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: postsKeys.all });
     },
     ...options,
-  });
+  }));
 }
 
 export function createUpdatePostMutation(
   options?: CreateMutationOptions<UpdatePostResponse, Error, { id: string; data: UpdatePostRequest }>,
 ) {
   const queryClient = useQueryClient();
-  return createMutation({
+  return createMutation(() => ({
     mutationFn: ({ id, data }: { id: string; data: UpdatePostRequest }) => updatePost(id, data),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: postsKeys.all });
     },
     ...options,
-  });
+  }));
 }
