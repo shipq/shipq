@@ -10,6 +10,121 @@ import (
 	"github.com/shipq/shipq/project"
 )
 
+func TestInitCreatesHealthEndpoint(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	// Set up a minimal project: go.mod + shipq.ini
+	projectName := project.GetProjectName(tmpDir)
+	if err := createGoMod(tmpDir, projectName); err != nil {
+		t.Fatalf("createGoMod failed: %v", err)
+	}
+	if err := createShipqIni(tmpDir, projectName, "sqlite"); err != nil {
+		t.Fatalf("createShipqIni failed: %v", err)
+	}
+
+	modulePath := "com." + projectName
+
+	// ── First call: files should be created ──
+	created, err := createHealthEndpoint(tmpDir, modulePath)
+	if err != nil {
+		t.Fatalf("createHealthEndpoint returned error: %v", err)
+	}
+	if !created {
+		t.Fatal("expected created=true on first call")
+	}
+
+	// Assert register.go exists and contains the correct module path
+	registerPath := filepath.Join(tmpDir, "api", "health", "register.go")
+	regContent, err := os.ReadFile(registerPath)
+	if err != nil {
+		t.Fatalf("register.go not found: %v", err)
+	}
+	regStr := string(regContent)
+	if !strings.Contains(regStr, modulePath+"/shipq/lib/handler") {
+		t.Errorf("register.go missing correct handler import path.\nwant substring: %s/shipq/lib/handler\ngot:\n%s",
+			modulePath, regStr)
+	}
+	if !strings.Contains(regStr, `app.Get("/health", HealthCheck)`) {
+		t.Errorf("register.go missing HealthCheck registration.\ngot:\n%s", regStr)
+	}
+
+	// Assert health_check.go exists and contains the handler function
+	healthCheckPath := filepath.Join(tmpDir, "api", "health", "health_check.go")
+	hcContent, err := os.ReadFile(healthCheckPath)
+	if err != nil {
+		t.Fatalf("health_check.go not found: %v", err)
+	}
+	hcStr := string(hcContent)
+	if !strings.Contains(hcStr, "HealthCheckRequest") {
+		t.Errorf("health_check.go missing HealthCheckRequest type.\ngot:\n%s", hcStr)
+	}
+	if !strings.Contains(hcStr, "HealthCheckResponse") {
+		t.Errorf("health_check.go missing HealthCheckResponse type.\ngot:\n%s", hcStr)
+	}
+	if !strings.Contains(hcStr, `json:"healthy"`) {
+		t.Errorf("health_check.go missing json tag for healthy field.\ngot:\n%s", hcStr)
+	}
+	if !strings.Contains(hcStr, "func HealthCheck(ctx context.Context") {
+		t.Errorf("health_check.go missing HealthCheck function.\ngot:\n%s", hcStr)
+	}
+
+	// ── Second call: idempotent — files should NOT be overwritten ──
+	// Overwrite register.go with a sentinel so we can detect re-creation
+	sentinel := []byte("// sentinel — do not overwrite\n")
+	if err := os.WriteFile(registerPath, sentinel, 0644); err != nil {
+		t.Fatalf("failed to write sentinel: %v", err)
+	}
+
+	created2, err := createHealthEndpoint(tmpDir, modulePath)
+	if err != nil {
+		t.Fatalf("second createHealthEndpoint returned error: %v", err)
+	}
+	if created2 {
+		t.Error("expected created=false on second call (idempotent)")
+	}
+
+	// Verify the sentinel is still intact — file was not overwritten
+	afterContent, err := os.ReadFile(registerPath)
+	if err != nil {
+		t.Fatalf("failed to read register.go after second call: %v", err)
+	}
+	if string(afterContent) != string(sentinel) {
+		t.Error("register.go was overwritten on second call; expected idempotent skip")
+	}
+}
+
+func TestCreateHealthEndpoint_CorrectModulePath(t *testing.T) {
+	tests := []struct {
+		name       string
+		modulePath string
+	}{
+		{"simple module", "com.myapp"},
+		{"github module", "github.com/company/monorepo/services/api"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			tmpDir := t.TempDir()
+
+			created, err := createHealthEndpoint(tmpDir, tt.modulePath)
+			if err != nil {
+				t.Fatalf("createHealthEndpoint error: %v", err)
+			}
+			if !created {
+				t.Fatal("expected created=true")
+			}
+
+			regContent, err := os.ReadFile(filepath.Join(tmpDir, "api", "health", "register.go"))
+			if err != nil {
+				t.Fatalf("register.go not found: %v", err)
+			}
+			expectedImport := tt.modulePath + "/shipq/lib/handler"
+			if !strings.Contains(string(regContent), expectedImport) {
+				t.Errorf("register.go missing expected import %q.\ngot:\n%s", expectedImport, regContent)
+			}
+		})
+	}
+}
+
 func TestEnsureGitignore_CreatesNewFile(t *testing.T) {
 	tmpDir := t.TempDir()
 

@@ -692,3 +692,186 @@ func TestAtoiSimple(t *testing.T) {
 		})
 	}
 }
+
+// ─── cmdPathWithSubPath tests ───────────────────────────────────────
+
+func TestCmdPathWithSubPath_EmptySubPath(t *testing.T) {
+	got := cmdPathWithSubPath("", "./cmd/server")
+	if got != "./cmd/server" {
+		t.Errorf("expected ./cmd/server, got %q", got)
+	}
+
+	got = cmdPathWithSubPath("", "./cmd/worker")
+	if got != "./cmd/worker" {
+		t.Errorf("expected ./cmd/worker, got %q", got)
+	}
+}
+
+func TestCmdPathWithSubPath_SingleLevel(t *testing.T) {
+	got := cmdPathWithSubPath("services/api", "./cmd/server")
+	if got != "./services/api/cmd/server" {
+		t.Errorf("expected ./services/api/cmd/server, got %q", got)
+	}
+
+	got = cmdPathWithSubPath("services/api", "./cmd/worker")
+	if got != "./services/api/cmd/worker" {
+		t.Errorf("expected ./services/api/cmd/worker, got %q", got)
+	}
+}
+
+func TestCmdPathWithSubPath_MultipleLevel(t *testing.T) {
+	got := cmdPathWithSubPath("internal/apps/api", "./cmd/server")
+	if got != "./internal/apps/api/cmd/server" {
+		t.Errorf("expected ./internal/apps/api/cmd/server, got %q", got)
+	}
+}
+
+// ─── Monorepo Dockerfile rendering tests ────────────────────────────
+
+func TestRenderDockerfile_MonorepoCmdPath(t *testing.T) {
+	data := dockerfileData{
+		GoVersion:        "1.25",
+		AlpineVersion:    "3.22",
+		BinaryName:       "server",
+		CmdPath:          cmdPathWithSubPath("services/api", "./cmd/server"),
+		Port:             "8080",
+		ExtraApkPackages: "",
+		SubPath:          "services/api",
+	}
+
+	content, err := renderDockerfile(data)
+	if err != nil {
+		t.Fatalf("renderDockerfile returned error: %v", err)
+	}
+
+	// The go build target must include the subpath
+	if !strings.Contains(content, "./services/api/cmd/server") {
+		t.Errorf("Dockerfile missing monorepo cmd path ./services/api/cmd/server:\n%s", content)
+	}
+
+	// COPY go.mod should still be present (unchanged)
+	if !strings.Contains(content, "COPY go.mod go.sum ./") {
+		t.Errorf("Dockerfile missing COPY go.mod go.sum ./:\n%s", content)
+	}
+}
+
+func TestRenderDockerfile_SameDir_NoBehaviorChange(t *testing.T) {
+	data := dockerfileData{
+		GoVersion:        "1.25",
+		AlpineVersion:    "3.22",
+		BinaryName:       "server",
+		CmdPath:          cmdPathWithSubPath("", "./cmd/server"),
+		Port:             "8080",
+		ExtraApkPackages: "",
+		SubPath:          "",
+	}
+
+	content, err := renderDockerfile(data)
+	if err != nil {
+		t.Fatalf("renderDockerfile returned error: %v", err)
+	}
+
+	// CmdPath must be the default ./cmd/server (no subpath prefix)
+	if !strings.Contains(content, "./cmd/server") {
+		t.Errorf("Dockerfile missing ./cmd/server:\n%s", content)
+	}
+	// Must NOT contain a double-slash or stray subpath
+	if strings.Contains(content, ".//cmd/server") {
+		t.Errorf("Dockerfile has malformed cmd path .//cmd/server:\n%s", content)
+	}
+}
+
+func TestMonorepoDockerfileOutputPaths(t *testing.T) {
+	// Simulate a monorepo layout:
+	//   tmpDir/           <- GoModRoot (go.mod lives here)
+	//   tmpDir/services/api/  <- ShipqRoot (shipq.ini lives here)
+	tmpDir := t.TempDir()
+	goModRoot := tmpDir
+	shipqRoot := filepath.Join(tmpDir, "services", "api")
+
+	if err := os.MkdirAll(shipqRoot, 0755); err != nil {
+		t.Fatalf("failed to create shipqRoot: %v", err)
+	}
+
+	subPath := "services/api"
+
+	// Render and write Dockerfile.server to GoModRoot
+	serverData := dockerfileData{
+		GoVersion:        "1.25",
+		AlpineVersion:    "3.22",
+		BinaryName:       "server",
+		CmdPath:          cmdPathWithSubPath(subPath, "./cmd/server"),
+		Port:             "8080",
+		ExtraApkPackages: "",
+		SubPath:          subPath,
+	}
+	serverContent, err := renderDockerfile(serverData)
+	if err != nil {
+		t.Fatalf("renderDockerfile error: %v", err)
+	}
+
+	serverPath := filepath.Join(goModRoot, "Dockerfile.server")
+	if err := os.WriteFile(serverPath, []byte(serverContent), 0644); err != nil {
+		t.Fatalf("failed to write Dockerfile.server: %v", err)
+	}
+
+	// Assert Dockerfile.server is at GoModRoot, not ShipqRoot
+	if _, err := os.Stat(serverPath); err != nil {
+		t.Fatalf("Dockerfile.server not found at GoModRoot: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(shipqRoot, "Dockerfile.server")); err == nil {
+		t.Error("Dockerfile.server should NOT be at ShipqRoot in monorepo layout")
+	}
+
+	// Assert the content references the subpath in the go build target
+	written, err := os.ReadFile(serverPath)
+	if err != nil {
+		t.Fatalf("failed to read Dockerfile.server: %v", err)
+	}
+	if !strings.Contains(string(written), "./services/api/cmd/server") {
+		t.Errorf("Dockerfile.server missing monorepo cmd path:\n%s", written)
+	}
+}
+
+func TestRenderDockerAdoc_MonorepoNote(t *testing.T) {
+	ad := adocData{
+		GoVersion:     "1.25",
+		AlpineVersion: "3.22",
+		ProjectName:   "myapp",
+		Dialect:       "postgres",
+		HasWorker:     false,
+		SubPath:       "services/api",
+	}
+
+	content, err := renderDockerAdoc(ad)
+	if err != nil {
+		t.Fatalf("renderDockerAdoc error: %v", err)
+	}
+
+	if !strings.Contains(content, "monorepo") {
+		t.Errorf("DOCKERFILE.adoc should mention monorepo when SubPath is set:\n%s", content)
+	}
+	if !strings.Contains(content, "go.mod") {
+		t.Errorf("DOCKERFILE.adoc should mention go.mod root directory:\n%s", content)
+	}
+}
+
+func TestRenderDockerAdoc_SameDir_NoMonorepoNote(t *testing.T) {
+	ad := adocData{
+		GoVersion:     "1.25",
+		AlpineVersion: "3.22",
+		ProjectName:   "myapp",
+		Dialect:       "postgres",
+		HasWorker:     false,
+		SubPath:       "",
+	}
+
+	content, err := renderDockerAdoc(ad)
+	if err != nil {
+		t.Fatalf("renderDockerAdoc error: %v", err)
+	}
+
+	if strings.Contains(content, "monorepo") {
+		t.Errorf("DOCKERFILE.adoc should NOT mention monorepo when SubPath is empty:\n%s", content)
+	}
+}

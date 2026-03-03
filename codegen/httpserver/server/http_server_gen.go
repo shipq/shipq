@@ -154,9 +154,14 @@ func generateResourceImports(buf *bytes.Buffer, modulePath string, group Resourc
 		}
 	}
 
+	jsonNeeded := needsJSONImport(group.Handlers)
+	httperrorNeeded := jsonNeeded || needsHTTPError(group.Handlers)
+
 	buf.WriteString("import (\n")
 	buf.WriteString("\t\"context\"\n")
-	buf.WriteString("\t\"encoding/json\"\n")
+	if jsonNeeded {
+		buf.WriteString("\t\"encoding/json\"\n")
+	}
 
 	// OptionalAuth closures need "errors" for errors.Is
 	needsOptionalAuth := false
@@ -178,7 +183,9 @@ func generateResourceImports(buf *bytes.Buffer, modulePath string, group Resourc
 
 	buf.WriteString("\n")
 	fmt.Fprintf(buf, "\t%q\n", modulePath+"/config")
-	fmt.Fprintf(buf, "\t%q\n", modulePath+"/shipq/lib/httperror")
+	if httperrorNeeded {
+		fmt.Fprintf(buf, "\t%q\n", modulePath+"/shipq/lib/httperror")
+	}
 	fmt.Fprintf(buf, "\t%q\n", modulePath+"/shipq/lib/httpserver")
 	fmt.Fprintf(buf, "\t%q\n", modulePath+"/shipq/lib/httputil")
 	fmt.Fprintf(buf, "\t%q\n", modulePath+"/shipq/lib/logging")
@@ -680,6 +687,42 @@ func findAuthPackagePath(handlers []codegen.SerializedHandlerInfo) string {
 }
 
 // needsStrconv checks if any handler needs strconv for type conversion.
+// needsJSONImport returns true if any handler has a method with a body (POST,
+// PUT, PATCH) AND a request type with fields or path params. In that case the
+// generated wrapper calls json.NewDecoder to bind the JSON body.
+func needsJSONImport(handlers []codegen.SerializedHandlerInfo) bool {
+	for _, h := range handlers {
+		hasRequest := h.Request != nil && (len(h.Request.Fields) > 0 || len(h.PathParams) > 0)
+		if hasRequest && codegen.MethodHasBody(h.Method) {
+			return true
+		}
+	}
+	return false
+}
+
+// needsHTTPError returns true if any handler has a typed (non-string) path
+// parameter. The generated path-param binding code calls
+// httperror.BadRequest when the conversion fails.
+// Note: httperror is also needed when needsJSONImport is true (the JSON body
+// binding uses httperror.BadRequest too), but the caller checks that separately.
+func needsHTTPError(handlers []codegen.SerializedHandlerInfo) bool {
+	for _, h := range handlers {
+		if h.Request == nil {
+			continue
+		}
+		for _, field := range h.Request.Fields {
+			for _, param := range h.PathParams {
+				if strings.EqualFold(field.JSONName, param.Name) || strings.EqualFold(field.Name, param.Name) {
+					if field.Type != "string" && !strings.HasPrefix(field.Type, "*") {
+						return true
+					}
+				}
+			}
+		}
+	}
+	return false
+}
+
 func needsStrconv(handlers []codegen.SerializedHandlerInfo) bool {
 	for _, h := range handlers {
 		if h.Request == nil {

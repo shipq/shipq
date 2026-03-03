@@ -18,5 +18,8 @@ start-dbs:  # Start all databases (MySQL, PostgreSQL, SQLite)
 test-all:  # Run all tests
     go test -v ./... -tags=integration,property | tee -a test_results/$(date +%s).log
 
+test-e2e:  # Run E2E tests
+    TMPDIR=/tmp TMP=/tmp TEMP=/tmp CGO_ENABLED=1 go test -v -count=1 -timeout 60m -tags=e2e ./internal/commands/e2e -run '^TestEndToEnd_'
+
 llm-test:  # Run the LLM plumbing test (requires real API keys, skipped in CI)
     go run ./internal/llmtest/
