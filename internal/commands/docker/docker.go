@@ -58,6 +58,7 @@ type dockerfileData struct {
 	CmdPath          string
 	Port             string
 	ExtraApkPackages string
+	SubPath          string // e.g. "services/api" or "" if same directory
 }
 
 // dockerignoreData is intentionally empty — the template is static.
@@ -70,6 +71,7 @@ type adocData struct {
 	ProjectName   string
 	Dialect       string
 	HasWorker     bool
+	SubPath       string // e.g. "services/api" or "" if same directory
 }
 
 // ─── Entry point ────────────────────────────────────────────────────
@@ -99,7 +101,7 @@ func DockerCmd() {
 	if err != nil {
 		cli.FatalErr("failed to read module path", err)
 	}
-	_ = moduleInfo // used implicitly via project name
+	subPath := moduleInfo.SubPath // "" when same dir
 
 	goVersion, err := extractGoVersion(roots.GoModRoot)
 	if err != nil {
@@ -130,15 +132,16 @@ func DockerCmd() {
 		GoVersion:        goVersion,
 		AlpineVersion:    alpineVersion,
 		BinaryName:       "server",
-		CmdPath:          "./cmd/server",
+		CmdPath:          cmdPathWithSubPath(subPath, "./cmd/server"),
 		Port:             "8080",
 		ExtraApkPackages: "",
+		SubPath:          subPath,
 	}
 	serverContent, err := renderDockerfile(serverData)
 	if err != nil {
 		cli.FatalErr("failed to render Dockerfile.server", err)
 	}
-	serverPath := filepath.Join(roots.ShipqRoot, "Dockerfile.server")
+	serverPath := filepath.Join(roots.GoModRoot, "Dockerfile.server")
 	if err := os.WriteFile(serverPath, []byte(serverContent), 0644); err != nil {
 		cli.FatalErr("failed to write Dockerfile.server", err)
 	}
@@ -150,15 +153,16 @@ func DockerCmd() {
 			GoVersion:        goVersion,
 			AlpineVersion:    alpineVersion,
 			BinaryName:       "worker",
-			CmdPath:          "./cmd/worker",
+			CmdPath:          cmdPathWithSubPath(subPath, "./cmd/worker"),
 			Port:             "",
 			ExtraApkPackages: "",
+			SubPath:          subPath,
 		}
 		workerContent, err := renderDockerfile(workerData)
 		if err != nil {
 			cli.FatalErr("failed to render Dockerfile.worker", err)
 		}
-		workerPath := filepath.Join(roots.ShipqRoot, "Dockerfile.worker")
+		workerPath := filepath.Join(roots.GoModRoot, "Dockerfile.worker")
 		if err := os.WriteFile(workerPath, []byte(workerContent), 0644); err != nil {
 			cli.FatalErr("failed to write Dockerfile.worker", err)
 		}
@@ -170,7 +174,7 @@ func DockerCmd() {
 	if err != nil {
 		cli.FatalErr("failed to render .dockerignore", err)
 	}
-	diPath := filepath.Join(roots.ShipqRoot, ".dockerignore")
+	diPath := filepath.Join(roots.GoModRoot, ".dockerignore")
 	if err := os.WriteFile(diPath, []byte(diContent), 0644); err != nil {
 		cli.FatalErr("failed to write .dockerignore", err)
 	}
@@ -183,6 +187,7 @@ func DockerCmd() {
 		ProjectName:   projectName,
 		Dialect:       dialect,
 		HasWorker:     hasWorker,
+		SubPath:       subPath,
 	}
 	adocContent, err := renderDockerAdoc(ad)
 	if err != nil {
@@ -193,6 +198,16 @@ func DockerCmd() {
 		cli.FatalErr("failed to write DOCKERFILE.adoc", err)
 	}
 	cli.Success("Wrote " + adocPath)
+}
+
+// cmdPathWithSubPath prefixes a command-relative path (e.g. "./cmd/server")
+// with the monorepo subpath when present. When subPath is empty the original
+// cmdRelPath is returned unchanged.
+func cmdPathWithSubPath(subPath, cmdRelPath string) string {
+	if subPath == "" {
+		return cmdRelPath
+	}
+	return "./" + subPath + "/" + strings.TrimPrefix(cmdRelPath, "./")
 }
 
 // ─── Alpine version resolution ──────────────────────────────────────
@@ -472,7 +487,11 @@ All images target *linux/amd64*.
 == Prerequisites
 
 * Docker ≥ 20.10 (BuildKit enabled by default)
-
+{{ if .SubPath }}
+NOTE: This project uses a monorepo layout. The Dockerfiles live next to
+` + "`" + `go.mod` + "`" + ` (the repository root), not in the ` + "`" + `shipq.ini` + "`" + ` directory.
+Run all ` + "`" + `docker build` + "`" + ` commands from the ` + "`" + `go.mod` + "`" + ` root directory.
+{{ end }}
 == Build
 
     # Build the server image

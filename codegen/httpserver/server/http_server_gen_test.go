@@ -532,12 +532,10 @@ func TestGenerateHTTPServer_HelperFunctions(t *testing.T) {
 		t.Error("resource file should use httputil.WrapHandler")
 	}
 
-	// Should import httputil, httperror, httpserver
+	// Should import httputil, httpserver (httperror is only needed for typed
+	// path params or JSON body binding, which this GET handler doesn't have)
 	if !strings.Contains(codeStr, `/shipq/lib/httputil"`) {
 		t.Error("missing httputil import")
-	}
-	if !strings.Contains(codeStr, `/shipq/lib/httperror"`) {
-		t.Error("missing httperror import")
 	}
 	if !strings.Contains(codeStr, `/shipq/lib/httpserver"`) {
 		t.Error("missing httpserver import")

@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/shipq/shipq/cli"
+	"github.com/shipq/shipq/codegen"
 	"github.com/shipq/shipq/dburl"
 	"github.com/shipq/shipq/inifile"
 	"github.com/shipq/shipq/project"
@@ -34,6 +35,8 @@ func InitCmd() {
 	createdShipqIni := false
 	updatedGitignore := false
 	existingGoModRoot := ""
+
+	createdHealth := false
 
 	// Parse dialect flag from os.Args
 	dialect := parseDialectFlag()
@@ -68,17 +71,39 @@ func InitCmd() {
 	}
 	updatedGitignore = updated
 
+	// Scaffold api/health/ endpoint (idempotent — skips if register.go already exists)
+	goModDir := cwd
+	if existingGoModRoot != "" {
+		goModDir = existingGoModRoot
+	}
+	moduleInfo, err := codegen.GetModuleInfo(goModDir, cwd)
+	if err != nil {
+		cli.FatalErr("failed to read module info", err)
+	}
+	modulePath := moduleInfo.FullImportPath("")
+	created, err := createHealthEndpoint(cwd, modulePath)
+	if err != nil {
+		cli.FatalErr("failed to create health endpoint", err)
+	}
+	createdHealth = created
+
 	// Print results
 	if createdGoMod && createdShipqIni {
 		cli.Success("Initialized new shipq project")
 		cli.Infof("  Created go.mod (module: com.%s)", projectName)
 		cli.Infof("  Created shipq.ini (dialect: %s)", dialect)
+		if createdHealth {
+			cli.Info("  Created api/health/ (healthcheck endpoint)")
+		}
 		if updatedGitignore {
 			cli.Info("  Updated .gitignore")
 		}
 	} else if createdGoMod {
 		cli.Success("Created go.mod")
 		cli.Infof("  Module: com.%s", projectName)
+		if createdHealth {
+			cli.Info("  Created api/health/ (healthcheck endpoint)")
+		}
 		if updatedGitignore {
 			cli.Info("  Updated .gitignore")
 		}
@@ -88,6 +113,14 @@ func InitCmd() {
 		if existingGoModRoot != "" && existingGoModRoot != cwd {
 			cli.Infof("  Using existing go.mod from %s", existingGoModRoot)
 		}
+		if createdHealth {
+			cli.Info("  Created api/health/ (healthcheck endpoint)")
+		}
+		if updatedGitignore {
+			cli.Info("  Updated .gitignore")
+		}
+	} else if createdHealth {
+		cli.Success("Created api/health/ (healthcheck endpoint)")
 		if updatedGitignore {
 			cli.Info("  Updated .gitignore")
 		}
@@ -210,6 +243,62 @@ func ensureGitignore(dir string) (bool, error) {
 
 	if err := os.WriteFile(gitignorePath, []byte(newContent), 0644); err != nil {
 		return false, err
+	}
+
+	return true, nil
+}
+
+// createHealthEndpoint scaffolds api/health/register.go and api/health/health_check.go
+// using the provided module path (e.g. "com.myproject"). It is idempotent: if
+// api/health/register.go already exists the function returns (false, nil).
+func createHealthEndpoint(dir, modulePath string) (bool, error) {
+	healthDir := filepath.Join(dir, "api", "health")
+	registerPath := filepath.Join(healthDir, "register.go")
+
+	// Idempotency: skip if register.go already exists
+	if _, err := os.Stat(registerPath); err == nil {
+		return false, nil
+	}
+
+	if err := os.MkdirAll(healthDir, 0755); err != nil {
+		return false, fmt.Errorf("failed to create api/health directory: %w", err)
+	}
+
+	registerContent := fmt.Sprintf(`package health
+
+import (
+	"%s/shipq/lib/handler"
+)
+
+func Register(app *handler.App) {
+	app.Get("/health", HealthCheck)
+}
+`, modulePath)
+
+	if err := os.WriteFile(registerPath, []byte(registerContent), 0644); err != nil {
+		return false, fmt.Errorf("failed to write register.go: %w", err)
+	}
+
+	healthCheckContent := `package health
+
+import "context"
+
+type HealthCheckRequest struct{}
+
+type HealthCheckResponse struct {
+	Healthy bool ` + "`" + `json:"healthy"` + "`" + `
+}
+
+func HealthCheck(ctx context.Context, req *HealthCheckRequest) (*HealthCheckResponse, error) {
+	// The database ping is handled by the generated HTTP server layer;
+	// this handler always reports healthy if it is reached.
+	return &HealthCheckResponse{Healthy: true}, nil
+}
+`
+
+	healthCheckPath := filepath.Join(healthDir, "health_check.go")
+	if err := os.WriteFile(healthCheckPath, []byte(healthCheckContent), 0644); err != nil {
+		return false, fmt.Errorf("failed to write health_check.go: %w", err)
 	}
 
 	return true, nil

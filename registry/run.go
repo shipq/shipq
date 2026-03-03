@@ -41,11 +41,9 @@ func Run(shipqRoot, goModRoot string) error {
 		return fmt.Errorf("failed to discover API packages: %w", err)
 	}
 
-	// If no API packages found, nothing to compile
-	if len(apiPkgs) == 0 {
-		fmt.Fprintln(os.Stderr, "No API packages found with Register functions.")
-		return nil
-	}
+	// Even with zero user handlers, we still run the full pipeline so that
+	// the healthcheck endpoint (scaffolded by `shipq init`) and any
+	// channel routes are generated.
 
 	// Build and run the compile program (uses goModRoot for replace directive)
 	cfg := handlercompile.HandlerCompileProgramConfig{

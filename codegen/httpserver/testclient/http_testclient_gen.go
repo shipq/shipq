@@ -87,15 +87,20 @@ func generateResourceTestClient(modulePath string, group server.ResourceGroup) (
 
 	// Imports
 	needsStrings := false
+	needsBytes := false
 	for _, h := range group.Handlers {
 		if len(h.PathParams) > 0 {
 			needsStrings = true
-			break
+		}
+		if codegen.MethodHasBody(h.Method) && h.Request != nil && len(h.Request.Fields) > 0 {
+			needsBytes = true
 		}
 	}
 
 	buf.WriteString("import (\n")
-	buf.WriteString("\t\"bytes\"\n")
+	if needsBytes {
+		buf.WriteString("\t\"bytes\"\n")
+	}
 	buf.WriteString("\t\"context\"\n")
 	buf.WriteString("\t\"encoding/json\"\n")
 	buf.WriteString("\t\"fmt\"\n")
