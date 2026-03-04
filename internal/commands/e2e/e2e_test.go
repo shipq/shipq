@@ -3,9 +3,12 @@
 package e2e
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net"
+	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -1853,6 +1856,124 @@ func TestEndToEnd_AuthThenSignupNoOAuth(t *testing.T) {
 	for _, db := range allDBConfigs(t) {
 		t.Run(db.Name, func(t *testing.T) {
 			scenarioAuthThenSignupNoOAuth(t, shipq, db)
+		})
+	}
+}
+
+// -------------------------------------------------------------------------
+// Helpers: free port & server readiness
+// -------------------------------------------------------------------------
+
+// findFreePort binds to port 0 to let the OS assign a free port, then
+// closes the listener and returns the port number.
+func findFreePort(t *testing.T) int {
+	t.Helper()
+	l, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("failed to find free port: %v", err)
+	}
+	port := l.Addr().(*net.TCPAddr).Port
+	l.Close()
+	return port
+}
+
+// waitForServer polls the given TCP port until it is connectable or the
+// timeout (10 s) expires, whichever comes first.
+func waitForServer(t *testing.T, port int) {
+	t.Helper()
+	deadline := time.Now().Add(10 * time.Second)
+	for time.Now().Before(deadline) {
+		conn, err := net.DialTimeout("tcp", fmt.Sprintf("127.0.0.1:%d", port), 500*time.Millisecond)
+		if err == nil {
+			conn.Close()
+			return
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	t.Fatalf("server on port %d did not become reachable within 10 s", port)
+}
+
+// -------------------------------------------------------------------------
+// Scenario: Health endpoint (init-only project, no resources)
+// -------------------------------------------------------------------------
+
+func scenarioHealthEndpoint(t *testing.T, shipq string, db dbConfig) {
+	t.Helper()
+
+	proj := setupProject(t, shipq, "shipq-e2e-health", db)
+	dbEnv := []string{"DATABASE_URL=" + proj.DatabaseURL}
+
+	// Compile handlers — picks up the api/health package scaffolded by init
+	t.Log("Compiling handlers...")
+	runWithEnv(t, proj.CleanDir, dbEnv, shipq, "handler", "compile")
+	run(t, proj.CleanDir, "go", "mod", "tidy")
+
+	// Build the server binary
+	t.Log("Building server...")
+	serverBin := filepath.Join(proj.CleanDir, "server")
+	runWithEnv(t, proj.CleanDir, dbEnv,
+		"go", "build", "-o", serverBin, "./cmd/server")
+
+	// Start the server on a free port
+	port := findFreePort(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	cmd := exec.CommandContext(ctx, serverBin)
+	cmd.Dir = proj.CleanDir
+	cmd.Env = append(cleanEnv(),
+		"DATABASE_URL="+proj.DatabaseURL,
+		fmt.Sprintf("PORT=%d", port),
+		"GO_ENV=test",
+	)
+	cmd.Stdout = os.Stderr
+	cmd.Stderr = os.Stderr
+	if err := cmd.Start(); err != nil {
+		t.Fatalf("failed to start server: %v", err)
+	}
+	defer func() { cancel(); _ = cmd.Wait() }()
+
+	// Wait for the server to accept connections
+	waitForServer(t, port)
+
+	// GET /health and assert the response
+	resp, err := http.Get(fmt.Sprintf("http://127.0.0.1:%d/health", port))
+	if err != nil {
+		t.Fatalf("GET /health failed: %v", err)
+	}
+	defer resp.Body.Close()
+
+	bodyBytes, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("failed to read response body: %v", err)
+	}
+
+	if resp.StatusCode != 200 {
+		t.Fatalf("expected status 200, got %d; body: %s", resp.StatusCode, bodyBytes)
+	}
+
+	var body map[string]bool
+	if err := json.Unmarshal(bodyBytes, &body); err != nil {
+		t.Fatalf("failed to decode response JSON: %v; body: %s", err, bodyBytes)
+	}
+	if !body["healthy"] {
+		t.Fatalf("expected healthy=true, got: %s", bodyBytes)
+	}
+
+	t.Log("Health endpoint returned {\"healthy\":true} ✓")
+}
+
+func TestEndToEnd_HealthEndpoint(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping end-to-end test in short mode")
+	}
+
+	repoRoot := shipqRepoRoot(t)
+	shipq := buildShipq(t, repoRoot)
+
+	for _, db := range allDBConfigs(t) {
+		t.Run(db.Name, func(t *testing.T) {
+			scenarioHealthEndpoint(t, shipq, db)
 		})
 	}
 }

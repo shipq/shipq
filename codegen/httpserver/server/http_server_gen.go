@@ -394,7 +394,6 @@ func generateTopLevelHTTP(cfg HTTPServerGenConfig, groups []ResourceGroup) ([]by
 		fmt.Fprintf(&buf, "\tshipqassets %q\n", cfg.ModulePath+"/shipq/assets")
 	}
 	fmt.Fprintf(&buf, "\t%q\n", cfg.ModulePath+"/shipq/lib/httpserver")
-	fmt.Fprintf(&buf, "\t%q\n", cfg.ModulePath+"/shipq/lib/httputil")
 	fmt.Fprintf(&buf, "\t%q\n", cfg.ModulePath+"/shipq/lib/logging")
 	fmt.Fprintf(&buf, "\t%q\n", cfg.ModulePath+"/shipq/queries")
 
@@ -466,15 +465,6 @@ func NewMux(q httpserver.PingableQuerier, runner queries.Runner, logger *slog.Lo
 func NewMux(q httpserver.PingableQuerier, runner queries.Runner, logger *slog.Logger) http.Handler {
 	mux := http.NewServeMux()
 
-	// Health check endpoint - excluded from logging
-	mux.HandleFunc("GET /health", func(w http.ResponseWriter, r *http.Request) {
-		if err := q.Ping(); err != nil {
-			httputil.WriteJSON(w, http.StatusOK, map[string]bool{"healthy": false})
-			return
-		}
-		httputil.WriteJSON(w, http.StatusOK, map[string]bool{"healthy": true})
-	})
-
 `)
 
 		for _, g := range groups {
@@ -536,20 +526,11 @@ func NewMux(q httpserver.PingableQuerier, runner queries.Runner, logger *slog.Lo
 // (notably cmd/server/main.go) to register channel routes on the mux before
 // wrapping with logging.Decorate.
 func generateSetupMux(buf *bytes.Buffer, cfg HTTPServerGenConfig, groups []ResourceGroup) {
-	buf.WriteString(`// SetupMux creates an *http.ServeMux with health check and all handler routes
-// registered, but WITHOUT logging middleware. Use this when you need to register
+	buf.WriteString(`// SetupMux creates an *http.ServeMux with all handler routes registered,
+// but WITHOUT logging middleware. Use this when you need to register
 // additional routes (e.g., channel routes) before applying logging.Decorate.
 func SetupMux(q httpserver.PingableQuerier, runner queries.Runner) *http.ServeMux {
 	mux := http.NewServeMux()
-
-	// Health check endpoint - excluded from logging
-	mux.HandleFunc("GET /health", func(w http.ResponseWriter, r *http.Request) {
-		if err := q.Ping(); err != nil {
-			httputil.WriteJSON(w, http.StatusOK, map[string]bool{"healthy": false})
-			return
-		}
-		httputil.WriteJSON(w, http.StatusOK, map[string]bool{"healthy": true})
-	})
 
 `)
 

@@ -45,6 +45,7 @@ Commands:
   kill-port <port>  Kill the process bound to <port>
   kill-defaults     Kill all default dev-service ports
   db setup          Set up the database (create database and configure shipq.ini)
+  db set <dialect>  Set the database dialect in shipq.ini (sqlite|postgres|mysql)
   db compile        Generate type-safe query runner code from user-defined queries
   db reset          Drop and recreate dev/test databases, re-run migrations (alias for migrate reset)
   migrate new <name>  Create a new migration
@@ -166,9 +167,10 @@ func main() {
 			fmt.Fprintln(os.Stderr, "error: 'shipq db' requires a subcommand")
 			fmt.Fprintln(os.Stderr, "")
 			fmt.Fprintln(os.Stderr, "Available subcommands:")
-			fmt.Fprintln(os.Stderr, "  setup    Set up the database")
-			fmt.Fprintln(os.Stderr, "  compile  Generate type-safe query runner code")
-			fmt.Fprintln(os.Stderr, "  reset    Drop and recreate databases, re-run all migrations")
+			fmt.Fprintln(os.Stderr, "  setup          Set up the database")
+			fmt.Fprintln(os.Stderr, "  set <dialect>  Set the database dialect (sqlite|postgres|mysql)")
+			fmt.Fprintln(os.Stderr, "  compile        Generate type-safe query runner code")
+			fmt.Fprintln(os.Stderr, "  reset          Drop and recreate databases, re-run all migrations")
 			os.Exit(1)
 		}
 
@@ -176,6 +178,23 @@ func main() {
 		switch subCmd {
 		case "setup":
 			dbcmd.DBSetupCmd()
+
+		case "set":
+			if len(os.Args) < 4 {
+				dbcmd.DBSetUsage()
+				os.Exit(1)
+			}
+			dialect := os.Args[3]
+			if dialect == "-h" || dialect == "--help" || dialect == "help" {
+				dbcmd.DBSetUsage()
+				os.Exit(0)
+			}
+			if !dbcmd.IsValidDialect(dialect) {
+				fmt.Fprintf(os.Stderr, "error: unknown dialect %q\n", dialect)
+				fmt.Fprintln(os.Stderr, "Valid dialects: sqlite, postgres, mysql")
+				os.Exit(1)
+			}
+			dbcmd.DBSetCmd(dialect)
 
 		case "compile":
 			dbcmd.DBCompileCmd()
@@ -187,9 +206,10 @@ func main() {
 			fmt.Println("shipq db - Database management commands")
 			fmt.Println("")
 			fmt.Println("Subcommands:")
-			fmt.Println("  setup    Set up the database (create database and configure shipq.ini)")
-			fmt.Println("  compile  Generate type-safe query runner code from user-defined queries")
-			fmt.Println("  reset    Drop and recreate databases, re-run all migrations")
+			fmt.Println("  setup          Set up the database (create database and configure shipq.ini)")
+			fmt.Println("  set <dialect>  Set the database dialect in shipq.ini (sqlite|postgres|mysql)")
+			fmt.Println("  compile        Generate type-safe query runner code from user-defined queries")
+			fmt.Println("  reset          Drop and recreate databases, re-run all migrations")
 			fmt.Println("")
 			fmt.Println("To start a database server use: shipq start <postgres|mysql|sqlite|redis|minio>")
 			os.Exit(0)
