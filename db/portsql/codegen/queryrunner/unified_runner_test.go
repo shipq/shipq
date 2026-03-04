@@ -825,6 +825,122 @@ func TestGenerateUnifiedRunner_WithJSONAgg_ReturnMany(t *testing.T) {
 	}
 }
 
+// TestGenerateUnifiedRunner_WithJSONAgg_BoolFix verifies that MySQL and SQLite
+// runners emit fixJSONBoolFields before json.Unmarshal when json_agg columns
+// contain bool fields, and that Postgres does not.
+func TestGenerateUnifiedRunner_WithJSONAgg_BoolFix(t *testing.T) {
+	sq := makeJSONAggQuery("FindAccountByInternalID", []query.SerializedColumn{
+		{Table: "forum_signups", Name: "should_text", GoType: "bool"},
+		{Table: "forum_signups", Name: "name", GoType: "string"},
+		{Table: "forum_signups", Name: "is_active", GoType: "*bool"},
+	})
+
+	for _, dialect := range []string{dburl.DialectPostgres, dburl.DialectMySQL, dburl.DialectSQLite} {
+		t.Run(dialect, func(t *testing.T) {
+			cfg := UnifiedRunnerConfig{
+				ModulePath:  "example.com/myapp",
+				Dialect:     dialect,
+				UserQueries: []query.SerializedQuery{sq},
+			}
+
+			code, err := GenerateUnifiedRunner(cfg)
+			if err != nil {
+				t.Fatalf("GenerateUnifiedRunner failed: %v", err)
+			}
+
+			codeStr := string(code)
+
+			wantFix := dialect == dburl.DialectMySQL || dialect == dburl.DialectSQLite
+
+			if wantFix {
+				// Should contain the fixJSONBoolFields helper function
+				if !strings.Contains(codeStr, "func fixJSONBoolFields(") {
+					t.Error("expected fixJSONBoolFields helper in generated runner")
+				}
+				// Should call fixJSONBoolFields on the raw json_agg string
+				if !strings.Contains(codeStr, `fixJSONBoolFields(rolesRaw, []string{"should_text", "is_active"})`) {
+					t.Errorf("expected fixJSONBoolFields call with bool field names, got:\n%s", codeStr)
+				}
+				// Should import strings for ReplaceAll
+				if !strings.Contains(codeStr, `"strings"`) {
+					t.Error("expected strings import for fixJSONBoolFields")
+				}
+			} else {
+				// Postgres JSON_BUILD_OBJECT uses proper true/false; no fix needed
+				if strings.Contains(codeStr, "fixJSONBoolFields") {
+					t.Error("Postgres should not emit fixJSONBoolFields")
+				}
+			}
+
+			// Should be valid Go regardless of dialect
+			if _, err := format.Source(code); err != nil {
+				t.Errorf("generated runner is not valid Go: %v\n%s", err, codeStr)
+			}
+		})
+	}
+}
+
+// TestGenerateUnifiedRunner_WithJSONAgg_BoolFix_ReturnMany verifies the bool
+// fix is emitted inside the row loop for ReturnMany queries.
+func TestGenerateUnifiedRunner_WithJSONAgg_BoolFix_ReturnMany(t *testing.T) {
+	sq := makeJSONAggQuery("ListAccountsWithSignups", []query.SerializedColumn{
+		{Table: "forum_signups", Name: "should_text", GoType: "bool"},
+		{Table: "forum_signups", Name: "label", GoType: "string"},
+	})
+	sq.ReturnType = query.ReturnMany
+
+	cfg := UnifiedRunnerConfig{
+		ModulePath:  "example.com/myapp",
+		Dialect:     dburl.DialectMySQL,
+		UserQueries: []query.SerializedQuery{sq},
+	}
+
+	code, err := GenerateUnifiedRunner(cfg)
+	if err != nil {
+		t.Fatalf("GenerateUnifiedRunner failed: %v", err)
+	}
+
+	codeStr := string(code)
+
+	if !strings.Contains(codeStr, "fixJSONBoolFields(rolesRaw,") {
+		t.Errorf("expected fixJSONBoolFields call in ReturnMany loop, got:\n%s", codeStr)
+	}
+
+	if _, err := format.Source(code); err != nil {
+		t.Errorf("generated runner is not valid Go: %v\n%s", err, codeStr)
+	}
+}
+
+// TestGenerateUnifiedRunner_WithJSONAgg_NoBoolNoBoolFix verifies that the bool
+// fix helper is NOT emitted when json_agg columns have no bool fields.
+func TestGenerateUnifiedRunner_WithJSONAgg_NoBoolNoBoolFix(t *testing.T) {
+	sq := makeJSONAggQuery("FindAccountByInternalID", []query.SerializedColumn{
+		{Table: "roles", Name: "name", GoType: "string"},
+		{Table: "roles", Name: "description", GoType: "*string"},
+	})
+
+	cfg := UnifiedRunnerConfig{
+		ModulePath:  "example.com/myapp",
+		Dialect:     dburl.DialectMySQL,
+		UserQueries: []query.SerializedQuery{sq},
+	}
+
+	code, err := GenerateUnifiedRunner(cfg)
+	if err != nil {
+		t.Fatalf("GenerateUnifiedRunner failed: %v", err)
+	}
+
+	codeStr := string(code)
+
+	if strings.Contains(codeStr, "fixJSONBoolFields") {
+		t.Error("should not emit fixJSONBoolFields when no bool columns in json_agg")
+	}
+
+	if _, err := format.Source(code); err != nil {
+		t.Errorf("generated runner is not valid Go: %v\n%s", err, codeStr)
+	}
+}
+
 // =============================================================================
 // Property Tests
 // =============================================================================
