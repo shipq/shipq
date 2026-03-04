@@ -88,6 +88,8 @@ func InitCmd() {
 	createdHealth = created
 
 	// Print results
+	didSomething := createdGoMod || createdShipqIni || createdHealth || updatedGitignore
+
 	if createdGoMod && createdShipqIni {
 		cli.Success("Initialized new shipq project")
 		cli.Infof("  Created go.mod (module: com.%s)", projectName)
@@ -129,6 +131,33 @@ func InitCmd() {
 	} else {
 		cli.Info("Project already initialized (go.mod and shipq.ini exist)")
 	}
+
+	// Print next-steps guidance
+	if didSomething {
+		fmt.Println("")
+		fmt.Println("Next steps:")
+		fmt.Println("")
+		fmt.Printf("  1. Set your database dialect (currently %s):\n", dialect)
+		fmt.Println("")
+		fmt.Println("       shipq db set sqlite     # file-based, no server needed")
+		fmt.Println("       shipq db set postgres    # PostgreSQL on localhost:5432")
+		fmt.Println("       shipq db set mysql       # MySQL on localhost:3306")
+		fmt.Println("")
+		fmt.Println("     Skip this if the default is fine.")
+		fmt.Println("")
+		fmt.Println("  2. Create the database:")
+		fmt.Println("")
+		fmt.Println("       shipq db setup")
+		fmt.Println("")
+		fmt.Println("  3. Compile the server:")
+		fmt.Println("")
+		fmt.Println("       shipq handler compile")
+		fmt.Println("       go mod tidy")
+		fmt.Println("")
+		fmt.Println("  4. Run it:")
+		fmt.Println("")
+		fmt.Println("       go run ./cmd/server")
+	}
 }
 
 // parseDialectFlag inspects os.Args for --postgres, --mysql, or --sqlite.
@@ -152,7 +181,7 @@ func parseDialectFlag() string {
 func defaultDatabaseURL(dialect, projectName, dir string) string {
 	switch dialect {
 	case "postgres":
-		return fmt.Sprintf("postgres://postgres@localhost:5432/%s", projectName)
+		return fmt.Sprintf("postgres://postgres@localhost:5432/%s?sslmode=disable", projectName)
 	case "mysql":
 		return fmt.Sprintf("mysql://root@localhost:3306/%s", projectName)
 	default: // "sqlite"
@@ -279,22 +308,30 @@ func Register(app *handler.App) {
 		return false, fmt.Errorf("failed to write register.go: %w", err)
 	}
 
-	healthCheckContent := `package health
+	healthCheckContent := fmt.Sprintf(`package health
 
-import "context"
+import (
+	"context"
+
+	"%s/shipq/lib/httpserver"
+)
 
 type HealthCheckRequest struct{}
 
 type HealthCheckResponse struct {
-	Healthy bool ` + "`" + `json:"healthy"` + "`" + `
+	Healthy bool `+"`"+`json:"healthy"`+"`"+`
 }
 
 func HealthCheck(ctx context.Context, req *HealthCheckRequest) (*HealthCheckResponse, error) {
-	// The database ping is handled by the generated HTTP server layer;
-	// this handler always reports healthy if it is reached.
+	q := httpserver.GetQuerier(ctx)
+	if pinger, ok := q.(httpserver.Pinger); ok {
+		if err := pinger.Ping(); err != nil {
+			return &HealthCheckResponse{Healthy: false}, nil
+		}
+	}
 	return &HealthCheckResponse{Healthy: true}, nil
 }
-`
+`, modulePath)
 
 	healthCheckPath := filepath.Join(healthDir, "health_check.go")
 	if err := os.WriteFile(healthCheckPath, []byte(healthCheckContent), 0644); err != nil {

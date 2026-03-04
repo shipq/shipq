@@ -541,11 +541,13 @@ func TestGenerateHTTPServer_HelperFunctions(t *testing.T) {
 		t.Error("missing httpserver import")
 	}
 
-	// Top-level should use httputil for health endpoint
+	// Top-level should NOT import httputil — the health endpoint is now
+	// registered through the normal handler pipeline (api/health package),
+	// not inline in the top-level generated file.
 	topLevel := findTopLevel(files)
 	topCode := string(topLevel.Content)
-	if !strings.Contains(topCode, "httputil.WriteJSON") {
-		t.Error("top-level should use httputil.WriteJSON for health check")
+	if strings.Contains(topCode, "httputil.WriteJSON") {
+		t.Error("top-level should not reference httputil.WriteJSON (health endpoint moved to api/health)")
 	}
 }
 
@@ -578,7 +580,7 @@ func TestGenerateHTTPServer_NewMuxSignature(t *testing.T) {
 	}
 }
 
-func TestGenerateHTTPServer_HealthEndpoint(t *testing.T) {
+func TestGenerateHTTPServer_HealthEndpointNotInline(t *testing.T) {
 	cfg := HTTPServerGenConfig{
 		ModulePath: "example.com/app",
 		Handlers:   []codegen.SerializedHandlerInfo{},
@@ -593,14 +595,14 @@ func TestGenerateHTTPServer_HealthEndpoint(t *testing.T) {
 	topLevel := findTopLevel(files)
 	codeStr := string(topLevel.Content)
 
-	if !strings.Contains(codeStr, `"GET /health"`) {
-		t.Error("missing health check endpoint")
+	// The inline health endpoint has been removed from the top-level generated
+	// file. The health route is now registered through the normal handler
+	// pipeline via the api/health package scaffolded by `shipq init`.
+	if strings.Contains(codeStr, `"GET /health"`) {
+		t.Error("top-level should not contain inline GET /health route (moved to api/health)")
 	}
-	if !strings.Contains(codeStr, "q.Ping()") {
-		t.Error("missing q.Ping() call in health check")
-	}
-	if !strings.Contains(codeStr, `"healthy"`) {
-		t.Error("missing healthy key in health response")
+	if strings.Contains(codeStr, "q.Ping()") {
+		t.Error("top-level should not contain q.Ping() (moved to api/health handler)")
 	}
 }
 
@@ -982,7 +984,7 @@ func TestGenerateHTTPServer_HasChannels_NewMuxDelegatesToSetupMux(t *testing.T) 
 	}
 }
 
-func TestGenerateHTTPServer_HasChannels_SetupMuxHasHealthEndpoint(t *testing.T) {
+func TestGenerateHTTPServer_HasChannels_SetupMuxNoInlineHealth(t *testing.T) {
 	cfg := HTTPServerGenConfig{
 		ModulePath:  "example.com/app",
 		Handlers:    []codegen.SerializedHandlerInfo{},
@@ -998,9 +1000,10 @@ func TestGenerateHTTPServer_HasChannels_SetupMuxHasHealthEndpoint(t *testing.T) 
 	topLevel := findTopLevel(files)
 	codeStr := string(topLevel.Content)
 
-	// SetupMux should register the health endpoint
-	if !strings.Contains(codeStr, `"GET /health"`) {
-		t.Error("SetupMux should register the health endpoint")
+	// SetupMux should NOT contain an inline health endpoint — the health
+	// route is registered through the normal handler pipeline (api/health).
+	if strings.Contains(codeStr, `"GET /health"`) {
+		t.Error("SetupMux should not contain inline GET /health (moved to api/health)")
 	}
 }
 

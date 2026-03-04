@@ -8,9 +8,12 @@ import (
 
 	"github.com/shipq/shipq/codegen"
 	"github.com/shipq/shipq/codegen/channelcompile"
+	"github.com/shipq/shipq/codegen/dbpkg"
 	"github.com/shipq/shipq/codegen/discovery"
+	"github.com/shipq/shipq/codegen/embed"
 	"github.com/shipq/shipq/codegen/handlercompile"
 	configpkg "github.com/shipq/shipq/codegen/httpserver/config"
+	"github.com/shipq/shipq/db/portsql/codegen/queryrunner"
 	"github.com/shipq/shipq/dburl"
 	"github.com/shipq/shipq/inifile"
 	"github.com/shipq/shipq/project"
@@ -34,8 +37,79 @@ func Run(shipqRoot, goModRoot string) error {
 	}
 	importPrefix := moduleInfo.FullImportPath("")
 
-	// Discover API packages (in shipq root, but import paths relative to go.mod root).
-	// Discovery uses filepath.Rel(goModRoot, ...) so it must receive the raw module path.
+	// ── Read shipq.ini config early ──────────────────────────────────
+	// We need dialect, feature flags, etc. before bootstrapping and
+	// before the handler compile program is built.
+	dialect := ""
+	databaseURL := ""
+	shipqIniPath := filepath.Join(shipqRoot, project.ShipqIniFile)
+	if ini, err := inifile.ParseFile(shipqIniPath); err == nil {
+		if u := ini.Get("db", "database_url"); u != "" {
+			databaseURL = u
+			if d, err := dburl.InferDialectFromDBUrl(u); err == nil {
+				dialect = d
+			}
+		}
+	}
+
+	// Read feature flags from shipq.ini
+	scopeColumn := ""
+	filesEnabled := false
+	workersEnabled := false
+	hasAuth := false
+	oauthGoogle := false
+	oauthGitHub := false
+	var devDefaults configpkg.DevDefaults
+	var customEnvVars []configpkg.CustomEnvVar
+	tsFrameworks := []string{"react"}
+	tsHTTPOutput := ""
+	tsChannelOutput := ""
+	if ini, err := inifile.ParseFile(shipqIniPath); err == nil {
+		scopeColumn = ini.Get("db", "scope")
+		if ini.Section("files") != nil {
+			filesEnabled = true
+		}
+		if ini.Section("workers") != nil {
+			workersEnabled = true
+		}
+		if ini.Section("auth") != nil {
+			hasAuth = true
+		}
+		if strings.ToLower(ini.Get("auth", "oauth_google")) == "true" {
+			oauthGoogle = true
+		}
+		if strings.ToLower(ini.Get("auth", "oauth_github")) == "true" {
+			oauthGitHub = true
+		}
+
+		devDefaults = devDefaultsFromIni(ini, filesEnabled, workersEnabled)
+
+		if oauthGoogle || oauthGitHub {
+			devDefaults.OAuthRedirectURL = ini.Get("auth", "oauth_redirect_url")
+			devDefaults.OAuthRedirectBaseURL = ini.Get("auth", "oauth_redirect_base_url")
+		}
+
+		customEnvVars = ParseCustomEnvVars(ini)
+
+		tsFrameworks = ParseFrameworks(ini.Get("typescript", "framework"))
+		if o := ini.Get("typescript", "http_output"); o != "" {
+			tsHTTPOutput = o
+		}
+		if o := ini.Get("typescript", "channel_output"); o != "" {
+			tsChannelOutput = o
+		}
+	}
+
+	// ── Bootstrap: ensure all imported packages exist ────────────────
+	// The handler compile program imports shipq/lib/handler, and the
+	// generated server code imports shipq/lib/httpserver, shipq/queries,
+	// config, etc. We must ensure these packages exist on disk BEFORE
+	// building the compile program or generating server code.
+	if err := bootstrapPackages(shipqRoot, importPrefix, dialect, filesEnabled, workersEnabled); err != nil {
+		return fmt.Errorf("failed to bootstrap packages: %w", err)
+	}
+
+	// ── Discover and compile handlers ────────────────────────────────
 	apiPkgs, err := discovery.DiscoverAPIPackages(goModRoot, shipqRoot, moduleInfo.ModulePath)
 	if err != nil {
 		return fmt.Errorf("failed to discover API packages: %w", err)
@@ -57,27 +131,13 @@ func Run(shipqRoot, goModRoot string) error {
 		return fmt.Errorf("failed to compile handlers: %w", err)
 	}
 
-	// Read DB dialect and URL from shipq.ini
-	dialect := ""
-	databaseURL := ""
-	shipqIniPath := filepath.Join(shipqRoot, project.ShipqIniFile)
-	if ini, err := inifile.ParseFile(shipqIniPath); err == nil {
-		if u := ini.Get("db", "database_url"); u != "" {
-			databaseURL = u
-			if d, err := dburl.InferDialectFromDBUrl(u); err == nil {
-				dialect = d
-			}
-		}
-	}
-
-	// Read scope configuration from shipq.ini
+	// ── Read remaining config from shipq.ini ─────────────────────────
+	// Scope configuration (depends on handlers being known)
 	tableScopes := make(map[string]string)
 	if ini, err := inifile.ParseFile(shipqIniPath); err == nil {
 		globalScope := ini.Get("db", "scope")
 		if globalScope != "" {
-			// Apply global scope to all table-like handler packages
 			for _, h := range handlers {
-				// Extract table name from the package path (last segment)
 				parts := strings.Split(h.PackagePath, "/")
 				tableName := parts[len(parts)-1]
 				if tableName != "" {
@@ -85,13 +145,11 @@ func Run(shipqRoot, goModRoot string) error {
 				}
 			}
 		}
-		// Per-table overrides
 		for _, section := range ini.SectionsWithPrefix("crud.") {
 			tableName := strings.TrimPrefix(section.Name, "crud.")
 			if section.Get("scope") != "" {
 				tableScopes[tableName] = section.Get("scope")
 			} else if section.HasKey("scope") {
-				// Explicit empty scope disables it
 				delete(tableScopes, tableName)
 			}
 		}
@@ -101,67 +159,10 @@ func Run(shipqRoot, goModRoot string) error {
 	autoMigrate := false
 	if ini, err := inifile.ParseFile(shipqIniPath); err == nil {
 		if strings.ToLower(ini.Get("db", "auto_migrate")) == "true" {
-			// Only emit migrate code if schema.json actually exists
 			schemaJSONPath := filepath.Join(shipqRoot, "shipq", "db", "migrate", "schema.json")
 			if _, err := os.Stat(schemaJSONPath); err == nil {
 				autoMigrate = true
 			}
-		}
-	}
-
-	// Read global scope column for RBAC
-	scopeColumn := ""
-	filesEnabled := false
-	workersEnabled := false
-	hasAuth := false
-	oauthGoogle := false
-	oauthGitHub := false
-	var devDefaults configpkg.DevDefaults
-	var customEnvVars []configpkg.CustomEnvVar
-	tsFrameworks := []string{"react"}
-	tsHTTPOutput := ""
-	tsChannelOutput := ""
-	if ini, err := inifile.ParseFile(shipqIniPath); err == nil {
-		scopeColumn = ini.Get("db", "scope")
-		// Detect if [files] section exists
-		if ini.Section("files") != nil {
-			filesEnabled = true
-		}
-		// Detect if [workers] section exists
-		if ini.Section("workers") != nil {
-			workersEnabled = true
-		}
-		// Detect if [auth] section exists
-		if ini.Section("auth") != nil {
-			hasAuth = true
-		}
-		// Detect OAuth providers
-		if strings.ToLower(ini.Get("auth", "oauth_google")) == "true" {
-			oauthGoogle = true
-		}
-		if strings.ToLower(ini.Get("auth", "oauth_github")) == "true" {
-			oauthGitHub = true
-		}
-
-		// Populate dev defaults from shipq.ini
-		devDefaults = devDefaultsFromIni(ini, filesEnabled, workersEnabled)
-
-		// Populate OAuth dev defaults
-		if oauthGoogle || oauthGitHub {
-			devDefaults.OAuthRedirectURL = ini.Get("auth", "oauth_redirect_url")
-			devDefaults.OAuthRedirectBaseURL = ini.Get("auth", "oauth_redirect_base_url")
-		}
-
-		// Parse user-defined env vars from [env] section
-		customEnvVars = ParseCustomEnvVars(ini)
-
-		// Read TypeScript config
-		tsFrameworks = ParseFrameworks(ini.Get("typescript", "framework"))
-		if o := ini.Get("typescript", "http_output"); o != "" {
-			tsHTTPOutput = o
-		}
-		if o := ini.Get("typescript", "channel_output"); o != "" {
-			tsChannelOutput = o
 		}
 	}
 
@@ -200,6 +201,102 @@ func Run(shipqRoot, goModRoot string) error {
 	}
 
 	return CompileRegistry(compileCfg)
+}
+
+// bootstrapPackages ensures that all packages imported by generated code exist
+// on disk. This is idempotent: if packages already exist (e.g. because
+// `migrate up` or `db compile` already created them), nothing is overwritten
+// unnecessarily.
+//
+// It handles three categories of packages:
+//  1. Embedded library packages (shipq/lib/*) — via embed.EmbedAllPackages
+//  2. Database helper package (shipq/db/db.go) — via dbpkg.EnsureDBPackage
+//  3. Query runner stubs (shipq/queries/) — minimal Runner interface + QueryRunner
+func bootstrapPackages(shipqRoot, importPrefix, dialect string, filesEnabled, workersEnabled bool) error {
+	// 1. Embed library packages (handler, httpserver, httputil, logging, etc.)
+	// The handler compile program imports shipq/lib/handler, and the generated
+	// HTTP server code imports shipq/lib/httpserver, shipq/lib/logging, etc.
+	embedOpts := embed.EmbedOptions{
+		FilesEnabled:   filesEnabled,
+		WorkersEnabled: workersEnabled,
+		DBDialect:      dialect,
+	}
+	if err := embed.EmbedAllPackages(shipqRoot, importPrefix, embedOpts); err != nil {
+		return fmt.Errorf("failed to embed library packages: %w", err)
+	}
+
+	// 2. Ensure shipq/db/db.go exists (driver import + DSN helpers).
+	// EnsureDBPackage reads shipq.ini internally to get the dialect and URL.
+	// Skip when dialect is empty (no database_url configured yet).
+	if dialect != "" {
+		dbGoPath := filepath.Join(shipqRoot, "shipq", "db", "db.go")
+		if _, err := os.Stat(dbGoPath); os.IsNotExist(err) {
+			if dbErr := dbpkg.EnsureDBPackage(shipqRoot); dbErr != nil {
+				return fmt.Errorf("failed to bootstrap shipq/db package: %w", dbErr)
+			}
+		}
+	}
+
+	// 3. Ensure shipq/queries/types.go and shipq/queries/<dialect>/runner.go
+	// exist. These are imported by the generated main.go and HTTP server code.
+	// When no migrations have been run yet, generate stubs with zero queries
+	// (minimal Runner interface with just BeginTx, empty QueryRunner, etc.).
+	if dialect != "" {
+		typesPath := filepath.Join(shipqRoot, "shipq", "queries", "types.go")
+		if _, err := os.Stat(typesPath); os.IsNotExist(err) {
+			if err := bootstrapQueryPackages(shipqRoot, importPrefix, dialect); err != nil {
+				return err
+			}
+		}
+	}
+
+	return nil
+}
+
+// bootstrapQueryPackages generates minimal shipq/queries/types.go and
+// shipq/queries/<dialect>/runner.go with zero user queries. This produces a
+// valid Runner interface (with just BeginTx), QueryRunner struct,
+// NewQueryRunner, WithTx, WithDB, and context helpers — everything the
+// generated HTTP server code needs to compile.
+//
+// When `db compile` runs later (after `migrate up`), it regenerates these
+// files with real query methods, fully overwriting the stubs.
+func bootstrapQueryPackages(shipqRoot, importPrefix, dialect string) error {
+	runnerCfg := queryrunner.UnifiedRunnerConfig{
+		ModulePath:  importPrefix,
+		Dialect:     dialect,
+		UserQueries: nil, // no queries yet
+	}
+
+	// Generate types.go (Runner interface, TxRunner, context helpers)
+	typesCode, err := queryrunner.GenerateSharedTypes(runnerCfg)
+	if err != nil {
+		return fmt.Errorf("failed to generate stub types.go: %w", err)
+	}
+	queriesDir := filepath.Join(shipqRoot, "shipq", "queries")
+	if err := codegen.EnsureDir(queriesDir); err != nil {
+		return fmt.Errorf("failed to create queries directory: %w", err)
+	}
+	typesPath := filepath.Join(queriesDir, "types.go")
+	if _, err := codegen.WriteFileIfChanged(typesPath, typesCode); err != nil {
+		return fmt.Errorf("failed to write stub types.go: %w", err)
+	}
+
+	// Generate dialect-specific runner.go (QueryRunner struct, NewQueryRunner, etc.)
+	runnerCode, err := queryrunner.GenerateUnifiedRunner(runnerCfg)
+	if err != nil {
+		return fmt.Errorf("failed to generate stub runner.go: %w", err)
+	}
+	dialectDir := filepath.Join(queriesDir, dialect)
+	if err := codegen.EnsureDir(dialectDir); err != nil {
+		return fmt.Errorf("failed to create dialect directory: %w", err)
+	}
+	runnerPath := filepath.Join(dialectDir, "runner.go")
+	if _, err := codegen.WriteFileIfChanged(runnerPath, runnerCode); err != nil {
+		return fmt.Errorf("failed to write stub runner.go: %w", err)
+	}
+
+	return nil
 }
 
 // ParseCustomEnvVars reads the [env] section from a parsed shipq.ini file and

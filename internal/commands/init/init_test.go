@@ -68,6 +68,21 @@ func TestInitCreatesHealthEndpoint(t *testing.T) {
 		t.Errorf("health_check.go missing HealthCheck function.\ngot:\n%s", hcStr)
 	}
 
+	// The handler must actually ping the database via httpserver.GetQuerier
+	if !strings.Contains(hcStr, "httpserver.GetQuerier") {
+		t.Errorf("health_check.go should call httpserver.GetQuerier to access the DB.\ngot:\n%s", hcStr)
+	}
+	if !strings.Contains(hcStr, "httpserver.Pinger") {
+		t.Errorf("health_check.go should type-assert to httpserver.Pinger for the DB ping.\ngot:\n%s", hcStr)
+	}
+	if !strings.Contains(hcStr, "pinger.Ping()") {
+		t.Errorf("health_check.go should call pinger.Ping() to check DB connectivity.\ngot:\n%s", hcStr)
+	}
+	if !strings.Contains(hcStr, modulePath+"/shipq/lib/httpserver") {
+		t.Errorf("health_check.go missing httpserver import path.\nwant substring: %s/shipq/lib/httpserver\ngot:\n%s",
+			modulePath, hcStr)
+	}
+
 	// ── Second call: idempotent — files should NOT be overwritten ──
 	// Overwrite register.go with a sentinel so we can detect re-creation
 	sentinel := []byte("// sentinel — do not overwrite\n")
@@ -120,6 +135,15 @@ func TestCreateHealthEndpoint_CorrectModulePath(t *testing.T) {
 			expectedImport := tt.modulePath + "/shipq/lib/handler"
 			if !strings.Contains(string(regContent), expectedImport) {
 				t.Errorf("register.go missing expected import %q.\ngot:\n%s", expectedImport, regContent)
+			}
+
+			hcContent, err := os.ReadFile(filepath.Join(tmpDir, "api", "health", "health_check.go"))
+			if err != nil {
+				t.Fatalf("health_check.go not found: %v", err)
+			}
+			expectedHTTPServerImport := tt.modulePath + "/shipq/lib/httpserver"
+			if !strings.Contains(string(hcContent), expectedHTTPServerImport) {
+				t.Errorf("health_check.go missing expected httpserver import %q.\ngot:\n%s", expectedHTTPServerImport, hcContent)
 			}
 		})
 	}
@@ -421,7 +445,7 @@ func TestCreateShipqIni_PostgresDialect(t *testing.T) {
 	if dbURL == "" {
 		t.Fatal("expected database_url to be set, got empty string")
 	}
-	expected := "postgres://postgres@localhost:5432/myproject"
+	expected := "postgres://postgres@localhost:5432/myproject?sslmode=disable"
 	if dbURL != expected {
 		t.Errorf("expected %q, got %q", expected, dbURL)
 	}
@@ -468,7 +492,7 @@ func TestDefaultDatabaseURL_SQLite(t *testing.T) {
 
 func TestDefaultDatabaseURL_Postgres(t *testing.T) {
 	url := defaultDatabaseURL("postgres", "myapp", "/tmp/test")
-	expected := "postgres://postgres@localhost:5432/myapp"
+	expected := "postgres://postgres@localhost:5432/myapp?sslmode=disable"
 	if url != expected {
 		t.Errorf("expected %q, got %q", expected, url)
 	}
