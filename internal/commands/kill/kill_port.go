@@ -16,13 +16,13 @@ import (
 const TermGracePeriod = 3 * time.Second
 const KillPollInterval = 200 * time.Millisecond
 
-// killPort finds the process(es) bound to the given TCP port and terminates
+// KillPort finds the process(es) bound to the given TCP port and terminates
 // them.  It sends SIGTERM first; if a process is still alive after
 // TermGracePeriod it sends SIGKILL.
 //
 // Returns killed=true when at least one PID was acted upon, or
 // killed=false, err=nil when nothing was listening on the port.
-func killPort(port int) (killed bool, err error) {
+func KillPort(port int) (killed bool, err error) {
 	lsofPath, err := exec.LookPath("lsof")
 	if err != nil {
 		return false, fmt.Errorf(

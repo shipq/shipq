@@ -50,6 +50,9 @@ func StartWorker(watch bool) {
 	workerCmd.Dir = roots.ShipqRoot
 	workerCmd.Stdout = newPrefixWriter(os.Stdout, "[worker] ")
 	workerCmd.Stderr = newPrefixWriter(os.Stderr, "[worker] ")
+	// Place the child in its own process group so we can kill `go run`
+	// AND the worker binary it spawns, preventing orphaned zombies.
+	workerCmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 
 	if err := workerCmd.Start(); err != nil {
 		cli.FatalErr("failed to start worker", err)
@@ -61,7 +64,12 @@ func StartWorker(watch bool) {
 	go func() {
 		sig := <-sigChan
 		cli.Infof("Received %s, shutting down worker...", sig)
-		terminateProcess(workerCmd)
+		// Kill the entire process group (negative PID) so that
+		// both `go run` and the spawned worker binary receive
+		// the signal.
+		if workerCmd.Process != nil {
+			_ = syscall.Kill(-workerCmd.Process.Pid, syscall.SIGTERM)
+		}
 	}()
 
 	if err := workerCmd.Wait(); err != nil {

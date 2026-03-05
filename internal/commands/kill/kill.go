@@ -19,7 +19,7 @@ func KillPortCmd(rawPort string) {
 		os.Exit(1)
 	}
 
-	killed, err := killPort(port)
+	killed, err := KillPort(port)
 	if err != nil {
 		cli.FatalErr("kill-port failed", err)
 	}
@@ -42,7 +42,7 @@ func KillDefaultsCmd() {
 				fmt.Printf("  %s (%d)\n", svc.name, port)
 			}
 
-			killed, err := killPort(port)
+			killed, err := KillPort(port)
 			if err != nil {
 				cli.Warnf("    could not kill port %d: %v", port, err)
 				continue

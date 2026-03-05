@@ -10,6 +10,7 @@ import (
 	emailcmd "github.com/shipq/shipq/internal/commands/email"
 	filescmd "github.com/shipq/shipq/internal/commands/files"
 	handlercmd "github.com/shipq/shipq/internal/commands/handler"
+	healthcmd "github.com/shipq/shipq/internal/commands/health"
 	initcmd "github.com/shipq/shipq/internal/commands/init"
 	killcmd "github.com/shipq/shipq/internal/commands/kill"
 	llmcmd "github.com/shipq/shipq/internal/commands/llm"
@@ -33,6 +34,7 @@ Commands:
   status            Show project status and available next steps
   nix               Generate shell.nix with latest stable nixpkgs
   docker            Generate production Dockerfiles (server + optional worker)
+  health            Generate api/health/ healthcheck endpoint
   init              Initialize a new shipq project (creates go.mod and shipq.ini)
   auth              Generate authentication system (tables, handlers, tests)
   auth google       Add Google OAuth login to an existing auth system
@@ -86,6 +88,9 @@ func main() {
 
 	case "docker":
 		dockercmd.DockerCmd()
+
+	case "health":
+		healthcmd.HealthCmd()
 
 	case "init":
 		initcmd.InitCmd()
