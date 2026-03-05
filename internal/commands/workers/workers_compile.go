@@ -202,6 +202,9 @@ func WorkersCompileCmd() {
 
 		tsOutputDir := ini.Get("workers", "typescript_channel_output")
 		if tsOutputDir == "" {
+			tsOutputDir = ini.Get("typescript", "channel_output")
+		}
+		if tsOutputDir == "" {
 			tsOutputDir = ini.Get("files", "typescript_output")
 		}
 		if tsOutputDir == "" {

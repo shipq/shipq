@@ -8,6 +8,73 @@ import (
 	"github.com/shipq/shipq/project"
 )
 
+// ── serverPort ───────────────────────────────────────────────────────────────
+
+func TestServerPort_Default(t *testing.T) {
+	// Ensure PORT is unset so the default is used.
+	old := os.Getenv("PORT")
+	os.Unsetenv("PORT")
+	defer func() {
+		if old != "" {
+			os.Setenv("PORT", old)
+		}
+	}()
+
+	got := serverPort()
+	if got != defaultServerPort {
+		t.Errorf("serverPort() = %d, want %d (default)", got, defaultServerPort)
+	}
+}
+
+func TestServerPort_FromEnv(t *testing.T) {
+	old := os.Getenv("PORT")
+	defer func() {
+		if old != "" {
+			os.Setenv("PORT", old)
+		} else {
+			os.Unsetenv("PORT")
+		}
+	}()
+
+	os.Setenv("PORT", "3000")
+	got := serverPort()
+	if got != 3000 {
+		t.Errorf("serverPort() = %d, want 3000", got)
+	}
+}
+
+func TestServerPort_InvalidEnvFallsBackToDefault(t *testing.T) {
+	old := os.Getenv("PORT")
+	defer func() {
+		if old != "" {
+			os.Setenv("PORT", old)
+		} else {
+			os.Unsetenv("PORT")
+		}
+	}()
+
+	cases := []string{"abc", "0", "-1", "99999", ""}
+	for _, val := range cases {
+		if val == "" {
+			os.Unsetenv("PORT")
+		} else {
+			os.Setenv("PORT", val)
+		}
+		got := serverPort()
+		if got != defaultServerPort {
+			t.Errorf("serverPort() with PORT=%q = %d, want %d (default)", val, got, defaultServerPort)
+		}
+	}
+}
+
+// ── killStaleServer ──────────────────────────────────────────────────────────
+
+func TestKillStaleServer_NoProcessOnPort(t *testing.T) {
+	// Calling killStaleServer on a port with nothing listening should not
+	// panic or produce an error — it simply does nothing.
+	killStaleServer(19999) // high port unlikely to be in use
+}
+
 // ── dirExists ────────────────────────────────────────────────────────────────
 
 func TestDirExists(t *testing.T) {

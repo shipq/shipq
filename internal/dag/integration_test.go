@@ -38,6 +38,7 @@ func TestDAGChecksMatchExistingChecks(t *testing.T) {
 			shipqdag.CmdDBSetup,
 			shipqdag.CmdMigrateNew,
 			shipqdag.CmdDocker,
+			shipqdag.CmdHealth,
 			shipqdag.CmdHandlerCompile,
 		} {
 			unmet := g.CheckHardDeps(cmd, satisfied)
@@ -61,6 +62,7 @@ func TestDAGChecksMatchExistingChecks(t *testing.T) {
 			shipqdag.CmdDBSetup,
 			shipqdag.CmdMigrateNew,
 			shipqdag.CmdDocker,
+			shipqdag.CmdHealth,
 			shipqdag.CmdHandlerCompile,
 		} {
 			unmet := g.CheckHardDeps(cmd, satisfied)
@@ -285,6 +287,23 @@ func TestDAGChecksMatchExistingChecks(t *testing.T) {
 		softSet := toSet(unmetSoft)
 		if !softSet[shipqdag.CmdDBCompile] {
 			t.Errorf("handler compile should list db_compile as unmet soft dep, got %v", unmetSoft)
+		}
+	})
+
+	t.Run("health soft-dep on db_compile", func(t *testing.T) {
+		dir := t.TempDir()
+		os.WriteFile(filepath.Join(dir, "shipq.ini"), []byte("[project]\n"), 0644)
+		satisfied := shipqdag.SatisfiedFunc(dir)
+
+		unmetHard := g.CheckHardDeps(shipqdag.CmdHealth, satisfied)
+		if len(unmetHard) != 0 {
+			t.Errorf("health hard deps should be met after init, got %v", unmetHard)
+		}
+
+		unmetSoft := g.CheckSoftDeps(shipqdag.CmdHealth, satisfied)
+		softSet := toSet(unmetSoft)
+		if !softSet[shipqdag.CmdDBCompile] {
+			t.Errorf("health should list db_compile as unmet soft dep, got %v", unmetSoft)
 		}
 	})
 

@@ -206,6 +206,7 @@ func TestCommandNameSpecificValues(t *testing.T) {
 		{shipqdag.CmdWorkersCompile, "workers compile"},
 		{shipqdag.CmdResource, "resource"},
 		{shipqdag.CmdHandlerGen, "handler generate"},
+		{shipqdag.CmdHealth, "health"},
 		{shipqdag.CmdHandlerCompile, "handler compile"},
 		{shipqdag.CmdLLMCompile, "llm compile"},
 		{shipqdag.CmdSeed, "seed"},
@@ -435,6 +436,7 @@ func TestGraphContainsAllExpectedCommands(t *testing.T) {
 		shipqdag.CmdWorkersCompile,
 		shipqdag.CmdResource,
 		shipqdag.CmdHandlerGen,
+		shipqdag.CmdHealth,
 		shipqdag.CmdHandlerCompile,
 		shipqdag.CmdLLMCompile,
 		shipqdag.CmdSeed,
@@ -516,6 +518,34 @@ func TestHandlerGenRequiresMigrateUp(t *testing.T) {
 	}
 	if !found {
 		t.Error("handler generate should hard-depend on migrate_up")
+	}
+}
+
+func TestHealthRequiresInit(t *testing.T) {
+	g := shipqdag.Graph()
+	node := g.Find(shipqdag.CmdHealth)
+	found := false
+	for _, dep := range node.HardDeps {
+		if dep == shipqdag.CmdInit {
+			found = true
+		}
+	}
+	if !found {
+		t.Error("health should hard-depend on init")
+	}
+}
+
+func TestHealthHasDBCompileAsSoftDep(t *testing.T) {
+	g := shipqdag.Graph()
+	node := g.Find(shipqdag.CmdHealth)
+	found := false
+	for _, dep := range node.SoftDeps {
+		if dep == shipqdag.CmdDBCompile {
+			found = true
+		}
+	}
+	if !found {
+		t.Error("health should have db_compile as a soft dep")
 	}
 }
 

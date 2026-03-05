@@ -429,8 +429,12 @@ func WorkersCmd() {
 		fmt.Println("Generating TypeScript channel client...")
 
 		// Determine TypeScript output directory: [workers] typescript_channel_output
-		// falls back to [files] typescript_output, then "." (project root).
+		// falls back to [typescript] channel_output, then [files] typescript_output,
+		// then "." (project root).
 		tsOutputDir := ini.Get("workers", "typescript_channel_output")
+		if tsOutputDir == "" {
+			tsOutputDir = ini.Get("typescript", "channel_output")
+		}
 		if tsOutputDir == "" {
 			tsOutputDir = ini.Get("files", "typescript_output")
 		}

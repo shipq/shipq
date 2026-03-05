@@ -20,6 +20,7 @@ const (
 	CmdFiles          CommandID = "files"
 	CmdWorkers        CommandID = "workers"
 	CmdWorkersCompile CommandID = "workers_compile"
+	CmdHealth         CommandID = "health"
 	CmdResource       CommandID = "resource"
 	CmdHandlerGen     CommandID = "handler_generate"
 	CmdHandlerCompile CommandID = "handler_compile"
@@ -45,6 +46,7 @@ var commandNames = map[CommandID]string{
 	CmdFiles:          "files",
 	CmdWorkers:        "workers",
 	CmdWorkersCompile: "workers compile",
+	CmdHealth:         "health",
 	CmdResource:       "resource",
 	CmdHandlerGen:     "handler generate",
 	CmdHandlerCompile: "handler compile",
@@ -151,6 +153,12 @@ func Graph() *dag.Graph[CommandID] {
 			ID:          CmdHandlerGen,
 			Description: "Generate CRUD handlers for a table",
 			HardDeps:    []CommandID{CmdMigrateUp},
+		},
+		{
+			ID:          CmdHealth,
+			Description: "Generate healthcheck endpoint and compile handlers",
+			HardDeps:    []CommandID{CmdInit},
+			SoftDeps:    []CommandID{CmdDBCompile},
 		},
 		{
 			ID:          CmdHandlerCompile,

@@ -74,7 +74,7 @@ func TestKillPort_NoProcess(t *testing.T) {
 
 	port := freePort(t)
 
-	killed, err := killPort(port)
+	killed, err := KillPort(port)
 	if err != nil {
 		t.Fatalf("killPort(%d): unexpected error: %v", port, err)
 	}
@@ -118,7 +118,7 @@ func TestKillPort_LiveProcess(t *testing.T) {
 	// Give nc time to bind the port.
 	time.Sleep(150 * time.Millisecond)
 
-	killed, err := killPort(port)
+	killed, err := KillPort(port)
 	if err != nil {
 		t.Fatalf("killPort(%d): unexpected error: %v", port, err)
 	}

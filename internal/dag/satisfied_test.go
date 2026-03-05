@@ -317,6 +317,9 @@ func TestSatisfiedFunc_Integration(t *testing.T) {
 	if !availSet[shipqdag.CmdHandlerCompile] {
 		t.Error("handler_compile should be available after init")
 	}
+	if !availSet[shipqdag.CmdHealth] {
+		t.Error("health should be available after init")
+	}
 	if availSet[shipqdag.CmdAuth] {
 		t.Error("auth should NOT be available (needs db_setup)")
 	}
@@ -474,6 +477,7 @@ func TestRunOnlyCommands_NeverSatisfied(t *testing.T) {
 		shipqdag.CmdMigrateNew,
 		shipqdag.CmdMigrateReset,
 		shipqdag.CmdWorkersCompile,
+		shipqdag.CmdHealth,
 		shipqdag.CmdResource,
 		shipqdag.CmdHandlerGen,
 		shipqdag.CmdHandlerCompile,

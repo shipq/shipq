@@ -197,6 +197,9 @@ func startChild(cfg WatchConfig) (*exec.Cmd, chan struct{}) {
 	cmd.Dir = cfg.ProjectRoot
 	cmd.Stdout = cfg.Stdout
 	cmd.Stderr = cfg.Stderr
+	// Place the child in its own process group so we can kill the entire
+	// tree (the binary and any children it spawns) when restarting.
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 
 	if err := cmd.Start(); err != nil {
 		cli.Warnf("failed to start %s: %v", cfg.Name, err)
@@ -212,7 +215,10 @@ func startChild(cfg WatchConfig) (*exec.Cmd, chan struct{}) {
 	return cmd, done
 }
 
-// stopChild sends SIGTERM to the child, waits up to 5 seconds, then SIGKILLs.
+// stopChild sends SIGTERM to the child's process group, waits up to 5
+// seconds, then SIGKILLs the group.  Targeting the process group (negative
+// PID) ensures that any grandchild processes spawned by the binary are also
+// terminated, preventing orphaned zombies that hog ports across restarts.
 func stopChild(cmd *exec.Cmd, done chan struct{}) {
 	if cmd == nil || cmd.Process == nil {
 		return
@@ -227,14 +233,15 @@ func stopChild(cmd *exec.Cmd, done chan struct{}) {
 		}
 	}
 
-	_ = cmd.Process.Signal(syscall.SIGTERM)
+	// Kill the entire process group (negative PID).
+	_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGTERM)
 
 	if done != nil {
 		select {
 		case <-done:
 			return
 		case <-time.After(5 * time.Second):
-			_ = cmd.Process.Signal(syscall.SIGKILL)
+			_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
 			<-done
 		}
 	} else {

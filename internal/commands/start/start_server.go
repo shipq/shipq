@@ -6,11 +6,40 @@ import (
 	"os/exec"
 	"os/signal"
 	"path/filepath"
+	"strconv"
 	"syscall"
 
 	"github.com/shipq/shipq/cli"
+	killcmd "github.com/shipq/shipq/internal/commands/kill"
 	"github.com/shipq/shipq/project"
 )
+
+const defaultServerPort = 8080
+
+// serverPort returns the port the server will listen on.
+// It checks the PORT environment variable first, falling back to 8080.
+func serverPort() int {
+	if p := os.Getenv("PORT"); p != "" {
+		if n, err := strconv.Atoi(p); err == nil && n > 0 && n <= 65535 {
+			return n
+		}
+	}
+	return defaultServerPort
+}
+
+// killStaleServer attempts to kill any process occupying the server port.
+// It prints a message when a stale process is found and killed.
+// Errors are logged as warnings but do not prevent startup.
+func killStaleServer(port int) {
+	killed, err := killcmd.KillPort(port)
+	if err != nil {
+		cli.Warnf("could not check port %d for stale processes: %v", port, err)
+		return
+	}
+	if killed {
+		cli.Infof("Killed stale process on port %d", port)
+	}
+}
 
 // StartServer implements "shipq start server".
 // When watch is true it uses go build + fsnotify for hot reload.
@@ -26,6 +55,9 @@ func StartServer(watch bool) {
 	if !fileExists(serverMainPath) {
 		cli.Fatal("cmd/server/main.go not found -- run 'shipq init' or scaffold your server first")
 	}
+
+	// Kill any stale process hogging the server port from a previous session.
+	killStaleServer(serverPort())
 
 	if watch {
 		fmt.Println("  Starting server with hot reload (go build + watch)...")
@@ -50,6 +82,9 @@ func StartServer(watch bool) {
 	serverCmd.Dir = roots.ShipqRoot
 	serverCmd.Stdout = os.Stdout
 	serverCmd.Stderr = os.Stderr
+	// Place the child in its own process group so we can kill `go run`
+	// AND the server binary it spawns, preventing orphaned zombies.
+	serverCmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 
 	if err := serverCmd.Start(); err != nil {
 		cli.FatalErr("failed to start server", err)
@@ -62,7 +97,10 @@ func StartServer(watch bool) {
 		sig := <-sigChan
 		cli.Infof("Received %s, shutting down server...", sig)
 		if serverCmd.Process != nil {
-			_ = serverCmd.Process.Signal(syscall.SIGTERM)
+			// Kill the entire process group (negative PID) so that
+			// both `go run` and the spawned server binary receive
+			// the signal.
+			_ = syscall.Kill(-serverCmd.Process.Pid, syscall.SIGTERM)
 		}
 	}()
 
