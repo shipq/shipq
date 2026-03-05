@@ -51,6 +51,12 @@ func GenerateUnifiedRunner(cfg UnifiedRunnerConfig) ([]byte, error) {
 		writeSQLiteScanHelpers(&buf)
 	}
 
+	// MySQL and SQLite JSON_OBJECT outputs TINYINT(1) bools as 0/1 instead of
+	// true/false. Emit a small helper to patch the raw JSON before unmarshal.
+	if jsonAggNeedsBoolFix(cfg.Dialect, userQueryInfo) {
+		writeJSONBoolFixHelper(&buf)
+	}
+
 	// Write Querier interface
 	writeQuerierInterface(&buf)
 
@@ -841,6 +847,11 @@ func collectRunnerImports(cfg UnifiedRunnerConfig, queries []userQueryInfo) map[
 		}
 	}
 
+	// MySQL/SQLite bool-fix helper uses strings.ReplaceAll.
+	if jsonAggNeedsBoolFix(cfg.Dialect, queries) {
+		imports["strings"] = true
+	}
+
 	// Paginated queries need fmt for fmt.Sprint when building cursors
 	for _, qi := range queries {
 		if qi.ReturnType == query.ReturnPaginated {
@@ -1146,11 +1157,17 @@ func writeUserQueryMethod(buf *bytes.Buffer, qi userQueryInfo, cfg UnifiedRunner
 			buf.WriteString("\t\treturn nil, err\n")
 			buf.WriteString("\t}\n")
 			// Unmarshal json_agg fields (all dialects)
+			needsBoolFix := cfg.Dialect == dburl.DialectMySQL || cfg.Dialect == dburl.DialectSQLite
 			for _, r := range qi.Results {
 				if len(r.JSONAggCols) == 0 {
 					continue
 				}
 				tmp := dbstrings.ToLowerCamel(r.Name) + "Raw"
+				// Fix MySQL/SQLite numeric bools (0/1) before unmarshal
+				if needsBoolFix && jsonAggColsHaveBool(r.JSONAggCols) {
+					boolFields := jsonAggBoolFieldNames(r.JSONAggCols)
+					buf.WriteString(fmt.Sprintf("\t%s = fixJSONBoolFields(%s, %s)\n", tmp, tmp, boolFields))
+				}
 				buf.WriteString(fmt.Sprintf("\tif err := json.Unmarshal([]byte(%s), &result.%s); err != nil {\n", tmp, r.Name))
 				buf.WriteString("\t\treturn nil, err\n")
 				buf.WriteString("\t}\n")
@@ -1248,11 +1265,17 @@ func writeUserQueryMethod(buf *bytes.Buffer, qi userQueryInfo, cfg UnifiedRunner
 		buf.WriteString("\t\t\treturn nil, err\n")
 		buf.WriteString("\t\t}\n")
 		// Unmarshal json_agg fields (all dialects)
+		needsBoolFix := cfg.Dialect == dburl.DialectMySQL || cfg.Dialect == dburl.DialectSQLite
 		for _, r := range qi.Results {
 			if len(r.JSONAggCols) == 0 {
 				continue
 			}
 			tmp := dbstrings.ToLowerCamel(r.Name) + "Raw"
+			// Fix MySQL/SQLite numeric bools (0/1) before unmarshal
+			if needsBoolFix && jsonAggColsHaveBool(r.JSONAggCols) {
+				boolFields := jsonAggBoolFieldNames(r.JSONAggCols)
+				buf.WriteString(fmt.Sprintf("\t\t%s = fixJSONBoolFields(%s, %s)\n", tmp, tmp, boolFields))
+			}
 			buf.WriteString(fmt.Sprintf("\t\tif err := json.Unmarshal([]byte(%s), &item.%s); err != nil {\n", tmp, r.Name))
 			buf.WriteString("\t\t\treturn nil, err\n")
 			buf.WriteString("\t\t}\n")
@@ -1663,6 +1686,64 @@ func singular(name string) string {
 
 func isSQLiteSpecialResultGoType(goType string) bool {
 	return goType == "time.Time" || goType == "*time.Time" || goType == "json.RawMessage"
+}
+
+// jsonAggColsHaveBool returns true if any column in the json_agg has a bool Go type.
+func jsonAggColsHaveBool(cols []jsonAggColInfo) bool {
+	for _, c := range cols {
+		if c.GoType == "bool" || c.GoType == "*bool" {
+			return true
+		}
+	}
+	return false
+}
+
+// jsonAggNeedsBoolFix returns true if the dialect is MySQL or SQLite and any
+// query has json_agg columns with bool fields.
+func jsonAggNeedsBoolFix(dialect string, queries []userQueryInfo) bool {
+	if dialect != dburl.DialectMySQL && dialect != dburl.DialectSQLite {
+		return false
+	}
+	for _, qi := range queries {
+		for _, r := range qi.Results {
+			if jsonAggColsHaveBool(r.JSONAggCols) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// jsonAggBoolFieldNames returns a Go literal string for the slice of bool field
+// names in a json_agg, e.g. `[]string{"should_text", "is_active"}`.
+func jsonAggBoolFieldNames(cols []jsonAggColInfo) string {
+	var names []string
+	for _, c := range cols {
+		if c.GoType == "bool" || c.GoType == "*bool" {
+			names = append(names, fmt.Sprintf("%q", c.Name))
+		}
+	}
+	return "[]string{" + strings.Join(names, ", ") + "}"
+}
+
+// writeJSONBoolFixHelper emits a fixJSONBoolFields function into the generated
+// runner. MySQL and SQLite JSON_OBJECT outputs TINYINT(1) boolean columns as
+// numeric 0/1 instead of JSON true/false, which breaks json.Unmarshal into
+// Go bool fields.
+func writeJSONBoolFixHelper(buf *bytes.Buffer) {
+	buf.WriteString(`// fixJSONBoolFields patches raw JSON from JSON_OBJECT so that boolean fields
+// encoded as 0/1 (MySQL/SQLite TINYINT) become true/false before unmarshal.
+func fixJSONBoolFields(raw string, boolFields []string) string {
+	for _, f := range boolFields {
+		raw = strings.ReplaceAll(raw, "\""+f+"\": 0", "\""+f+"\": false")
+		raw = strings.ReplaceAll(raw, "\""+f+"\": 1", "\""+f+"\": true")
+		raw = strings.ReplaceAll(raw, "\""+f+"\":0", "\""+f+"\":false")
+		raw = strings.ReplaceAll(raw, "\""+f+"\":1", "\""+f+"\":true")
+	}
+	return raw
+}
+
+`)
 }
 
 func writeSQLiteScanHelpers(buf *bytes.Buffer) {
