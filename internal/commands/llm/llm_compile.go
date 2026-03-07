@@ -19,6 +19,7 @@ import (
 	"github.com/shipq/shipq/dburl"
 	"github.com/shipq/shipq/inifile"
 	"github.com/shipq/shipq/internal/commands/db"
+	"github.com/shipq/shipq/internal/commands/shared"
 	shipqdag "github.com/shipq/shipq/internal/dag"
 	"github.com/shipq/shipq/project"
 	registrypkg "github.com/shipq/shipq/registry"
@@ -83,7 +84,7 @@ func LLMCompileCmd() {
 
 	scopeColumn := ini.Get("db", "scope")
 	hasTenancy := scopeColumn != ""
-	hasAuth := ini.Section("auth") != nil
+	hasAuth := shared.IsFeatureEnabled(ini, "auth")
 
 	databaseURL := ini.Get("db", "database_url")
 	dialect := ""
@@ -102,7 +103,7 @@ func LLMCompileCmd() {
 	// and testing utilities must be present in the generated project before
 	// the compile program can build (it imports shipq/lib/llm via tool packages).
 
-	filesEnabled := ini.Section("files") != nil
+	filesEnabled := shared.IsFeatureEnabled(ini, "files")
 	fmt.Println("")
 	fmt.Println("Embedding LLM library packages...")
 	if err := embed.EmbedAllPackages(roots.ShipqRoot, importPrefix, embed.EmbedOptions{

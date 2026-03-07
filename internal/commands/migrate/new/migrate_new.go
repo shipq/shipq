@@ -6,76 +6,16 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/shipq/shipq/codegen"
 	"github.com/shipq/shipq/codegen/crud"
 	"github.com/shipq/shipq/inifile"
 	"github.com/shipq/shipq/internal/commands/migrate/generator"
 	"github.com/shipq/shipq/internal/commands/migrate/parser"
+	"github.com/shipq/shipq/internal/commands/shared"
 	shipqdag "github.com/shipq/shipq/internal/dag"
-	"github.com/shipq/shipq/project"
 )
-
-const (
-	// DefaultMigrationsDir is the default directory for migration files.
-	DefaultMigrationsDir = "migrations"
-)
-
-// ProjectConfig holds the loaded project configuration.
-// In a monorepo setup, GoModRoot and ShipqRoot may be different directories.
-type ProjectConfig struct {
-	GoModRoot      string // Directory containing go.mod
-	ShipqRoot      string // Directory containing shipq.ini
-	ModulePath     string // Module path from go.mod
-	MigrationsPath string // Absolute path to migrations directory
-	// ProjectRoot is kept for backward compatibility (same as ShipqRoot)
-	ProjectRoot string
-}
-
-// loadProjectConfig finds both project roots and loads the configuration from shipq.ini.
-// In a monorepo, the go.mod may be in a parent directory of shipq.ini.
-// Returns the project config or an error if not in a shipq project.
-func loadProjectConfig() (*ProjectConfig, error) {
-	// Find both roots (shipq.ini may be in a subdirectory of go.mod)
-	roots, err := project.FindProjectRoots()
-	if err != nil {
-		return nil, err
-	}
-
-	// Get module path from go.mod
-	moduleInfo, err := codegen.GetModuleInfo(roots.GoModRoot, roots.ShipqRoot)
-	if err != nil {
-		return nil, err
-	}
-	modulePath := moduleInfo.FullImportPath("")
-
-	// Parse shipq.ini
-	shipqIniPath := filepath.Join(roots.ShipqRoot, project.ShipqIniFile)
-	ini, err := inifile.ParseFile(shipqIniPath)
-	if err != nil {
-		return nil, err
-	}
-
-	// Get migrations path from [db] section (default: "migrations")
-	// Migrations are relative to shipq root, not go.mod root
-	migrationsDir := ini.Get("db", "migrations")
-	if migrationsDir == "" {
-		migrationsDir = DefaultMigrationsDir
-	}
-
-	// Build absolute path (relative to shipq root)
-	migrationsPath := filepath.Join(roots.ShipqRoot, migrationsDir)
-
-	return &ProjectConfig{
-		GoModRoot:      roots.GoModRoot,
-		ShipqRoot:      roots.ShipqRoot,
-		ModulePath:     modulePath,
-		MigrationsPath: migrationsPath,
-		ProjectRoot:    roots.ShipqRoot, // Backward compatibility
-	}, nil
-}
 
 // MigrateNewCmd handles "shipq migrate new <name> [columns...] [--global]"
-func MigrateNewCmd(args []string) {
+func MigrateNewCmd(args []string) { //nolint:cyclop
 	// Require migration name
 	if len(args) < 1 {
 		fmt.Fprintln(os.Stderr, "error: migration name required")
@@ -116,14 +56,14 @@ func MigrateNewCmd(args []string) {
 	}
 
 	// Load project config to get migrations path
-	cfg, err := loadProjectConfig()
+	sharedCfg, err := shared.LoadProjectConfig()
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "error: not in a shipq project (%v)\n", err)
 		os.Exit(1)
 	}
 
 	// DAG prerequisite check (alongside existing checks)
-	if !shipqdag.CheckPrerequisites(shipqdag.CmdMigrateNew, cfg.ShipqRoot) {
+	if !shipqdag.CheckPrerequisites(shipqdag.CmdMigrateNew, sharedCfg.ShipqRoot) {
 		os.Exit(1)
 	}
 
@@ -135,10 +75,10 @@ func MigrateNewCmd(args []string) {
 	}
 
 	// Generate timestamp
-	timestamp := generator.GenerateTimestamp(cfg.MigrationsPath)
+	timestamp := generator.GenerateTimestamp(sharedCfg.MigrationsPath)
 
 	// Load scope config from shipq.ini
-	scopeColumn, scopeTable := loadScopeConfig(cfg)
+	scopeColumn, scopeTable := loadScopeConfig(sharedCfg)
 
 	// Generate migration code
 	migrationCfg := generator.MigrationConfig{
@@ -149,7 +89,7 @@ func MigrateNewCmd(args []string) {
 		ScopeColumn:   scopeColumn,
 		ScopeTable:    scopeTable,
 		IsGlobal:      isGlobal,
-		ModulePath:    cfg.ModulePath,
+		ModulePath:    sharedCfg.ModulePath,
 	}
 
 	code, err := generator.GenerateMigration(migrationCfg)
@@ -159,14 +99,14 @@ func MigrateNewCmd(args []string) {
 	}
 
 	// Create migrations directory if needed
-	if err := os.MkdirAll(cfg.MigrationsPath, 0755); err != nil {
+	if err := os.MkdirAll(sharedCfg.MigrationsPath, 0755); err != nil {
 		fmt.Fprintf(os.Stderr, "error: failed to create migrations directory: %v\n", err)
 		os.Exit(1)
 	}
 
 	// Generate file name and path
 	fileName := generator.GenerateMigrationFileName(timestamp, migrationName)
-	filePath := filepath.Join(cfg.MigrationsPath, fileName)
+	filePath := filepath.Join(sharedCfg.MigrationsPath, fileName)
 
 	// Write migration file
 	if err := os.WriteFile(filePath, code, 0644); err != nil {
@@ -175,7 +115,7 @@ func MigrateNewCmd(args []string) {
 	}
 
 	// Calculate relative path from project root for display
-	relPath, err := filepath.Rel(cfg.ProjectRoot, filePath)
+	relPath, err := filepath.Rel(sharedCfg.ShipqRoot, filePath)
 	if err != nil {
 		relPath = filePath
 	}
@@ -190,8 +130,8 @@ func MigrateNewCmd(args []string) {
 
 // loadScopeConfig loads the scope configuration from shipq.ini.
 // Returns (column, table) where both are empty if no scope is configured.
-func loadScopeConfig(cfg *ProjectConfig) (string, string) {
-	shipqIniPath := filepath.Join(cfg.ProjectRoot, "shipq.ini")
+func loadScopeConfig(cfg *shared.ProjectConfig) (string, string) {
+	shipqIniPath := filepath.Join(cfg.ShipqRoot, "shipq.ini")
 	ini, err := inifile.ParseFile(shipqIniPath)
 	if err != nil {
 		return "", ""

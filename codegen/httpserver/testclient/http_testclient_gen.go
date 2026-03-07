@@ -432,7 +432,7 @@ func generateRequestCreationWithCookies(buf *bytes.Buffer, h codegen.SerializedH
 		}
 		buf.WriteString("\t}\n\n")
 
-		fmt.Fprintf(buf, "\thttpReq, err := http.NewRequestWithContext(ctx, %q, url, bytes.NewReader(body))\n", h.Method)
+		fmt.Fprintf(buf, "\thttpReq, err := http.NewRequestWithContext(ctx, %q, reqURL, bytes.NewReader(body))\n", h.Method)
 		buf.WriteString("\tif err != nil {\n")
 		if isDeleteNoBody {
 			buf.WriteString("\t\treturn nil, fmt.Errorf(\"failed to create request: %w\", err)\n")
@@ -442,7 +442,7 @@ func generateRequestCreationWithCookies(buf *bytes.Buffer, h codegen.SerializedH
 		buf.WriteString("\t}\n")
 		buf.WriteString("\thttpReq.Header.Set(\"Content-Type\", \"application/json\")\n\n")
 	} else {
-		fmt.Fprintf(buf, "\thttpReq, err := http.NewRequestWithContext(ctx, %q, url, nil)\n", h.Method)
+		fmt.Fprintf(buf, "\thttpReq, err := http.NewRequestWithContext(ctx, %q, reqURL, nil)\n", h.Method)
 		buf.WriteString("\tif err != nil {\n")
 		if isDeleteNoBody {
 			buf.WriteString("\t\treturn nil, fmt.Errorf(\"failed to create request: %w\", err)\n")
@@ -461,14 +461,14 @@ func generateURLConstruction(buf *bytes.Buffer, convertedPath string, h codegen.
 	effectivePath := stripPrefix + convertedPath
 
 	if len(h.PathParams) == 0 {
-		fmt.Fprintf(buf, "\turl := c.server.URL + %q\n", effectivePath)
+		fmt.Fprintf(buf, "\treqURL := c.server.URL + %q\n", effectivePath)
 	} else {
 		pathParts := parsePathForReplacement(convertedPath)
 
 		if len(pathParts) == 1 && pathParts[0].isLiteral {
-			fmt.Fprintf(buf, "\turl := c.server.URL + %q\n", effectivePath)
+			fmt.Fprintf(buf, "\treqURL := c.server.URL + %q\n", effectivePath)
 		} else {
-			buf.WriteString("\turl := c.server.URL + strings.NewReplacer(\n")
+			buf.WriteString("\treqURL := c.server.URL + strings.NewReplacer(\n")
 			for _, param := range h.PathParams {
 				fieldName := findRequestFieldForParam(h, param.Name)
 				fmt.Fprintf(buf, "\t\t\"{%s}\", req.%s,\n", param.Name, fieldName)
@@ -534,7 +534,7 @@ func generateQueryParamURLAppend(buf *bytes.Buffer, queryFields []codegen.Serial
 	}
 
 	buf.WriteString("\tif encoded := qv.Encode(); encoded != \"\" {\n")
-	buf.WriteString("\t\turl += \"?\" + encoded\n")
+	buf.WriteString("\t\treqURL += \"?\" + encoded\n")
 	buf.WriteString("\t}\n")
 }
 
@@ -601,14 +601,14 @@ func generateRequestCreation(buf *bytes.Buffer, h codegen.SerializedHandlerInfo)
 		buf.WriteString("\t\treturn resp, fmt.Errorf(\"failed to marshal request: %w\", err)\n")
 		buf.WriteString("\t}\n\n")
 
-		fmt.Fprintf(buf, "\thttpReq, err := http.NewRequestWithContext(ctx, %q, url, bytes.NewReader(body))\n", h.Method)
+		fmt.Fprintf(buf, "\thttpReq, err := http.NewRequestWithContext(ctx, %q, reqURL, bytes.NewReader(body))\n", h.Method)
 		buf.WriteString("\tif err != nil {\n")
 		buf.WriteString("\t\treturn resp, fmt.Errorf(\"failed to create request: %w\", err)\n")
 		buf.WriteString("\t}\n")
 		buf.WriteString("\thttpReq.Header.Set(\"Content-Type\", \"application/json\")\n\n")
 	} else {
 		isDeleteNoBody := h.Method == "DELETE" && (h.Response == nil || len(h.Response.Fields) == 0)
-		fmt.Fprintf(buf, "\thttpReq, err := http.NewRequestWithContext(ctx, %q, url, nil)\n", h.Method)
+		fmt.Fprintf(buf, "\thttpReq, err := http.NewRequestWithContext(ctx, %q, reqURL, nil)\n", h.Method)
 		buf.WriteString("\tif err != nil {\n")
 		if isDeleteNoBody {
 			buf.WriteString("\t\treturn fmt.Errorf(\"failed to create request: %w\", err)\n")

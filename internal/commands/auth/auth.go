@@ -5,125 +5,25 @@ import (
 	"encoding/hex"
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"time"
 
 	"github.com/shipq/shipq/codegen"
 	"github.com/shipq/shipq/codegen/authgen"
-	configpkg "github.com/shipq/shipq/codegen/httpserver/config"
 	codegenMigrate "github.com/shipq/shipq/codegen/migrate"
 	"github.com/shipq/shipq/codegen/seedgen"
-	"github.com/shipq/shipq/dburl"
 	"github.com/shipq/shipq/inifile"
 	"github.com/shipq/shipq/internal/commands/db"
 	"github.com/shipq/shipq/internal/commands/migrate/up"
+	"github.com/shipq/shipq/internal/commands/shared"
 	shipqdag "github.com/shipq/shipq/internal/dag"
 	"github.com/shipq/shipq/project"
 	"github.com/shipq/shipq/registry"
 )
 
-const (
-	// DefaultMigrationsDir is the default directory for migration files.
-	DefaultMigrationsDir = "migrations"
-)
-
-// ProjectConfig holds the loaded project configuration.
-type ProjectConfig struct {
-	GoModRoot      string
-	ShipqRoot      string
-	ModulePath     string
-	MigrationsPath string
-	DatabaseURL    string // from shipq.ini [db] database_url
-	Dialect        string // inferred from DatabaseURL
-	ScopeColumn    string // from shipq.ini [db] scope (e.g., "organization_id")
-}
-
-// loadProjectConfig finds project roots and loads configuration.
-func loadProjectConfig() (*ProjectConfig, error) {
-	roots, err := project.FindProjectRoots()
-	if err != nil {
-		return nil, err
-	}
-
-	moduleInfo, err := codegen.GetModuleInfo(roots.GoModRoot, roots.ShipqRoot)
-	if err != nil {
-		return nil, err
-	}
-	modulePath := moduleInfo.FullImportPath("")
-
-	shipqIniPath := filepath.Join(roots.ShipqRoot, project.ShipqIniFile)
-	ini, err := inifile.ParseFile(shipqIniPath)
-	if err != nil {
-		return nil, err
-	}
-
-	migrationsDir := ini.Get("db", "migrations")
-	if migrationsDir == "" {
-		migrationsDir = DefaultMigrationsDir
-	}
-
-	migrationsPath := filepath.Join(roots.ShipqRoot, migrationsDir)
-
-	databaseURL := ini.Get("db", "database_url")
-	dialect := ""
-	if databaseURL != "" {
-		if d, err := dburl.InferDialectFromDBUrl(databaseURL); err == nil {
-			dialect = d
-		}
-	}
-
-	scopeColumn := ini.Get("db", "scope")
-
-	return &ProjectConfig{
-		GoModRoot:      roots.GoModRoot,
-		ShipqRoot:      roots.ShipqRoot,
-		ModulePath:     modulePath,
-		MigrationsPath: migrationsPath,
-		DatabaseURL:    databaseURL,
-		Dialect:        dialect,
-		ScopeColumn:    scopeColumn,
-	}, nil
-}
-
-// authMigrationSuffixes are the file suffixes used to detect existing auth migrations.
-var authMigrationSuffixes = []string{
-	"_organizations.go",
-	"_accounts.go",
-	"_organization_users.go",
-	"_sessions.go",
-	"_roles.go",
-	"_account_roles.go",
-	"_role_actions.go",
-}
-
-// authMigrationsExist checks if all 4 auth migration files already exist in the
-// migrations directory. This prevents duplicate migration generation when running
-// `shipq auth` multiple times.
-func authMigrationsExist(migrationsPath string) bool {
-	entries, err := os.ReadDir(migrationsPath)
-	if err != nil {
-		return false
-	}
-
-	found := make(map[string]bool)
-	for _, entry := range entries {
-		if entry.IsDir() {
-			continue
-		}
-		name := entry.Name()
-		for _, suffix := range authMigrationSuffixes {
-			if len(name) > len(suffix) && name[len(name)-len(suffix):] == suffix {
-				found[suffix] = true
-			}
-		}
-	}
-	return len(found) == len(authMigrationSuffixes)
-}
-
 // AuthCmd handles "shipq auth" - generates auth tables and crypto utilities.
 func AuthCmd() {
-	cfg, err := loadProjectConfig()
+	cfg, err := shared.LoadProjectConfig()
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "error: not in a shipq project (%v)\n", err)
 		os.Exit(1)
@@ -140,7 +40,7 @@ func AuthCmd() {
 		os.Exit(1)
 	}
 
-	if authMigrationsExist(cfg.MigrationsPath) {
+	if shared.AuthMigrationsExist(cfg.MigrationsPath) {
 		fmt.Println("Auth migrations already exist, skipping migration generation...")
 		fmt.Println("")
 		fmt.Println("Running migrations (in case they haven't been applied)...")
@@ -231,21 +131,7 @@ func AuthCmd() {
 		fmt.Fprintf(os.Stderr, "error: failed to re-read shipq.ini: %v\n", iniErr)
 		os.Exit(1)
 	}
-	filesEnabled := ini.Section("files") != nil
-	workersEnabled := ini.Section("workers") != nil
-	if err := registry.GenerateConfigEarlyWithFullOptions(registry.ConfigEarlyOptions{
-		ShipqRoot:      cfg.ShipqRoot,
-		GoModRoot:      cfg.GoModRoot,
-		Dialect:        cfg.Dialect,
-		FilesEnabled:   filesEnabled,
-		WorkersEnabled: workersEnabled,
-		DevDefaults: configpkg.DevDefaults{
-			DatabaseURL:  cfg.DatabaseURL,
-			Port:         "8080",
-			CookieSecret: ini.Get("auth", "cookie_secret"),
-		},
-		CustomEnvVars: registry.ParseCustomEnvVars(ini),
-	}); err != nil {
+	if err := shared.RegenerateConfig(ini, cfg); err != nil {
 		fmt.Fprintf(os.Stderr, "error: failed to generate config: %v\n", err)
 		os.Exit(1)
 	}
@@ -256,18 +142,10 @@ func AuthCmd() {
 	fmt.Println("Generating auth handlers...")
 	fmt.Println("")
 
-	// Derive test database URL from the dev URL in shipq.ini
-	testDatabaseURL := ""
-	if cfg.DatabaseURL != "" {
-		if u, err := dburl.TestDatabaseURL(cfg.DatabaseURL); err == nil {
-			testDatabaseURL = u
-		}
-	}
-
 	authCfg := authgen.AuthGenConfig{
 		ModulePath:      cfg.ModulePath,
 		Dialect:         cfg.Dialect,
-		TestDatabaseURL: testDatabaseURL,
+		TestDatabaseURL: cfg.TestDatabaseURL(),
 		ScopeColumn:     cfg.ScopeColumn,
 	}
 
@@ -337,14 +215,10 @@ func AuthCmd() {
 	// (querydefs need github.com/shipq/shipq/db/portsql/query,
 	//  handlers need golang.org/x/crypto/argon2, etc.)
 	fmt.Println("")
-	fmt.Println("Running go mod tidy...")
-	tidyCmd := exec.Command("go", "mod", "tidy")
-	tidyCmd.Dir = cfg.GoModRoot
-	if tidyOut, tidyErr := tidyCmd.CombinedOutput(); tidyErr != nil {
-		fmt.Fprintf(os.Stderr, "error: go mod tidy failed: %v\n%s\n", tidyErr, tidyOut)
+	if err := shared.GoModTidy(cfg.GoModRoot); err != nil {
+		fmt.Fprintf(os.Stderr, "error: %v\n", err)
 		os.Exit(1)
 	}
-	fmt.Println("  go mod tidy done")
 
 	// STEP 2.7: Run db compile to regenerate the query runner with auth query methods
 	fmt.Println("")

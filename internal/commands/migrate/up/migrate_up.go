@@ -22,6 +22,7 @@ import (
 	"github.com/shipq/shipq/dburl"
 	"github.com/shipq/shipq/inifile"
 	"github.com/shipq/shipq/internal/commands/db"
+	"github.com/shipq/shipq/internal/commands/shared"
 	shipqdag "github.com/shipq/shipq/internal/dag"
 	"github.com/shipq/shipq/internal/dbops"
 	"github.com/shipq/shipq/project"
@@ -87,8 +88,8 @@ func MigrateUpCmd() {
 
 	// Step 4.5: Embed shipq library packages (needed by migration files)
 	cli.Info("Embedding shipq library packages...")
-	filesEnabled := ini.Section("files") != nil
-	workersEnabled := ini.Section("workers") != nil
+	filesEnabled := shared.IsFeatureEnabled(ini, "files")
+	workersEnabled := shared.IsFeatureEnabled(ini, "workers")
 	if err := embed.EmbedAllPackages(roots.ShipqRoot, importPrefix, embed.EmbedOptions{
 		FilesEnabled:   filesEnabled,
 		WorkersEnabled: workersEnabled,

@@ -8,6 +8,7 @@ import (
 
 	"github.com/shipq/shipq/internal/commands/migrate/generator"
 	"github.com/shipq/shipq/internal/commands/migrate/parser"
+	"github.com/shipq/shipq/internal/commands/shared"
 	"github.com/shipq/shipq/project"
 )
 
@@ -52,13 +53,13 @@ func TestLoadProjectConfig(t *testing.T) {
 	tmpDir, cleanup := setupTestProject(t)
 	defer cleanup()
 
-	cfg, err := loadProjectConfig()
+	cfg, err := shared.LoadProjectConfig()
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	if cfg.ProjectRoot != tmpDir {
-		t.Errorf("ProjectRoot = %q, want %q", cfg.ProjectRoot, tmpDir)
+	if cfg.ShipqRoot != tmpDir {
+		t.Errorf("ShipqRoot = %q, want %q", cfg.ShipqRoot, tmpDir)
 	}
 
 	expectedMigrationsPath := filepath.Join(tmpDir, "migrations")
@@ -77,7 +78,7 @@ func TestLoadProjectConfig_CustomMigrationsPath(t *testing.T) {
 		t.Fatalf("failed to update shipq.ini: %v", err)
 	}
 
-	cfg, err := loadProjectConfig()
+	cfg, err := shared.LoadProjectConfig()
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -99,7 +100,7 @@ func TestLoadProjectConfig_NotInProject(t *testing.T) {
 		t.Fatalf("failed to change to temp directory: %v", err)
 	}
 
-	_, err := loadProjectConfig()
+	_, err := shared.LoadProjectConfig()
 	if err == nil {
 		t.Fatal("expected error when not in a project")
 	}
@@ -121,7 +122,7 @@ func TestLoadProjectConfig_MissingShipqIni(t *testing.T) {
 		t.Fatalf("failed to change to temp directory: %v", err)
 	}
 
-	_, err := loadProjectConfig()
+	_, err := shared.LoadProjectConfig()
 	if err == nil {
 		t.Fatal("expected error when shipq.ini is missing")
 	}
@@ -135,8 +136,8 @@ func TestLoadProjectConfig_MissingShipqIni(t *testing.T) {
 func createMigrationHelper(t *testing.T, tmpDir string, name string, columns []parser.ColumnSpec) string {
 	t.Helper()
 
-	cfg := &ProjectConfig{
-		ProjectRoot:    tmpDir,
+	cfg := &shared.ProjectConfig{
+		ShipqRoot:      tmpDir,
 		MigrationsPath: filepath.Join(tmpDir, "migrations"),
 	}
 
