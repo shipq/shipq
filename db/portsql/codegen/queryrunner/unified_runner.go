@@ -852,11 +852,16 @@ func collectRunnerImports(cfg UnifiedRunnerConfig, queries []userQueryInfo) map[
 		imports["strings"] = true
 	}
 
-	// Paginated queries need fmt for fmt.Sprint when building cursors
+	// Paginated queries need fmt for fmt.Sprint when building cursors,
+	// and time for time.RFC3339Nano when formatting time.Time cursor fields.
 	for _, qi := range queries {
 		if qi.ReturnType == query.ReturnPaginated {
 			imports["fmt"] = true
-			break
+			for _, col := range qi.CursorColumns {
+				if col.GoType == "time.Time" {
+					imports["time"] = true
+				}
+			}
 		}
 	}
 
@@ -1531,7 +1536,11 @@ func writePaginatedMethod(buf *bytes.Buffer, qi userQueryInfo, cfg UnifiedRunner
 	buf.WriteString(fmt.Sprintf("\t\tresult.NextCursor = &%s{\n", cursorType))
 	for _, col := range qi.CursorColumns {
 		fieldName := dbstrings.ToPascalCase(col.Name)
-		buf.WriteString(fmt.Sprintf("\t\t\t%s: fmt.Sprint(lastItem.%s),\n", fieldName, fieldName))
+		if col.GoType == "time.Time" {
+			buf.WriteString(fmt.Sprintf("\t\t\t%s: lastItem.%s.UTC().Format(time.RFC3339Nano),\n", fieldName, fieldName))
+		} else {
+			buf.WriteString(fmt.Sprintf("\t\t\t%s: fmt.Sprint(lastItem.%s),\n", fieldName, fieldName))
+		}
 	}
 	buf.WriteString("\t\t}\n")
 	buf.WriteString("\t} else {\n")
