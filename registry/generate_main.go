@@ -26,6 +26,7 @@ func generateHTTPMain(cfg CompileConfig) error {
 		HasChannels: cfg.WorkersEnabled && len(cfg.Channels) > 0,
 		HasAuth:     cfg.HasAuth && channelsNeedAuth,
 		AutoMigrate: cfg.AutoMigrate,
+		StripPrefix: cfg.StripPrefix,
 	}
 
 	mainCode, err := server.GenerateHTTPMain(mainCfg)

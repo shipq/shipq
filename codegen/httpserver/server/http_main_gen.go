@@ -14,6 +14,7 @@ type HTTPMainGenConfig struct {
 	HasChannels bool   // true when [workers] channels exist; wires channel routes into the server
 	HasAuth     bool   // true when at least one channel requires auth (i.e., is not public)
 	AutoMigrate bool   // true when [db] auto_migrate = true and schema.json exists; emits migrate-on-boot block
+	StripPrefix string // URL prefix to strip from incoming requests (e.g., "/api"); mirrors HTTPServerGenConfig.StripPrefix
 }
 
 // GenerateHTTPMain generates the main.go entrypoint for the HTTP server.
@@ -207,7 +208,12 @@ func generateMainFuncWithChannels(buf *bytes.Buffer, cfg HTTPMainGenConfig) {
 	} else {
 		buf.WriteString("\tapi.RegisterChannelRoutes(mux, queue, transport, db, runner)\n")
 	}
-	buf.WriteString("\thandler := logging.Decorate([]string{\"/health\"}, config.Logger, mux)\n\n")
+	if cfg.StripPrefix != "" {
+		fmt.Fprintf(buf, "\tvar handler http.Handler = http.StripPrefix(%q, mux)\n", cfg.StripPrefix)
+		fmt.Fprintf(buf, "\thandler = logging.Decorate([]string{%q}, config.Logger, handler)\n\n", cfg.StripPrefix+"/health")
+	} else {
+		buf.WriteString("\thandler := logging.Decorate([]string{\"/health\"}, config.Logger, mux)\n\n")
+	}
 
 	buf.WriteString("\taddr := \":\" + config.Settings.PORT\n")
 	buf.WriteString("\tconfig.Logger.Info(\"starting server\", \"addr\", addr)\n")

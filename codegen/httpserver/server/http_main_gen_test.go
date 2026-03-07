@@ -907,6 +907,259 @@ func TestGenerateHTTPMain_AutoMigrate_WithChannels_ValidGo(t *testing.T) {
 	}
 }
 
+// ── StripPrefix + Channels regression tests ──────────────────────────────────
+// Bug: generateMainFuncWithChannels bypassed NewMux (which correctly applied
+// http.StripPrefix) and instead called SetupMux → RegisterChannelRoutes →
+// logging.Decorate without ever wrapping in http.StripPrefix. This meant
+// requests to e.g. /api/channels/chatbot/dispatch would 404.
+
+func TestGenerateHTTPMain_HasChannels_StripPrefix_ValidGo(t *testing.T) {
+	dialects := []string{"mysql", "postgres", "sqlite"}
+
+	for _, dialect := range dialects {
+		t.Run(dialect, func(t *testing.T) {
+			cfg := HTTPMainGenConfig{
+				ModulePath:  "example.com/myapp",
+				OutputPkg:   "api",
+				DBDialect:   dialect,
+				HasChannels: true,
+				HasAuth:     true,
+				StripPrefix: "/api",
+			}
+
+			code, err := GenerateHTTPMain(cfg)
+			if err != nil {
+				t.Fatalf("GenerateHTTPMain() error = %v", err)
+			}
+
+			_, err = parser.ParseFile(token.NewFileSet(), "", code, parser.AllErrors)
+			if err != nil {
+				t.Errorf("generated code is not valid Go: %v\n%s", err, string(code))
+			}
+		})
+	}
+}
+
+func TestGenerateHTTPMain_HasChannels_StripPrefix_GeneratesWrapper(t *testing.T) {
+	cfg := HTTPMainGenConfig{
+		ModulePath:  "example.com/myapp",
+		OutputPkg:   "api",
+		DBDialect:   "mysql",
+		HasChannels: true,
+		HasAuth:     true,
+		StripPrefix: "/api",
+	}
+
+	code, err := GenerateHTTPMain(cfg)
+	if err != nil {
+		t.Fatalf("GenerateHTTPMain() error = %v", err)
+	}
+
+	codeStr := string(code)
+
+	// Must contain http.StripPrefix wrapper
+	if !strings.Contains(codeStr, `http.StripPrefix("/api"`) {
+		t.Error("missing http.StripPrefix(\"/api\") wrapper when StripPrefix is configured with channels")
+	}
+
+	// Health check exclusion path must be prefixed
+	if !strings.Contains(codeStr, `"/api/health"`) {
+		t.Error("health check exclusion path should be \"/api/health\" when StripPrefix is \"/api\"")
+	}
+
+	// Must NOT use the un-prefixed "/health" for logging.Decorate.
+	// Replace all prefixed occurrences first, then check for bare ones.
+	withoutPrefixed := strings.ReplaceAll(codeStr, `"/api/health"`, "")
+	if strings.Contains(withoutPrefixed, `"/health"`) {
+		t.Error("found bare \"/health\" in generated code; all health paths should be \"/api/health\" when StripPrefix is set")
+	}
+}
+
+func TestGenerateHTTPMain_HasChannels_StripPrefix_AbsentWhenEmpty(t *testing.T) {
+	cfg := HTTPMainGenConfig{
+		ModulePath:  "example.com/myapp",
+		OutputPkg:   "api",
+		DBDialect:   "mysql",
+		HasChannels: true,
+		HasAuth:     true,
+		StripPrefix: "",
+	}
+
+	code, err := GenerateHTTPMain(cfg)
+	if err != nil {
+		t.Fatalf("GenerateHTTPMain() error = %v", err)
+	}
+
+	codeStr := string(code)
+
+	// Should NOT contain http.StripPrefix when StripPrefix is empty
+	if strings.Contains(codeStr, "http.StripPrefix") {
+		t.Error("http.StripPrefix should NOT appear when StripPrefix is empty")
+	}
+
+	// Health check should use plain /health
+	if !strings.Contains(codeStr, `"/health"`) {
+		t.Error("health check path should be \"/health\" when StripPrefix is empty")
+	}
+}
+
+func TestGenerateHTTPMain_HasChannelsNoAuth_StripPrefix_GeneratesWrapper(t *testing.T) {
+	cfg := HTTPMainGenConfig{
+		ModulePath:  "example.com/myapp",
+		OutputPkg:   "api",
+		DBDialect:   "mysql",
+		HasChannels: true,
+		HasAuth:     false,
+		StripPrefix: "/v2",
+	}
+
+	code, err := GenerateHTTPMain(cfg)
+	if err != nil {
+		t.Fatalf("GenerateHTTPMain() error = %v", err)
+	}
+
+	codeStr := string(code)
+
+	if !strings.Contains(codeStr, `http.StripPrefix("/v2"`) {
+		t.Error("missing http.StripPrefix(\"/v2\") wrapper when StripPrefix is configured without auth")
+	}
+
+	if !strings.Contains(codeStr, `"/v2/health"`) {
+		t.Error("health check exclusion path should be \"/v2/health\"")
+	}
+
+	_, err = parser.ParseFile(token.NewFileSet(), "", code, parser.AllErrors)
+	if err != nil {
+		t.Errorf("generated code is not valid Go: %v\n%s", err, codeStr)
+	}
+}
+
+func TestGenerateHTTPMain_HasChannels_StripPrefix_StillUsesSetupMux(t *testing.T) {
+	cfg := HTTPMainGenConfig{
+		ModulePath:  "example.com/myapp",
+		OutputPkg:   "api",
+		DBDialect:   "mysql",
+		HasChannels: true,
+		HasAuth:     true,
+		StripPrefix: "/api",
+	}
+
+	code, err := GenerateHTTPMain(cfg)
+	if err != nil {
+		t.Fatalf("GenerateHTTPMain() error = %v", err)
+	}
+
+	codeStr := string(code)
+
+	// Should still use SetupMux (not NewMux) so channel routes are registered
+	// on the raw mux before the StripPrefix wrapper is applied.
+	if !strings.Contains(codeStr, "api.SetupMux(") {
+		t.Error("should still use api.SetupMux when HasChannels + StripPrefix")
+	}
+	if strings.Contains(codeStr, "api.NewMux(") {
+		t.Error("should NOT use api.NewMux when HasChannels is true (even with StripPrefix)")
+	}
+
+	// Channel routes must be registered before the StripPrefix wrapper
+	if !strings.Contains(codeStr, "api.RegisterChannelRoutes(") {
+		t.Error("missing api.RegisterChannelRoutes call")
+	}
+}
+
+func TestGenerateHTTPMain_HasChannels_StripPrefix_DeepPrefix_ValidGo(t *testing.T) {
+	// Verify a deeply nested prefix like /v1/api works correctly
+	cfg := HTTPMainGenConfig{
+		ModulePath:  "example.com/myapp",
+		OutputPkg:   "api",
+		DBDialect:   "postgres",
+		HasChannels: true,
+		HasAuth:     true,
+		StripPrefix: "/v1/api",
+	}
+
+	code, err := GenerateHTTPMain(cfg)
+	if err != nil {
+		t.Fatalf("GenerateHTTPMain() error = %v", err)
+	}
+
+	codeStr := string(code)
+
+	if !strings.Contains(codeStr, `http.StripPrefix("/v1/api"`) {
+		t.Error("missing http.StripPrefix(\"/v1/api\") wrapper for deep prefix")
+	}
+
+	if !strings.Contains(codeStr, `"/v1/api/health"`) {
+		t.Error("health check exclusion path should be \"/v1/api/health\" for deep prefix")
+	}
+
+	_, err = parser.ParseFile(token.NewFileSet(), "", code, parser.AllErrors)
+	if err != nil {
+		t.Errorf("generated code is not valid Go: %v\n%s", err, codeStr)
+	}
+}
+
+func TestGenerateHTTPMain_HasChannels_StripPrefix_WithAutoMigrate_ValidGo(t *testing.T) {
+	cfg := HTTPMainGenConfig{
+		ModulePath:  "example.com/myapp",
+		OutputPkg:   "api",
+		DBDialect:   "mysql",
+		HasChannels: true,
+		HasAuth:     true,
+		AutoMigrate: true,
+		StripPrefix: "/api",
+	}
+
+	code, err := GenerateHTTPMain(cfg)
+	if err != nil {
+		t.Fatalf("GenerateHTTPMain() error = %v", err)
+	}
+
+	codeStr := string(code)
+
+	// All features together must produce valid Go
+	_, err = parser.ParseFile(token.NewFileSet(), "", code, parser.AllErrors)
+	if err != nil {
+		t.Errorf("generated code is not valid Go: %v\n%s", err, codeStr)
+	}
+
+	if !strings.Contains(codeStr, `http.StripPrefix("/api"`) {
+		t.Error("missing http.StripPrefix with AutoMigrate + Channels")
+	}
+	if !strings.Contains(codeStr, "dbmigrate.RunWithDB") {
+		t.Error("missing dbmigrate.RunWithDB with AutoMigrate + Channels + StripPrefix")
+	}
+}
+
+func TestGenerateHTTPMain_NoChannels_StripPrefix_DoesNotEmitStripPrefix(t *testing.T) {
+	// Without channels, main.go calls api.NewMux which handles StripPrefix
+	// internally. The generated main.go should NOT emit http.StripPrefix itself.
+	cfg := HTTPMainGenConfig{
+		ModulePath:  "example.com/myapp",
+		OutputPkg:   "api",
+		DBDialect:   "mysql",
+		HasChannels: false,
+		StripPrefix: "/api",
+	}
+
+	code, err := GenerateHTTPMain(cfg)
+	if err != nil {
+		t.Fatalf("GenerateHTTPMain() error = %v", err)
+	}
+
+	codeStr := string(code)
+
+	// Without channels, main.go delegates to api.NewMux which handles
+	// StripPrefix internally. main.go itself should NOT contain http.StripPrefix.
+	if strings.Contains(codeStr, "http.StripPrefix") {
+		t.Error("non-channel main.go should NOT contain http.StripPrefix (NewMux handles it)")
+	}
+
+	_, err = parser.ParseFile(token.NewFileSet(), "", code, parser.AllErrors)
+	if err != nil {
+		t.Errorf("generated code is not valid Go: %v\n%s", err, codeStr)
+	}
+}
+
 func TestGetDriverImport(t *testing.T) {
 	tests := []struct {
 		dialect string
