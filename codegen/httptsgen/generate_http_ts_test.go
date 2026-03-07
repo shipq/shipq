@@ -63,6 +63,13 @@ func makePostsHandlers() []codegen.SerializedHandlerInfo {
 			FuncName:    "ListPosts",
 			PackagePath: "myapp/api/posts",
 			RequireAuth: false,
+			Request: &codegen.SerializedStructInfo{
+				Name: "ListPostsRequest",
+				Fields: []codegen.SerializedFieldInfo{
+					{Name: "Cursor", Type: "*string", JSONName: "cursor", Required: false, Tags: map[string]string{"query": "cursor"}},
+					{Name: "Limit", Type: "int", JSONName: "limit", Required: false, Tags: map[string]string{"query": "limit"}},
+				},
+			},
 			Response: &codegen.SerializedStructInfo{
 				Name: "ListPostsResponse",
 				Fields: []codegen.SerializedFieldInfo{
@@ -114,6 +121,13 @@ func makeAdminHandlers() []codegen.SerializedHandlerInfo {
 			FuncName:    "AdminListPosts",
 			PackagePath: "myapp/api/posts",
 			RequireAuth: true,
+			Request: &codegen.SerializedStructInfo{
+				Name: "AdminListPostsRequest",
+				Fields: []codegen.SerializedFieldInfo{
+					{Name: "Cursor", Type: "*string", JSONName: "cursor", Required: false, Tags: map[string]string{"query": "cursor"}},
+					{Name: "Limit", Type: "int", JSONName: "limit", Required: false, Tags: map[string]string{"query": "limit"}},
+				},
+			},
 			Response: &codegen.SerializedStructInfo{
 				Name: "AdminListPostsResponse",
 				Fields: []codegen.SerializedFieldInfo{
@@ -403,8 +417,11 @@ func TestGenerateHTTPTS_ListPostsFunction(t *testing.T) {
 	if !strings.Contains(output, "export interface ListPostsResponse {") {
 		t.Error("should generate ListPostsResponse interface")
 	}
-	if !strings.Contains(output, "export async function listPosts(params?: { cursor?: string; limit?: number }): Promise<ListPostsResponse>") {
-		t.Error("should generate listPosts function with optional params")
+	if !strings.Contains(output, "export interface ListPostsParams {") {
+		t.Error("should generate ListPostsParams interface")
+	}
+	if !strings.Contains(output, "export async function listPosts(params?: ListPostsParams): Promise<ListPostsResponse>") {
+		t.Error("should generate listPosts function with optional typed params")
 	}
 	if !strings.Contains(output, "buildQuery(params") {
 		t.Error("listPosts should call buildQuery")
@@ -463,8 +480,11 @@ func TestGenerateHTTPTS_AdminListFunction(t *testing.T) {
 	}
 	output := string(result)
 
-	if !strings.Contains(output, "export async function adminListPosts(params?: { cursor?: string; limit?: number }): Promise<AdminListPostsResponse>") {
-		t.Error("should generate adminListPosts with optional params")
+	if !strings.Contains(output, "export interface AdminListPostsParams {") {
+		t.Error("should generate AdminListPostsParams interface")
+	}
+	if !strings.Contains(output, "export async function adminListPosts(params?: AdminListPostsParams): Promise<AdminListPostsResponse>") {
+		t.Error("should generate adminListPosts with optional typed params")
 	}
 	if !strings.Contains(output, "buildQuery(params") {
 		t.Error("adminListPosts should call buildQuery")
@@ -955,6 +975,340 @@ func TestDetectCRUDRole_EmptyPath(t *testing.T) {
 }
 
 // ─── singularPascalFromTable tests ───
+
+// ─── Query param tests (Step 7e) ───
+
+func TestGenerateHTTPTS_QueryParamsFromTags(t *testing.T) {
+	handlers := []codegen.SerializedHandlerInfo{
+		{
+			Method:      "GET",
+			Path:        "/posts",
+			FuncName:    "ListPosts",
+			PackagePath: "myapp/api/posts",
+			Request: &codegen.SerializedStructInfo{
+				Name: "ListPostsRequest",
+				Fields: []codegen.SerializedFieldInfo{
+					{Name: "Limit", Type: "int", JSONName: "limit", Required: false, Tags: map[string]string{"query": "limit"}},
+					{Name: "Cursor", Type: "*string", JSONName: "cursor", Required: false, Tags: map[string]string{"query": "cursor"}},
+				},
+			},
+			Response: &codegen.SerializedStructInfo{
+				Name: "ListPostsResponse",
+				Fields: []codegen.SerializedFieldInfo{
+					{Name: "Items", Type: "[]string", JSONName: "items", Required: true},
+				},
+			},
+		},
+	}
+
+	result, err := GenerateHTTPTypeScriptClient(handlers)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	output := string(result)
+
+	if !strings.Contains(output, "export interface ListPostsParams {") {
+		t.Error("should generate ListPostsParams interface from query tags")
+	}
+	if !strings.Contains(output, "limit?: number;") {
+		t.Error("ListPostsParams should contain limit?: number")
+	}
+	if !strings.Contains(output, "cursor?: string;") {
+		t.Error("ListPostsParams should contain cursor?: string")
+	}
+	if !strings.Contains(output, "params?: ListPostsParams") {
+		t.Error("listPosts function should accept params?: ListPostsParams")
+	}
+	if !strings.Contains(output, "buildQuery(params") {
+		t.Error("listPosts should call buildQuery")
+	}
+}
+
+func TestGenerateHTTPTS_CustomGetWithQueryParams(t *testing.T) {
+	// A custom GET handler (not matching CRUD list naming) with query:"q" field.
+	// Query params should still be generated (not CRUD-role-dependent).
+	handlers := []codegen.SerializedHandlerInfo{
+		{
+			Method:      "GET",
+			Path:        "/search",
+			FuncName:    "SearchItems",
+			PackagePath: "myapp/api/items",
+			Request: &codegen.SerializedStructInfo{
+				Name: "SearchItemsRequest",
+				Fields: []codegen.SerializedFieldInfo{
+					{Name: "Q", Type: "string", JSONName: "q", Required: false, Tags: map[string]string{"query": "q"}},
+				},
+			},
+			Response: &codegen.SerializedStructInfo{
+				Name: "SearchItemsResponse",
+				Fields: []codegen.SerializedFieldInfo{
+					{Name: "Results", Type: "[]string", JSONName: "results", Required: true},
+				},
+			},
+		},
+	}
+
+	result, err := GenerateHTTPTypeScriptClient(handlers)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	output := string(result)
+
+	if !strings.Contains(output, "export interface SearchItemsParams {") {
+		t.Error("should generate SearchItemsParams for custom GET handler with query tags")
+	}
+	if !strings.Contains(output, "params?: SearchItemsParams") {
+		t.Error("searchItems should accept params?: SearchItemsParams")
+	}
+	if !strings.Contains(output, "buildQuery(params") {
+		t.Error("searchItems should call buildQuery")
+	}
+}
+
+func TestGenerateHTTPTS_QueryParamsNotInRequestBody(t *testing.T) {
+	// A POST handler where one field has query:"tag" and another has no query tag.
+	// The Request interface should contain only the non-query field.
+	// The query field appears in a separate params type.
+	handlers := []codegen.SerializedHandlerInfo{
+		{
+			Method:      "POST",
+			Path:        "/posts",
+			FuncName:    "CreatePost",
+			PackagePath: "myapp/api/posts",
+			Request: &codegen.SerializedStructInfo{
+				Name: "CreatePostRequest",
+				Fields: []codegen.SerializedFieldInfo{
+					{Name: "Tag", Type: "string", JSONName: "tag", Required: false, Tags: map[string]string{"query": "tag"}},
+					{Name: "Title", Type: "string", JSONName: "title", Required: true},
+					{Name: "Body", Type: "string", JSONName: "body", Required: true},
+				},
+			},
+			Response: &codegen.SerializedStructInfo{
+				Name: "CreatePostResponse",
+				Fields: []codegen.SerializedFieldInfo{
+					{Name: "ID", Type: "string", JSONName: "id", Required: true},
+				},
+			},
+		},
+	}
+
+	result, err := GenerateHTTPTypeScriptClient(handlers)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	output := string(result)
+
+	// Query field should be in params type, not request body type
+	if !strings.Contains(output, "export interface CreatePostParams {") {
+		t.Error("should generate CreatePostParams for query-tagged field")
+	}
+
+	// Request body interface should NOT contain tag field
+	if strings.Contains(output, "export interface CreatePostRequest {") {
+		lines := strings.Split(output, "\n")
+		inReq := false
+		for _, line := range lines {
+			if strings.Contains(line, "export interface CreatePostRequest {") {
+				inReq = true
+				continue
+			}
+			if inReq {
+				if strings.Contains(line, "}") {
+					break
+				}
+				if strings.Contains(line, "tag") {
+					t.Error("CreatePostRequest should NOT contain query-tagged 'tag' field")
+				}
+			}
+		}
+	}
+}
+
+func TestGenerateHTTPTS_NoQueryParamsNoParamsArg(t *testing.T) {
+	// A GET handler with no query-tagged fields and no request body.
+	// Function signature should have no params argument, no buildQuery call
+	// in the generated function body.
+	handlers := []codegen.SerializedHandlerInfo{
+		{
+			Method:      "GET",
+			Path:        "/health",
+			FuncName:    "HealthCheck",
+			PackagePath: "myapp/api/health",
+			Response: &codegen.SerializedStructInfo{
+				Name: "HealthCheckResponse",
+				Fields: []codegen.SerializedFieldInfo{
+					{Name: "Status", Type: "string", JSONName: "status", Required: true},
+				},
+			},
+		},
+	}
+
+	result, err := GenerateHTTPTypeScriptClient(handlers)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	output := string(result)
+
+	// The generated function signature for healthCheck should NOT contain params
+	if strings.Contains(output, "export async function healthCheck(params?") {
+		t.Error("GET handler with no query tags should NOT have params argument in function signature")
+	}
+	// The generated function body should NOT contain buildQuery usage
+	// (the shared helper definition is fine — we check that the function body doesn't use it)
+	if strings.Contains(output, "HealthCheckParams") {
+		t.Error("GET handler with no query tags should NOT generate a Params interface")
+	}
+}
+
+func TestGenerateHTTPTS_QueryParamBoolType(t *testing.T) {
+	handlers := []codegen.SerializedHandlerInfo{
+		{
+			Method:      "GET",
+			Path:        "/posts",
+			FuncName:    "ListPosts",
+			PackagePath: "myapp/api/posts",
+			Request: &codegen.SerializedStructInfo{
+				Name: "ListPostsRequest",
+				Fields: []codegen.SerializedFieldInfo{
+					{Name: "IncludeDeleted", Type: "bool", JSONName: "include_deleted", Required: false, Tags: map[string]string{"query": "include_deleted"}},
+				},
+			},
+			Response: &codegen.SerializedStructInfo{
+				Name: "ListPostsResponse",
+				Fields: []codegen.SerializedFieldInfo{
+					{Name: "Items", Type: "[]string", JSONName: "items", Required: true},
+				},
+			},
+		},
+	}
+
+	result, err := GenerateHTTPTypeScriptClient(handlers)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	output := string(result)
+
+	if !strings.Contains(output, "include_deleted?: boolean;") {
+		t.Error("bool query field should map to boolean in TS params interface")
+	}
+}
+
+func TestGenerateHTTPTS_QueryParamIntTypes(t *testing.T) {
+	handlers := []codegen.SerializedHandlerInfo{
+		{
+			Method:      "GET",
+			Path:        "/posts",
+			FuncName:    "ListPosts",
+			PackagePath: "myapp/api/posts",
+			Request: &codegen.SerializedStructInfo{
+				Name: "ListPostsRequest",
+				Fields: []codegen.SerializedFieldInfo{
+					{Name: "Limit", Type: "int", JSONName: "limit", Required: false, Tags: map[string]string{"query": "limit"}},
+					{Name: "Page", Type: "int32", JSONName: "page", Required: false, Tags: map[string]string{"query": "page"}},
+					{Name: "Since", Type: "int64", JSONName: "since", Required: false, Tags: map[string]string{"query": "since"}},
+				},
+			},
+			Response: &codegen.SerializedStructInfo{
+				Name: "ListPostsResponse",
+				Fields: []codegen.SerializedFieldInfo{
+					{Name: "Items", Type: "[]string", JSONName: "items", Required: true},
+				},
+			},
+		},
+	}
+
+	result, err := GenerateHTTPTypeScriptClient(handlers)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	output := string(result)
+
+	if !strings.Contains(output, "limit?: number;") {
+		t.Error("int query field should map to number")
+	}
+	if !strings.Contains(output, "page?: number;") {
+		t.Error("int32 query field should map to number")
+	}
+	if !strings.Contains(output, "since?: number;") {
+		t.Error("int64 query field should map to number")
+	}
+}
+
+func TestGenerateHTTPTS_MixedPathAndQueryParams(t *testing.T) {
+	// Handler with :id path param + query:"page" — path param is a function arg,
+	// query params are in the params object.
+	handlers := []codegen.SerializedHandlerInfo{
+		{
+			Method:      "GET",
+			Path:        "/users/:id/posts",
+			FuncName:    "ListUserPosts",
+			PackagePath: "myapp/api/posts",
+			PathParams:  []codegen.SerializedPathParam{{Name: "id", Position: 1}},
+			Request: &codegen.SerializedStructInfo{
+				Name: "ListUserPostsRequest",
+				Fields: []codegen.SerializedFieldInfo{
+					{Name: "ID", Type: "string", JSONName: "id", Required: true, Tags: map[string]string{"path": "id"}},
+					{Name: "Page", Type: "int", JSONName: "page", Required: false, Tags: map[string]string{"query": "page"}},
+				},
+			},
+			Response: &codegen.SerializedStructInfo{
+				Name: "ListUserPostsResponse",
+				Fields: []codegen.SerializedFieldInfo{
+					{Name: "Items", Type: "[]string", JSONName: "items", Required: true},
+				},
+			},
+		},
+	}
+
+	result, err := GenerateHTTPTypeScriptClient(handlers)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	output := string(result)
+
+	// Path param should be a function arg
+	if !strings.Contains(output, "id: string") {
+		t.Error("path param 'id' should be a function argument")
+	}
+	// Query params should be in params object
+	if !strings.Contains(output, "params?: ListUserPostsParams") {
+		t.Error("query params should be in ListUserPostsParams")
+	}
+	if !strings.Contains(output, "buildQuery(params") {
+		t.Error("should call buildQuery for query params")
+	}
+}
+
+func TestGenerateHTTPTS_ListPostsBackwardsCompatible(t *testing.T) {
+	// The existing CRUD ListPosts handler (with query:"limit" and query:"cursor"
+	// from handlergen) produces the same function signature shape as before —
+	// params?: { ... } with cursor and limit.
+	handlers := makePostsHandlers()
+
+	result, err := GenerateHTTPTypeScriptClient(handlers)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	output := string(result)
+
+	// Should have a typed params interface
+	if !strings.Contains(output, "export interface ListPostsParams {") {
+		t.Error("should generate ListPostsParams interface")
+	}
+	if !strings.Contains(output, "cursor?: string;") {
+		t.Error("ListPostsParams should contain cursor?: string")
+	}
+	if !strings.Contains(output, "limit?: number;") {
+		t.Error("ListPostsParams should contain limit?: number")
+	}
+	// Function should accept params
+	if !strings.Contains(output, "params?: ListPostsParams") {
+		t.Error("listPosts should accept params?: ListPostsParams")
+	}
+	if !strings.Contains(output, "buildQuery(params") {
+		t.Error("listPosts should call buildQuery")
+	}
+}
 
 func TestSingularPascalFromTable(t *testing.T) {
 	tests := []struct {

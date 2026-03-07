@@ -68,7 +68,7 @@ If you use Nix, ShipQ can generate a `shell.nix` for your project:
 shipq nix
 ```
 
-This creates a `shell.nix` pinned to the latest stable nixpkgs, giving you a reproducible development environment with all required tooling.
+This creates a `shell.nix` pinned to the latest stable nixpkgs with an empty package list, giving you a reproducible starting point to add your own dependencies.
 
 ## Next Steps
 

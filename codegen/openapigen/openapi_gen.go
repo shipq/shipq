@@ -92,13 +92,18 @@ func buildOperation(h codegen.SerializedHandlerInfo) map[string]any {
 
 	// Path parameters
 	params := buildPathParameters(h)
+
+	// Query parameters
+	queryParams := buildQueryParameters(h)
+	params = append(params, queryParams...)
+
 	if len(params) > 0 {
 		op["parameters"] = params
 	}
 
 	// Request body for POST/PUT/PATCH
 	if codegen.MethodHasBody(h.Method) && h.Request != nil && len(h.Request.Fields) > 0 {
-		// Filter out path param fields from the request body
+		// Filter out path param and query param fields from the request body
 		bodyFields := filterBodyFields(h)
 		if len(bodyFields) > 0 {
 			schema := buildSchemaFromFields(bodyFields)
@@ -158,6 +163,28 @@ func buildPathParameters(h codegen.SerializedHandlerInfo) []map[string]any {
 	return params
 }
 
+// buildQueryParameters creates OpenAPI parameter objects from query-tagged fields.
+func buildQueryParameters(h codegen.SerializedHandlerInfo) []map[string]any {
+	queryFields := codegen.FilterQueryFields(h)
+	if len(queryFields) == 0 {
+		return nil
+	}
+
+	var params []map[string]any
+	for _, f := range queryFields {
+		queryName := f.Tags["query"]
+		param := map[string]any{
+			"name":     queryName,
+			"in":       "query",
+			"required": f.Required,
+			"schema":   goTypeToOpenAPISchema(f.Type),
+		}
+		params = append(params, param)
+	}
+
+	return params
+}
+
 // filterBodyFields returns request fields that are NOT path parameters.
 func filterBodyFields(h codegen.SerializedHandlerInfo) []codegen.SerializedFieldInfo {
 	if h.Request == nil {
@@ -176,6 +203,10 @@ func filterBodyFields(h codegen.SerializedHandlerInfo) []codegen.SerializedField
 			continue
 		}
 		if pathParamNames[strings.ToLower(f.JSONName)] || pathParamNames[strings.ToLower(f.Name)] {
+			continue
+		}
+		// Exclude fields that are query parameters
+		if f.Tags != nil && f.Tags["query"] != "" {
 			continue
 		}
 		bodyFields = append(bodyFields, f)

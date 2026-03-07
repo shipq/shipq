@@ -24,13 +24,13 @@ shipq init
 
 ### `shipq nix`
 
-Generate a `shell.nix` file pinned to the latest stable nixpkgs.
+Generate a `shell.nix` file pinned to the latest stable nixpkgs with an empty package list.
 
 ```sh
 shipq nix
 ```
 
-Provides a reproducible development environment with all required tooling via Nix.
+Provides a reproducible starting point to add your own dependencies via Nix.
 
 ---
 

@@ -1,22 +1,21 @@
 package nix
 
 import (
-	"crypto/sha256"
-	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"net/http"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"regexp"
 	"sort"
+	"strings"
 	"text/template"
 	"time"
 
 	"github.com/shipq/shipq/cli"
-	"github.com/shipq/shipq/inifile"
 	"github.com/shipq/shipq/project"
 )
 
@@ -35,10 +34,8 @@ type branch struct {
 
 // shellNixData holds the template variables for shell.nix generation.
 type shellNixData struct {
-	Rev            string
-	SHA256         string
-	DBPackages     string
-	WorkerPackages string
+	Rev    string
+	SHA256 string
 }
 
 // NixCmd is the exported entry point for the "shipq nix" command.
@@ -49,23 +46,7 @@ func NixCmd() {
 		cli.FatalErr("failed to find project", err)
 	}
 
-	// ── Step 2: Read project context from shipq.ini ─────────────────
-	shipqIniPath := filepath.Join(roots.ShipqRoot, project.ShipqIniFile)
-	ini, err := inifile.ParseFile(shipqIniPath)
-	if err != nil {
-		cli.FatalErr("failed to parse shipq.ini", err)
-	}
-
-	dialect := ini.Get("db", "dialect")
-	dbPackages := dbPackagesForDialect(dialect)
-
-	workerPackages := ""
-	workerDir := filepath.Join(roots.ShipqRoot, "cmd", "worker")
-	if dirExists(workerDir) {
-		workerPackages = "valkey\n      centrifugo\n      minio\n      minio-client"
-	}
-
-	// ── Step 3: Resolve latest stable nixpkgs ───────────────────────
+	// ── Step 2: Resolve latest stable nixpkgs ───────────────────────
 	client := &http.Client{Timeout: 60 * time.Second}
 
 	cli.Info("Fetching nixpkgs branches from GitHub...")
@@ -80,21 +61,20 @@ func NixCmd() {
 	}
 	cli.Infof("Latest stable branch: %s (rev %s)", stableName, rev[:12])
 
+	// ── Step 3: Compute the unpacked tarball hash via nix-prefetch-url ──
 	tarURL := fmt.Sprintf("https://github.com/%s/%s/archive/%s.tar.gz", owner, repo, rev)
 
-	cli.Info("Downloading tarball and computing SHA-256 (this may take a moment)...")
-	sri, err := sha256SRI(client, tarURL)
+	cli.Info("Prefetching tarball and computing hash (this may take a moment)...")
+	sri, err := nixPrefetchSRI(tarURL)
 	if err != nil {
-		cli.FatalErr("failed to compute SHA-256 of tarball", err)
+		cli.FatalErr("failed to compute hash of tarball", err)
 	}
 	cli.Infof("SRI hash: %s", sri)
 
 	// ── Step 4: Render and write shell.nix ──────────────────────────
 	data := shellNixData{
-		Rev:            rev,
-		SHA256:         sri,
-		DBPackages:     dbPackages,
-		WorkerPackages: workerPackages,
+		Rev:    rev,
+		SHA256: sri,
 	}
 
 	rendered, err := renderShellNix(data)
@@ -204,62 +184,51 @@ func atoi2(s string) int {
 	return int(s[0]-'0')*10 + int(s[1]-'0')
 }
 
-// sha256SRI downloads the URL and returns its SHA-256 as an SRI string
-// (e.g. "sha256-<base64>").
-func sha256SRI(client *http.Client, url string) (string, error) {
-	sum, err := sha256OfURL(client, url)
+// ─── Hash helpers ───────────────────────────────────────────────────
+
+// nixPrefetchSRI uses nix-prefetch-url --unpack to download and hash the
+// unpacked tarball contents (matching what fetchTarball expects), then
+// converts the resulting Nix base32 hash to SRI format via nix-hash --to-sri.
+func nixPrefetchSRI(tarURL string) (string, error) {
+	nix32, err := nixPrefetchURL(tarURL)
 	if err != nil {
 		return "", err
 	}
-	return "sha256-" + base64.StdEncoding.EncodeToString(sum[:]), nil
-}
 
-// sha256OfURL downloads the content at url and returns its SHA-256 digest.
-func sha256OfURL(client *http.Client, url string) ([32]byte, error) {
-	resp, err := client.Get(url)
+	sri, err := nixHashToSRI(nix32)
 	if err != nil {
-		return [32]byte{}, err
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != 200 {
-		return [32]byte{}, fmt.Errorf("download failed: %s", resp.Status)
+		return "", err
 	}
 
-	h := sha256.New()
-	if _, err := io.Copy(h, resp.Body); err != nil {
-		return [32]byte{}, err
-	}
-
-	var sum [32]byte
-	copy(sum[:], h.Sum(nil))
-	return sum, nil
+	return sri, nil
 }
 
-// ─── Project-context helpers ────────────────────────────────────────
-
-// dbPackagesForDialect returns the Nix package name(s) for the given dialect.
-func dbPackagesForDialect(dialect string) string {
-	switch dialect {
-	case "postgres":
-		return "postgresql_18"
-	case "mysql":
-		return "mysql80"
-	case "sqlite":
-		return "sqlite"
-	default:
-		// If dialect is empty or unknown, default to sqlite
-		return "sqlite"
-	}
-}
-
-// dirExists returns true if the path is an existing directory.
-func dirExists(path string) bool {
-	info, err := os.Stat(path)
+// nixPrefetchURL shells out to nix-prefetch-url --unpack --type sha256 and
+// returns the Nix base32 hash of the unpacked archive contents.
+var nixPrefetchURL = func(tarURL string) (string, error) {
+	cmd := exec.Command("nix-prefetch-url", "--unpack", "--type", "sha256", tarURL)
+	out, err := cmd.Output()
 	if err != nil {
-		return false
+		if exitErr, ok := err.(*exec.ExitError); ok {
+			return "", fmt.Errorf("nix-prefetch-url failed: %s\n%s", err, string(exitErr.Stderr))
+		}
+		return "", fmt.Errorf("nix-prefetch-url failed: %w", err)
 	}
-	return info.IsDir()
+	return strings.TrimSpace(string(out)), nil
+}
+
+// nixHashToSRI shells out to nix-hash --to-sri --type sha256 to convert
+// a Nix base32 hash into SRI format (e.g. "sha256-<base64>").
+var nixHashToSRI = func(nix32 string) (string, error) {
+	cmd := exec.Command("nix-hash", "--to-sri", "--type", "sha256", nix32)
+	out, err := cmd.Output()
+	if err != nil {
+		if exitErr, ok := err.(*exec.ExitError); ok {
+			return "", fmt.Errorf("nix-hash failed: %s\n%s", err, string(exitErr.Stderr))
+		}
+		return "", fmt.Errorf("nix-hash failed: %w", err)
+	}
+	return strings.TrimSpace(string(out)), nil
 }
 
 // ─── Template ───────────────────────────────────────────────────────
@@ -271,46 +240,13 @@ const shellNixTemplate = `let
   }) {};
 in
 pkgs.mkShell {
-  packages = with pkgs; [
-    # ── Always included ──
-    go
-    git
-    git-lfs
-    glab
-    gh
-    opentofu
-    goreman
-    tmux
-    lf
-    tokei
-    nix
-    nixfmt-rfc-style
-    ripgrep
-    just
-    neovim
-    nodejs_24
-    awscli2
-
-    # ── Database ──
-    {{ .DBPackages }}
-{{- if .WorkerPackages }}
-
-    # ── Workers / Centrifugo ──
-    {{ .WorkerPackages }}
-{{- end }}
+  packages = [
   ];
 
   shellHook = ''
     export PROJECT_ROOT="$(pwd)"
     export PORT=8080
     export GO_ENV=development
-{{- if eq .DBPackages "postgresql_18" }}
-    export DATABASE_URL="postgres://localhost:5432/dev?sslmode=disable"
-{{- else if eq .DBPackages "mysql80" }}
-    export DATABASE_URL="mysql://root@localhost:3306/dev"
-{{- else }}
-    export DATABASE_URL="sqlite://dev.db"
-{{- end }}
     export COOKIE_SECRET=supersecret
     unset DEVELOPER_DIR
   '';

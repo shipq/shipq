@@ -12,6 +12,28 @@ type Config struct {
 	DatabaseURL string
 }
 
+// ServerConfig holds the [server] section from shipq.ini.
+type ServerConfig struct {
+	// StripPrefix is the URL prefix to strip from incoming requests.
+	// For example, "/api" means a request to "/api/posts" is routed as "/posts".
+	StripPrefix string
+}
+
+// ParseServerConfig extracts the [server] section from a parsed INI file.
+// Returns nil when the [server] section is absent.
+func ParseServerConfig(ini *inifile.File) *ServerConfig {
+	section := ini.Section("server")
+	if section == nil {
+		return nil
+	}
+
+	stripPrefix := strings.TrimRight(strings.TrimSpace(section.Get("strip_prefix")), "/")
+
+	return &ServerConfig{
+		StripPrefix: stripPrefix,
+	}
+}
+
 // LLMConfig holds the [llm] section from shipq.ini.
 type LLMConfig struct {
 	// ToolPkgs is the list of Go import paths for packages that export

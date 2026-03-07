@@ -1,10 +1,7 @@
 package nix
 
 import (
-	"crypto/sha256"
-	"encoding/base64"
-	"net/http"
-	"net/http/httptest"
+	"errors"
 	"strings"
 	"testing"
 )
@@ -120,62 +117,81 @@ func TestPickLatestStable(t *testing.T) {
 	}
 }
 
-func TestSha256SRIFormat(t *testing.T) {
-	// Serve a known payload and verify the SRI string.
-	payload := "hello nixpkgs"
-	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Write([]byte(payload))
-	}))
-	defer ts.Close()
+func TestNixPrefetchSRI(t *testing.T) {
+	// Save originals and restore after test.
+	origPrefetch := nixPrefetchURL
+	origHashToSRI := nixHashToSRI
+	t.Cleanup(func() {
+		nixPrefetchURL = origPrefetch
+		nixHashToSRI = origHashToSRI
+	})
 
-	client := ts.Client()
-	sri, err := sha256SRI(client, ts.URL)
-	if err != nil {
-		t.Fatalf("sha256SRI returned error: %v", err)
-	}
-
-	// Must start with "sha256-"
-	if !strings.HasPrefix(sri, "sha256-") {
-		t.Fatalf("SRI string %q does not start with sha256-", sri)
-	}
-
-	// Decode the base64 portion and compare to expected digest.
-	b64Part := strings.TrimPrefix(sri, "sha256-")
-	decoded, err := base64.StdEncoding.DecodeString(b64Part)
-	if err != nil {
-		t.Fatalf("base64 decode failed: %v", err)
-	}
-	if len(decoded) != sha256.Size {
-		t.Fatalf("decoded hash length = %d, want %d", len(decoded), sha256.Size)
-	}
-
-	expected := sha256.Sum256([]byte(payload))
-	for i := range decoded {
-		if decoded[i] != expected[i] {
-			t.Fatalf("hash mismatch at byte %d", i)
+	t.Run("success", func(t *testing.T) {
+		nixPrefetchURL = func(tarURL string) (string, error) {
+			if !strings.Contains(tarURL, "deadbeef") {
+				t.Errorf("unexpected tarURL: %s", tarURL)
+			}
+			return "0v6bd1xk8a2aal83karlvc853x44dg1n4nk08jg3dajqyy0s98np", nil
 		}
-	}
-}
+		nixHashToSRI = func(nix32 string) (string, error) {
+			if nix32 != "0v6bd1xk8a2aal83karlvc853x44dg1n4nk08jg3dajqyy0s98np" {
+				t.Errorf("unexpected nix32 hash: %s", nix32)
+			}
+			return "sha256-16KkgfdYqjaeRGBaYsNrhPRRENs0qzkQVUooNHtoy2w=", nil
+		}
 
-func TestSha256SRIServerError(t *testing.T) {
-	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusInternalServerError)
-	}))
-	defer ts.Close()
+		sri, err := nixPrefetchSRI("https://github.com/NixOS/nixpkgs/archive/deadbeef.tar.gz")
+		if err != nil {
+			t.Fatalf("nixPrefetchSRI returned error: %v", err)
+		}
+		if !strings.HasPrefix(sri, "sha256-") {
+			t.Errorf("SRI string %q does not start with sha256-", sri)
+		}
+		if sri != "sha256-16KkgfdYqjaeRGBaYsNrhPRRENs0qzkQVUooNHtoy2w=" {
+			t.Errorf("unexpected SRI: %s", sri)
+		}
+	})
 
-	client := ts.Client()
-	_, err := sha256SRI(client, ts.URL)
-	if err == nil {
-		t.Fatal("expected error for 500 response, got nil")
-	}
+	t.Run("prefetch error", func(t *testing.T) {
+		nixPrefetchURL = func(tarURL string) (string, error) {
+			return "", errors.New("nix-prefetch-url not found")
+		}
+		nixHashToSRI = func(nix32 string) (string, error) {
+			t.Fatal("nixHashToSRI should not be called when prefetch fails")
+			return "", nil
+		}
+
+		_, err := nixPrefetchSRI("https://example.com/bad.tar.gz")
+		if err == nil {
+			t.Fatal("expected error, got nil")
+		}
+		if !strings.Contains(err.Error(), "nix-prefetch-url not found") {
+			t.Errorf("unexpected error: %v", err)
+		}
+	})
+
+	t.Run("hash-to-sri error", func(t *testing.T) {
+		nixPrefetchURL = func(tarURL string) (string, error) {
+			return "somehash", nil
+		}
+		nixHashToSRI = func(nix32 string) (string, error) {
+			return "", errors.New("nix-hash not found")
+		}
+
+		_, err := nixPrefetchSRI("https://example.com/test.tar.gz")
+		if err == nil {
+			t.Fatal("expected error, got nil")
+		}
+		if !strings.Contains(err.Error(), "nix-hash not found") {
+			t.Errorf("unexpected error: %v", err)
+		}
+	})
 }
 
 func TestTemplateRender(t *testing.T) {
 	data := shellNixData{
-		Rev:            "abc123def456",
-		SHA256:         "sha256-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
-		DBPackages:     "postgresql_18",
-		WorkerPackages: "valkey\n      centrifugo\n      minio\n      minio-client",
+		Rev:    "abc123def456",
+		SHA256: "sha256-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
 	}
 
 	rendered, err := renderShellNix(data)
@@ -196,33 +212,36 @@ func TestTemplateRender(t *testing.T) {
 		t.Errorf("rendered template missing SHA256 %q", data.SHA256)
 	}
 
-	// Verify all always-included packages are present.
-	alwaysPackages := []string{
-		"go", "git", "git-lfs", "glab", "gh", "opentofu", "goreman",
-		"tmux", "lf", "tokei", "nix", "nixfmt-rfc-style", "ripgrep",
+	// Verify sha256 attribute is present in fetchTarball.
+	if !strings.Contains(rendered, "sha256 = ") {
+		t.Error("rendered template missing sha256 attribute in fetchTarball")
+	}
+
+	// Verify packages list is empty.
+	if strings.Contains(rendered, "packages = with pkgs") {
+		t.Error("rendered template should not use 'with pkgs' (empty package list)")
+	}
+	if !strings.Contains(rendered, "packages = [") {
+		t.Error("rendered template missing 'packages = ['")
+	}
+
+	// Verify no hardcoded packages appear.
+	hardcodedPackages := []string{
+		"go", "git-lfs", "glab", "gh", "opentofu", "goreman",
+		"tmux", "lf", "tokei", "nixfmt-rfc-style", "ripgrep",
 		"just", "neovim", "nodejs_24", "awscli2",
+		"postgresql_18", "mysql80", "sqlite",
+		"valkey", "centrifugo", "minio", "minio-client",
 	}
-	for _, pkg := range alwaysPackages {
-		if !strings.Contains(rendered, pkg) {
-			t.Errorf("rendered template missing always-included package %q", pkg)
+	for _, pkg := range hardcodedPackages {
+		if strings.Contains(rendered, pkg) {
+			t.Errorf("rendered template should not contain package %q", pkg)
 		}
 	}
 
-	// Verify database package.
-	if !strings.Contains(rendered, "postgresql_18") {
-		t.Error("rendered template missing DB package postgresql_18")
-	}
-
-	// Verify worker packages.
-	for _, pkg := range []string{"valkey", "centrifugo", "minio", "minio-client"} {
-		if !strings.Contains(rendered, pkg) {
-			t.Errorf("rendered template missing worker package %q", pkg)
-		}
-	}
-
-	// Verify postgres DATABASE_URL appears.
-	if !strings.Contains(rendered, "postgres://") {
-		t.Error("rendered template missing postgres DATABASE_URL")
+	// Verify no DATABASE_URL is set (no DB-specific logic).
+	if strings.Contains(rendered, "DATABASE_URL") {
+		t.Error("rendered template should not contain DATABASE_URL")
 	}
 
 	// Verify shellHook is present.
@@ -251,78 +270,6 @@ func TestTemplateRender(t *testing.T) {
 	}
 	if !strings.Contains(rendered, "pkgs.mkShell") {
 		t.Error("rendered template missing 'pkgs.mkShell'")
-	}
-}
-
-func TestTemplateRenderMySQL(t *testing.T) {
-	data := shellNixData{
-		Rev:            "deadbeef",
-		SHA256:         "sha256-TEST=",
-		DBPackages:     "mysql80",
-		WorkerPackages: "",
-	}
-
-	rendered, err := renderShellNix(data)
-	if err != nil {
-		t.Fatalf("renderShellNix returned error: %v", err)
-	}
-
-	if !strings.Contains(rendered, "mysql80") {
-		t.Error("rendered template missing mysql80 package")
-	}
-	if !strings.Contains(rendered, "mysql://") {
-		t.Error("rendered template missing mysql DATABASE_URL")
-	}
-
-	// Worker packages section should NOT appear.
-	if strings.Contains(rendered, "valkey") {
-		t.Error("rendered template should not include worker packages")
-	}
-	if strings.Contains(rendered, "Workers / Centrifugo") {
-		t.Error("rendered template should not include worker section header")
-	}
-}
-
-func TestTemplateRenderSQLite(t *testing.T) {
-	data := shellNixData{
-		Rev:            "deadbeef",
-		SHA256:         "sha256-TEST=",
-		DBPackages:     "sqlite",
-		WorkerPackages: "",
-	}
-
-	rendered, err := renderShellNix(data)
-	if err != nil {
-		t.Fatalf("renderShellNix returned error: %v", err)
-	}
-
-	if !strings.Contains(rendered, "sqlite") {
-		t.Error("rendered template missing sqlite package")
-	}
-	if !strings.Contains(rendered, "sqlite://") {
-		t.Error("rendered template missing sqlite DATABASE_URL")
-	}
-}
-
-func TestDbPackagesForDialect(t *testing.T) {
-	tests := []struct {
-		dialect string
-		want    string
-	}{
-		{"postgres", "postgresql_18"},
-		{"mysql", "mysql80"},
-		{"sqlite", "sqlite"},
-		{"", "sqlite"},
-		{"unknown", "sqlite"},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.dialect, func(t *testing.T) {
-			got := dbPackagesForDialect(tt.dialect)
-			if got != tt.want {
-				t.Errorf("dbPackagesForDialect(%q) = %q, want %q", tt.dialect, got, tt.want)
-			}
-		})
 	}
 }
 

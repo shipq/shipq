@@ -1977,3 +1977,50 @@ func TestEndToEnd_HealthEndpoint(t *testing.T) {
 		})
 	}
 }
+
+// -------------------------------------------------------------------------
+// Scenario: Query param pagination (auth-protected items resource)
+// -------------------------------------------------------------------------
+
+func scenarioQueryParamPagination(t *testing.T, shipq string, db dbConfig) {
+	t.Helper()
+
+	proj := setupProject(t, shipq, "shipq-e2e-queryparam", db)
+	dbEnv := []string{"DATABASE_URL=" + proj.DatabaseURL}
+	tEnv := testEnvForProject(t, proj.CleanDir, db)
+
+	// Auth
+	t.Log("Generating auth...")
+	runWithEnv(t, proj.CleanDir, dbEnv, shipq, "auth")
+	run(t, proj.CleanDir, "go", "mod", "tidy")
+
+	// Items resource (auth-protected, so pagination tests run with auth)
+	t.Log("Creating items resource...")
+	runWithEnv(t, proj.CleanDir, dbEnv,
+		shipq, "migrate", "new", "items", "name:string", "description:string")
+	runWithEnv(t, proj.CleanDir, dbEnv,
+		shipq, "resource", "items", "all")
+	run(t, proj.CleanDir, "go", "mod", "tidy")
+
+	// Run ALL tests — this includes the generated TestListItems_Pagination
+	// which exercises Limit and Cursor query params through the test client,
+	// the server-side query param binding, and the handler logic.
+	t.Log("Running all tests (includes pagination)...")
+	runWithEnv(t, proj.CleanDir, tEnv, "go", "test", "./...", "-v", "-count=1")
+	t.Log("All tests including pagination passed!")
+}
+
+func TestEndToEnd_QueryParamPagination(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping end-to-end test in short mode")
+	}
+
+	repoRoot := shipqRepoRoot(t)
+	shipq := buildShipq(t, repoRoot)
+
+	for _, db := range allDBConfigs(t) {
+		t.Run(db.Name, func(t *testing.T) {
+			scenarioQueryParamPagination(t, shipq, db)
+		})
+	}
+}

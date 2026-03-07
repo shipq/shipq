@@ -62,11 +62,11 @@ func TestHTTPTestClient_Integration_GeneratesCompilableCode(t *testing.T) {
 			},
 		},
 		{
-			Method:     "GET",
-			Path:       "/accounts",
-			FuncName:   "ListAccounts",
+			Method:      "GET",
+			Path:        "/accounts",
+			FuncName:    "ListAccounts",
 			PackagePath: "example.com/app/api/accounts",
-			PathParams: []codegen.SerializedPathParam{},
+			PathParams:  []codegen.SerializedPathParam{},
 			Request: &codegen.SerializedStructInfo{
 				Name:    "ListAccountsRequest",
 				Package: "example.com/app/api/accounts",
@@ -263,11 +263,11 @@ func TestHTTPTestClient_Integration_ResourceDetection(t *testing.T) {
 			},
 		},
 		{
-			Method:     "GET",
-			Path:       "/users/:id",
-			FuncName:   "GetUser",
+			Method:      "GET",
+			Path:        "/users/:id",
+			FuncName:    "GetUser",
 			PackagePath: "example.com/app/users",
-			PathParams: []codegen.SerializedPathParam{{Name: "id", Position: 1}},
+			PathParams:  []codegen.SerializedPathParam{{Name: "id", Position: 1}},
 			Request: &codegen.SerializedStructInfo{
 				Name:   "GetUserRequest",
 				Fields: []codegen.SerializedFieldInfo{{Name: "ID", Type: "string", JSONName: "id", Required: true}},
@@ -278,11 +278,11 @@ func TestHTTPTestClient_Integration_ResourceDetection(t *testing.T) {
 			},
 		},
 		{
-			Method:     "GET",
-			Path:       "/users",
-			FuncName:   "ListUsers",
+			Method:      "GET",
+			Path:        "/users",
+			FuncName:    "ListUsers",
 			PackagePath: "example.com/app/users",
-			PathParams: []codegen.SerializedPathParam{},
+			PathParams:  []codegen.SerializedPathParam{},
 			Request: &codegen.SerializedStructInfo{
 				Name:   "ListUsersRequest",
 				Fields: []codegen.SerializedFieldInfo{},
@@ -293,11 +293,11 @@ func TestHTTPTestClient_Integration_ResourceDetection(t *testing.T) {
 			},
 		},
 		{
-			Method:     "PUT",
-			Path:       "/users/:id",
-			FuncName:   "UpdateUser",
+			Method:      "PUT",
+			Path:        "/users/:id",
+			FuncName:    "UpdateUser",
 			PackagePath: "example.com/app/users",
-			PathParams: []codegen.SerializedPathParam{{Name: "id", Position: 1}},
+			PathParams:  []codegen.SerializedPathParam{{Name: "id", Position: 1}},
 			Request: &codegen.SerializedStructInfo{
 				Name:   "UpdateUserRequest",
 				Fields: []codegen.SerializedFieldInfo{{Name: "ID", Type: "string", JSONName: "id", Required: true}, {Name: "Name", Type: "string", JSONName: "name"}},
@@ -308,11 +308,11 @@ func TestHTTPTestClient_Integration_ResourceDetection(t *testing.T) {
 			},
 		},
 		{
-			Method:     "DELETE",
-			Path:       "/users/:id",
-			FuncName:   "DeleteUser",
+			Method:      "DELETE",
+			Path:        "/users/:id",
+			FuncName:    "DeleteUser",
 			PackagePath: "example.com/app/users",
-			PathParams: []codegen.SerializedPathParam{{Name: "id", Position: 1}},
+			PathParams:  []codegen.SerializedPathParam{{Name: "id", Position: 1}},
 			Request: &codegen.SerializedStructInfo{
 				Name:   "DeleteUserRequest",
 				Fields: []codegen.SerializedFieldInfo{{Name: "ID", Type: "string", JSONName: "id", Required: true}},
@@ -380,11 +380,11 @@ func TestHTTPTestClient_Integration_ResourceDetection(t *testing.T) {
 func TestHTTPTestClient_Integration_MultiplePackages(t *testing.T) {
 	handlers := []codegen.SerializedHandlerInfo{
 		{
-			Method:     "GET",
-			Path:       "/users/:id",
-			FuncName:   "GetUser",
+			Method:      "GET",
+			Path:        "/users/:id",
+			FuncName:    "GetUser",
 			PackagePath: "example.com/app/api/users",
-			PathParams: []codegen.SerializedPathParam{{Name: "id", Position: 1}},
+			PathParams:  []codegen.SerializedPathParam{{Name: "id", Position: 1}},
 			Request: &codegen.SerializedStructInfo{
 				Name:   "GetUserRequest",
 				Fields: []codegen.SerializedFieldInfo{{Name: "ID", Type: "string", JSONName: "id"}},
@@ -395,11 +395,11 @@ func TestHTTPTestClient_Integration_MultiplePackages(t *testing.T) {
 			},
 		},
 		{
-			Method:     "GET",
-			Path:       "/posts/:id",
-			FuncName:   "GetPost",
+			Method:      "GET",
+			Path:        "/posts/:id",
+			FuncName:    "GetPost",
 			PackagePath: "example.com/app/api/posts",
-			PathParams: []codegen.SerializedPathParam{{Name: "id", Position: 1}},
+			PathParams:  []codegen.SerializedPathParam{{Name: "id", Position: 1}},
 			Request: &codegen.SerializedStructInfo{
 				Name:   "GetPostRequest",
 				Fields: []codegen.SerializedFieldInfo{{Name: "ID", Type: "string", JSONName: "id"}},
@@ -410,11 +410,11 @@ func TestHTTPTestClient_Integration_MultiplePackages(t *testing.T) {
 			},
 		},
 		{
-			Method:     "GET",
-			Path:       "/comments/:id",
-			FuncName:   "GetComment",
+			Method:      "GET",
+			Path:        "/comments/:id",
+			FuncName:    "GetComment",
 			PackagePath: "example.com/app/api/comments",
-			PathParams: []codegen.SerializedPathParam{{Name: "id", Position: 1}},
+			PathParams:  []codegen.SerializedPathParam{{Name: "id", Position: 1}},
 			Request: &codegen.SerializedStructInfo{
 				Name:   "GetCommentRequest",
 				Fields: []codegen.SerializedFieldInfo{{Name: "ID", Type: "string", JSONName: "id"}},
@@ -531,6 +531,98 @@ func TestHTTPTestClient_Integration_PathParamTypes(t *testing.T) {
 
 // TestHTTPTestClient_Integration_EmptyHandlers tests that empty handler list
 // produces valid code.
+func TestHTTPTestClient_Integration_QueryParamCompilableCode(t *testing.T) {
+	handlers := []codegen.SerializedHandlerInfo{
+		{
+			Method:      "POST",
+			Path:        "/accounts",
+			FuncName:    "CreateAccount",
+			PackagePath: "example.com/app/api/accounts",
+			PathParams:  []codegen.SerializedPathParam{},
+			Request: &codegen.SerializedStructInfo{
+				Name:    "CreateAccountRequest",
+				Package: "example.com/app/api/accounts",
+				Fields: []codegen.SerializedFieldInfo{
+					{Name: "Name", Type: "string", JSONName: "name", Required: true},
+					{Name: "Email", Type: "string", JSONName: "email", Required: true},
+				},
+			},
+			Response: &codegen.SerializedStructInfo{
+				Name:    "AccountResponse",
+				Package: "example.com/app/api/accounts",
+				Fields: []codegen.SerializedFieldInfo{
+					{Name: "PublicID", Type: "string", JSONName: "public_id"},
+					{Name: "Name", Type: "string", JSONName: "name"},
+				},
+			},
+		},
+		{
+			Method:      "GET",
+			Path:        "/accounts",
+			FuncName:    "ListAccounts",
+			PackagePath: "example.com/app/api/accounts",
+			PathParams:  []codegen.SerializedPathParam{},
+			Request: &codegen.SerializedStructInfo{
+				Name:    "ListAccountsRequest",
+				Package: "example.com/app/api/accounts",
+				Fields: []codegen.SerializedFieldInfo{
+					{Name: "Limit", Type: "int", JSONName: "limit", Required: false, Tags: map[string]string{"query": "limit"}},
+					{Name: "Cursor", Type: "*string", JSONName: "cursor", Required: false, Tags: map[string]string{"query": "cursor"}},
+				},
+			},
+			Response: &codegen.SerializedStructInfo{
+				Name:    "ListAccountsResponse",
+				Package: "example.com/app/api/accounts",
+				Fields: []codegen.SerializedFieldInfo{
+					{Name: "Items", Type: "[]AccountResponse", JSONName: "items"},
+					{Name: "NextCursor", Type: "*string", JSONName: "next_cursor"},
+				},
+			},
+		},
+	}
+
+	cfg := HTTPTestClientGenConfig{
+		ModulePath: "example.com/app",
+		Handlers:   handlers,
+		OutputPkg:  "api",
+	}
+
+	files, err := GenerateHTTPTestClient(cfg)
+	if err != nil {
+		t.Fatalf("GenerateHTTPTestClient() error = %v", err)
+	}
+
+	// Verify all files are valid Go
+	for _, f := range files {
+		_, err = parser.ParseFile(token.NewFileSet(), "", f.Content, parser.AllErrors)
+		if err != nil {
+			t.Errorf("%s is not valid Go: %v\n%s", f.RelPath, err, string(f.Content))
+		}
+	}
+
+	// Verify ListAccounts method exists
+	all := allContent(files)
+	if !strings.Contains(all, "func (c *AccountsTestClient) ListAccounts") {
+		t.Error("missing ListAccounts method")
+	}
+
+	// Verify net/url import is present (needed for query params)
+	resFile := findResourceTestClient(files, "accounts")
+	if resFile == nil {
+		t.Fatal("missing accounts resource test client file")
+	}
+	codeStr := string(resFile.Content)
+
+	if !strings.Contains(codeStr, `"net/url"`) {
+		t.Error("missing \"net/url\" import for query param support")
+	}
+
+	// Verify url.Values appears in the generated code
+	if !strings.Contains(codeStr, "url.Values") {
+		t.Error("missing url.Values in generated code for query params")
+	}
+}
+
 func TestHTTPTestClient_Integration_EmptyHandlers(t *testing.T) {
 	cfg := HTTPTestClientGenConfig{
 		ModulePath: "example.com/app",

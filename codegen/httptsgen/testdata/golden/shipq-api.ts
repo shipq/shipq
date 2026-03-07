@@ -84,6 +84,11 @@ export interface CreateCommentResponse {
   created_at: string;
 }
 
+export interface ListCommentsParams {
+  cursor?: string;
+  limit?: number;
+}
+
 export interface ListCommentsResponse {
   items: any[];
   next_cursor?: string;
@@ -95,7 +100,7 @@ export async function createComment(req: CreateCommentRequest): Promise<CreateCo
 }
 
 /** GET /comments */
-export async function listComments(params?: { cursor?: string; limit?: number }): Promise<ListCommentsResponse> {
+export async function listComments(params?: ListCommentsParams): Promise<ListCommentsResponse> {
   const query = buildQuery(params as Record<string, unknown>);
   return request<ListCommentsResponse>("GET", `/comments${query}`);
 }
@@ -106,6 +111,11 @@ export async function softDeleteComment(id: string): Promise<void> {
 }
 
 // ─── posts ───
+
+export interface AdminListPostsParams {
+  cursor?: string;
+  limit?: number;
+}
 
 export interface AdminListPostsResponse {
   items: any[];
@@ -134,6 +144,11 @@ export interface GetPostResponse {
   created_at: string;
 }
 
+export interface ListPostsParams {
+  cursor?: string;
+  limit?: number;
+}
+
 export interface ListPostsResponse {
   items: any[];
   next_cursor?: string;
@@ -156,7 +171,7 @@ export interface UpdatePostResponse {
 }
 
 /** GET /admin/posts */
-export async function adminListPosts(params?: { cursor?: string; limit?: number }): Promise<AdminListPostsResponse> {
+export async function adminListPosts(params?: AdminListPostsParams): Promise<AdminListPostsResponse> {
   const query = buildQuery(params as Record<string, unknown>);
   return request<AdminListPostsResponse>("GET", `/admin/posts${query}`);
 }
@@ -172,7 +187,7 @@ export async function getPost(id: string): Promise<GetPostResponse> {
 }
 
 /** GET /posts */
-export async function listPosts(params?: { cursor?: string; limit?: number }): Promise<ListPostsResponse> {
+export async function listPosts(params?: ListPostsParams): Promise<ListPostsResponse> {
   const query = buildQuery(params as Record<string, unknown>);
   return request<ListPostsResponse>("GET", `/posts${query}`);
 }

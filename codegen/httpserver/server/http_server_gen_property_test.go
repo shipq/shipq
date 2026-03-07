@@ -10,6 +10,9 @@ import (
 	"github.com/shipq/shipq/proptest"
 )
 
+// queryParamTypes lists Go types that can appear as query parameters.
+var queryParamTypes = []string{"string", "*string", "int", "int64", "int32", "uint64", "bool"}
+
 // goKeywords is the set of Go reserved keywords that cannot be used as identifiers.
 var goKeywords = map[string]bool{
 	"break": true, "case": true, "chan": true, "const": true, "continue": true,
@@ -151,12 +154,21 @@ func generateRandomStructInfo(g *proptest.Generator, name string) *codegen.Seria
 
 	for i := 0; i < numFields; i++ {
 		fieldName := nonKeywordIdentifier(g, 15)
-		fields[i] = codegen.SerializedFieldInfo{
+		fieldType := types[g.Intn(len(types))]
+		field := codegen.SerializedFieldInfo{
 			Name:     fieldName,
-			Type:     types[g.Intn(len(types))],
+			Type:     fieldType,
 			JSONName: strings.ToLower(fieldName),
 			Required: g.Bool(),
 		}
+		// 30% chance of adding a query tag
+		if g.BoolWithProb(0.3) {
+			qType := queryParamTypes[g.Intn(len(queryParamTypes))]
+			field.Type = qType
+			queryName := g.IdentifierLower(8)
+			field.Tags = map[string]string{"query": queryName}
+		}
+		fields[i] = field
 	}
 
 	return &codegen.SerializedStructInfo{
@@ -524,6 +536,166 @@ func TestProperty_GenerateHTTPServer_StatusCodes(t *testing.T) {
 
 		if !strings.Contains(codeStr, "http.StatusCreated") {
 			t.Log("POST handler should use http.StatusCreated")
+			return false
+		}
+
+		return true
+	})
+}
+
+// TestProperty_GenerateHTTPServer_QueryParamBindingValidGo tests that generated code
+// with query-tagged fields is always valid Go.
+func TestProperty_GenerateHTTPServer_QueryParamBindingValidGo(t *testing.T) {
+	proptest.QuickCheck(t, "query param binding produces valid Go", func(g *proptest.Generator) bool {
+		// Generate handlers where some fields have query tags (generateRandomStructInfo now does this)
+		handlers := generateRandomMultiPkgHandlers(g)
+
+		cfg := HTTPServerGenConfig{
+			ModulePath: "example.com/app",
+			Handlers:   handlers,
+			OutputPkg:  "api",
+		}
+
+		files, err := GenerateHTTPServer(cfg)
+		if err != nil {
+			t.Logf("GenerateHTTPServer error: %v", err)
+			return false
+		}
+
+		for _, f := range files {
+			_, err = parser.ParseFile(token.NewFileSet(), "", f.Content, parser.AllErrors)
+			if err != nil {
+				t.Logf("Parse error in %s: %v\nCode:\n%s", f.RelPath, err, string(f.Content))
+				return false
+			}
+		}
+		return true
+	})
+}
+
+// TestProperty_GenerateHTTPServer_QueryFieldsNeverInJSONDecode tests that for GET handlers
+// with only query-tagged request fields, json.NewDecoder(r.Body) must be absent.
+func TestProperty_GenerateHTTPServer_QueryFieldsNeverInJSONDecode(t *testing.T) {
+	proptest.Check(t, "query-only GET has no JSON decode", proptest.Config{NumTrials: 50}, func(g *proptest.Generator) bool {
+		// Build a GET handler where ALL request fields have query tags
+		numFields := g.IntRange(1, 4)
+		fields := make([]codegen.SerializedFieldInfo, numFields)
+		for i := 0; i < numFields; i++ {
+			fieldName := nonKeywordIdentifier(g, 12)
+			qType := queryParamTypes[g.Intn(len(queryParamTypes))]
+			queryName := g.IdentifierLower(8)
+			fields[i] = codegen.SerializedFieldInfo{
+				Name:     fieldName,
+				Type:     qType,
+				JSONName: strings.ToLower(fieldName),
+				Tags:     map[string]string{"query": queryName},
+			}
+		}
+
+		handler := codegen.SerializedHandlerInfo{
+			Method:      "GET",
+			Path:        "/things",
+			FuncName:    "ListThings",
+			PackagePath: "example.com/app/api/things",
+			PathParams:  []codegen.SerializedPathParam{},
+			Request: &codegen.SerializedStructInfo{
+				Name:    "ListThingsRequest",
+				Package: "example.com/app/api/things",
+				Fields:  fields,
+			},
+			Response: &codegen.SerializedStructInfo{
+				Name:    "ListThingsResponse",
+				Package: "example.com/app/api/things",
+				Fields:  []codegen.SerializedFieldInfo{{Name: "Items", Type: "[]string", JSONName: "items"}},
+			},
+		}
+
+		cfg := HTTPServerGenConfig{
+			ModulePath: "example.com/app",
+			Handlers:   []codegen.SerializedHandlerInfo{handler},
+			OutputPkg:  "api",
+		}
+
+		files, err := GenerateHTTPServer(cfg)
+		if err != nil {
+			t.Logf("GenerateHTTPServer error: %v", err)
+			return false
+		}
+
+		resFile := findResourceHTTP(files, "things")
+		if resFile == nil {
+			t.Log("Missing things resource file")
+			return false
+		}
+		codeStr := string(resFile.Content)
+
+		if strings.Contains(codeStr, "json.NewDecoder(r.Body)") {
+			t.Log("GET handler with only query fields should NOT have json.NewDecoder(r.Body)")
+			return false
+		}
+
+		return true
+	})
+}
+
+// TestProperty_GenerateHTTPServer_QueryFieldsAlwaysBound tests that for every handler
+// with query-tagged fields, the generated code contains r.URL.Query().
+func TestProperty_GenerateHTTPServer_QueryFieldsAlwaysBound(t *testing.T) {
+	proptest.Check(t, "query fields always bound", proptest.Config{NumTrials: 50}, func(g *proptest.Generator) bool {
+		methods := []string{"GET", "POST", "PUT", "PATCH", "DELETE"}
+		method := methods[g.Intn(len(methods))]
+
+		// Build a handler with at least one query-tagged field
+		qType := queryParamTypes[g.Intn(len(queryParamTypes))]
+		queryName := g.IdentifierLower(8)
+		fieldName := nonKeywordIdentifier(g, 12)
+
+		handler := codegen.SerializedHandlerInfo{
+			Method:      method,
+			Path:        "/items",
+			FuncName:    "DoItems",
+			PackagePath: "example.com/app/api/items",
+			PathParams:  []codegen.SerializedPathParam{},
+			Request: &codegen.SerializedStructInfo{
+				Name:    "DoItemsRequest",
+				Package: "example.com/app/api/items",
+				Fields: []codegen.SerializedFieldInfo{
+					{
+						Name:     fieldName,
+						Type:     qType,
+						JSONName: strings.ToLower(fieldName),
+						Tags:     map[string]string{"query": queryName},
+					},
+				},
+			},
+			Response: &codegen.SerializedStructInfo{
+				Name:    "DoItemsResponse",
+				Package: "example.com/app/api/items",
+				Fields:  []codegen.SerializedFieldInfo{{Name: "OK", Type: "bool", JSONName: "ok"}},
+			},
+		}
+
+		cfg := HTTPServerGenConfig{
+			ModulePath: "example.com/app",
+			Handlers:   []codegen.SerializedHandlerInfo{handler},
+			OutputPkg:  "api",
+		}
+
+		files, err := GenerateHTTPServer(cfg)
+		if err != nil {
+			t.Logf("GenerateHTTPServer error: %v", err)
+			return false
+		}
+
+		resFile := findResourceHTTP(files, "items")
+		if resFile == nil {
+			t.Log("Missing items resource file")
+			return false
+		}
+		codeStr := string(resFile.Content)
+
+		if !strings.Contains(codeStr, "r.URL.Query()") {
+			t.Logf("Handler with query-tagged field must contain r.URL.Query()\nCode:\n%s", codeStr)
 			return false
 		}
 

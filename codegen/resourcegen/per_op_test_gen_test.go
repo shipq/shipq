@@ -9,6 +9,101 @@ import (
 	"github.com/shipq/shipq/db/portsql/ddl"
 )
 
+// ─── List test gen tests (Step 7i) ───
+
+func TestGenerateListTest_UsesLimitAndCursor(t *testing.T) {
+	cfg := PerOpTestGenConfig{
+		ModulePath: "myapp",
+		TableName:  "posts",
+		Table: ddl.Table{
+			Name: "posts",
+			Columns: []ddl.ColumnDefinition{
+				{Name: "id", Type: ddl.BigintType, PrimaryKey: true},
+				{Name: "public_id", Type: ddl.StringType},
+				{Name: "name", Type: ddl.StringType},
+				{Name: "created_at", Type: ddl.DatetimeType},
+				{Name: "updated_at", Type: ddl.DatetimeType},
+				{Name: "deleted_at", Type: ddl.DatetimeType, Nullable: true},
+			},
+		},
+		Schema:          map[string]ddl.Table{},
+		RequireAuth:     false,
+		Dialect:         "sqlite",
+		TestDatabaseURL: "file::memory:?cache=shared",
+	}
+
+	result, err := GenerateListTest(cfg)
+	if err != nil {
+		t.Fatalf("GenerateListTest failed: %v", err)
+	}
+
+	code := string(result)
+
+	// Verify valid Go
+	_, err = parser.ParseFile(token.NewFileSet(), "", result, parser.AllErrors)
+	if err != nil {
+		t.Fatalf("generated code is not valid Go: %v\n%s", err, code)
+	}
+
+	// Assert that the generated test code exercises query params via Limit: 2
+	if !strings.Contains(code, "Limit: 2") {
+		t.Error("expected Limit: 2 in generated list test to exercise query param pagination")
+	}
+
+	// Assert that the generated test code passes the cursor for page 2
+	if !strings.Contains(code, "Cursor: page1.NextCursor") {
+		t.Error("expected Cursor: page1.NextCursor in generated list test to exercise cursor query param")
+	}
+}
+
+func TestGenerateListTest_PaginationIsFunctional(t *testing.T) {
+	cfg := PerOpTestGenConfig{
+		ModulePath: "myapp",
+		TableName:  "items",
+		Table: ddl.Table{
+			Name: "items",
+			Columns: []ddl.ColumnDefinition{
+				{Name: "id", Type: ddl.BigintType, PrimaryKey: true},
+				{Name: "public_id", Type: ddl.StringType},
+				{Name: "title", Type: ddl.StringType},
+				{Name: "created_at", Type: ddl.DatetimeType},
+				{Name: "updated_at", Type: ddl.DatetimeType},
+				{Name: "deleted_at", Type: ddl.DatetimeType, Nullable: true},
+			},
+		},
+		Schema:          map[string]ddl.Table{},
+		RequireAuth:     false,
+		Dialect:         "sqlite",
+		TestDatabaseURL: "file::memory:?cache=shared",
+	}
+
+	result, err := GenerateListTest(cfg)
+	if err != nil {
+		t.Fatalf("GenerateListTest failed: %v", err)
+	}
+
+	code := string(result)
+
+	// Verify valid Go
+	_, err = parser.ParseFile(token.NewFileSet(), "", result, parser.AllErrors)
+	if err != nil {
+		t.Fatalf("generated code is not valid Go: %v\n%s", err, code)
+	}
+
+	// Assert that the generated test checks page 2 has at least 1 item
+	if !strings.Contains(code, "len(page2.Items) < 1") {
+		t.Error("expected page 2 check for at least 1 item in generated pagination test")
+	}
+
+	// Assert that the generated test checks for no overlap between pages
+	if !strings.Contains(code, "page1IDs") {
+		t.Error("expected page overlap check (page1IDs) in generated pagination test")
+	}
+	if !strings.Contains(code, "appears on both page 1 and page 2") {
+		t.Error("expected overlap error message in generated pagination test")
+	}
+}
+
 func TestGenerateCreateTest_JSONColumn_ImportsEncodingJSON(t *testing.T) {
 	cfg := PerOpTestGenConfig{
 		ModulePath: "myapp",

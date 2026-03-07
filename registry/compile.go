@@ -73,6 +73,10 @@ type CompileConfig struct {
 	// Channels holds the serialized channel metadata from the channel compiler.
 	// Only populated when WorkersEnabled is true.
 	Channels []codegen.SerializedChannelInfo
+	// StripPrefix is the URL prefix to strip from incoming requests.
+	// For example, "/api" means a request to "/api/posts" is routed as "/posts".
+	// Parsed from [server] strip_prefix in shipq.ini.
+	StripPrefix string
 	// TSFrameworks lists which framework integrations to generate.
 	// Valid entries are "react" and "svelte". Parsed from the comma-separated
 	// [typescript] framework value in shipq.ini. Defaults to ["react"].
