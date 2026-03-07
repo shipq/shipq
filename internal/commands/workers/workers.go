@@ -14,24 +14,19 @@ import (
 	"github.com/shipq/shipq/codegen/channelcompile"
 	"github.com/shipq/shipq/codegen/channelgen"
 	"github.com/shipq/shipq/codegen/embed"
-	configpkg "github.com/shipq/shipq/codegen/httpserver/config"
 	"github.com/shipq/shipq/codegen/llmgen"
 	codegenMigrate "github.com/shipq/shipq/codegen/migrate"
 	"github.com/shipq/shipq/dburl"
 	"github.com/shipq/shipq/inifile"
 	"github.com/shipq/shipq/internal/commands/db"
 	"github.com/shipq/shipq/internal/commands/migrate/up"
+	"github.com/shipq/shipq/internal/commands/shared"
 	shipqdag "github.com/shipq/shipq/internal/dag"
 	"github.com/shipq/shipq/project"
 	"github.com/shipq/shipq/registry"
 )
 
-const (
-	// DefaultMigrationsDir is the default directory for migration files.
-	DefaultMigrationsDir = "migrations"
-)
-
-// jobResultsMigrationSuffix is used to detect existing job_results migrations.
+// jobResultsMigrationSuffixes is used to detect existing job_results migrations.
 var jobResultsMigrationSuffixes = []string{
 	"_job_results.go",
 }
@@ -80,7 +75,7 @@ func WorkersCmd() {
 
 	migrationsDir := ini.Get("db", "migrations")
 	if migrationsDir == "" {
-		migrationsDir = DefaultMigrationsDir
+		migrationsDir = shared.DefaultMigrationsDir
 	}
 	migrationsPath := filepath.Join(roots.ShipqRoot, migrationsDir)
 
@@ -94,9 +89,9 @@ func WorkersCmd() {
 
 	scopeColumn := ini.Get("db", "scope")
 	hasTenancy := scopeColumn != ""
-	hasAuth := ini.Section("auth") != nil
+	hasAuth := shared.IsFeatureEnabled(ini, "auth")
 
-	filesEnabled := ini.Section("files") != nil
+	filesEnabled := shared.IsFeatureEnabled(ini, "files")
 
 	cli.Infof("Project: %s", importPrefix)
 
@@ -150,7 +145,7 @@ func WorkersCmd() {
 		cli.FatalErr("failed to create migrations directory", err)
 	}
 
-	if jobResultsMigrationExists(migrationsPath) {
+	if shared.MigrationsExist(migrationsPath, jobResultsMigrationSuffixes, false) {
 		fmt.Println("  job_results migration already exists, skipping")
 		fmt.Println("")
 		fmt.Println("Running migrations (in case they haven't been applied)...")
@@ -180,60 +175,13 @@ func WorkersCmd() {
 	fmt.Println("")
 	fmt.Println("Generating config package...")
 
-	// Read OAuth flags from [auth]
-	oauthGoogle := strings.ToLower(ini.Get("auth", "oauth_google")) == "true"
-	oauthGitHub := strings.ToLower(ini.Get("auth", "oauth_github")) == "true"
-
-	// Read email flag
-	emailEnabled := ini.Section("email") != nil
-
-	devDefaults := configpkg.DevDefaults{
-		DatabaseURL:          databaseURL,
-		Port:                 "8080",
-		CookieSecret:         ini.Get("auth", "cookie_secret"),
-		RedisURL:             redisURL,
-		CentrifugoAPIURL:     centrifugoAPIURL,
-		CentrifugoAPIKey:     centrifugoAPIKey,
-		CentrifugoHMACSecret: centrifugoHMACSecret,
-		CentrifugoWSURL:      centrifugoWSURL,
+	workersCfgShared := &shared.ProjectConfig{
+		GoModRoot:   roots.GoModRoot,
+		ShipqRoot:   roots.ShipqRoot,
+		DatabaseURL: databaseURL,
+		Dialect:     dialect,
 	}
-	if filesEnabled {
-		devDefaults.S3Bucket = ini.Get("files", "s3_bucket")
-		devDefaults.S3Region = ini.Get("files", "s3_region")
-		devDefaults.S3Endpoint = ini.Get("files", "s3_endpoint")
-		devDefaults.AWSAccessKeyID = ini.Get("files", "aws_access_key_id")
-		devDefaults.AWSSecretAccessKey = ini.Get("files", "aws_secret_access_key")
-		devDefaults.MaxUploadSizeMB = ini.Get("files", "max_upload_size_mb")
-		devDefaults.MultipartThresholdMB = ini.Get("files", "multipart_threshold_mb")
-	}
-
-	// Populate OAuth dev defaults
-	if oauthGoogle || oauthGitHub {
-		devDefaults.OAuthRedirectURL = ini.Get("auth", "oauth_redirect_url")
-		devDefaults.OAuthRedirectBaseURL = ini.Get("auth", "oauth_redirect_base_url")
-	}
-
-	// Populate email dev defaults
-	if emailEnabled {
-		devDefaults.SMTPHost = ini.Get("email", "smtp_host")
-		devDefaults.SMTPPort = ini.Get("email", "smtp_port")
-		devDefaults.SMTPUsername = ini.Get("email", "smtp_username")
-		devDefaults.SMTPPassword = ini.Get("email", "smtp_password")
-		devDefaults.AppURL = ini.Get("email", "app_url")
-	}
-
-	if err := registry.GenerateConfigEarlyWithFullOptions(registry.ConfigEarlyOptions{
-		ShipqRoot:      roots.ShipqRoot,
-		GoModRoot:      roots.GoModRoot,
-		Dialect:        dialect,
-		FilesEnabled:   filesEnabled,
-		WorkersEnabled: true,
-		OAuthGoogle:    oauthGoogle,
-		OAuthGitHub:    oauthGitHub,
-		EmailEnabled:   emailEnabled,
-		DevDefaults:    devDefaults,
-		CustomEnvVars:  registry.ParseCustomEnvVars(ini),
-	}); err != nil {
+	if err := shared.RegenerateConfig(ini, workersCfgShared, shared.WithWorkersEnabled()); err != nil {
 		cli.FatalErr("failed to generate config", err)
 	}
 	fmt.Println("  Generated config/config.go")
@@ -281,15 +229,9 @@ func WorkersCmd() {
 	// ── Step 7: Run go mod tidy ──────────────────────────────────────
 
 	fmt.Println("")
-	fmt.Println("Running go mod tidy...")
-
-	tidyCmd := exec.Command("go", "mod", "tidy")
-	tidyCmd.Dir = roots.GoModRoot
-	if tidyOut, tidyErr := tidyCmd.CombinedOutput(); tidyErr != nil {
-		fmt.Fprintf(os.Stderr, "error: go mod tidy failed: %v\n%s\n", tidyErr, tidyOut)
-		os.Exit(1)
+	if err := shared.GoModTidy(roots.GoModRoot); err != nil {
+		cli.FatalErr("go mod tidy failed", err)
 	}
-	fmt.Println("  go mod tidy done")
 
 	// ── Step 8: Generate querydefs and compile queries ───────────────
 	// This must happen before compiling the handler registry (which builds
@@ -543,27 +485,6 @@ func generateRandomKey() (string, error) {
 		return "", err
 	}
 	return hex.EncodeToString(b), nil
-}
-
-// jobResultsMigrationExists checks if the job_results migration already exists.
-func jobResultsMigrationExists(migrationsPath string) bool {
-	entries, err := os.ReadDir(migrationsPath)
-	if err != nil {
-		return false
-	}
-
-	for _, entry := range entries {
-		if entry.IsDir() {
-			continue
-		}
-		name := entry.Name()
-		for _, suffix := range jobResultsMigrationSuffixes {
-			if len(name) > len(suffix) && name[len(name)-len(suffix):] == suffix {
-				return true
-			}
-		}
-	}
-	return false
 }
 
 // extractRedisAddr extracts host:port from a redis URL like "redis://localhost:6379".

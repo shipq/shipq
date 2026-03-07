@@ -4,50 +4,17 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"strings"
 
 	"github.com/shipq/shipq/codegen"
 	"github.com/shipq/shipq/codegen/authgen"
 	"github.com/shipq/shipq/dburl"
 	"github.com/shipq/shipq/inifile"
 	"github.com/shipq/shipq/internal/commands/db"
+	"github.com/shipq/shipq/internal/commands/shared"
 	shipqdag "github.com/shipq/shipq/internal/dag"
 	"github.com/shipq/shipq/project"
 	"github.com/shipq/shipq/registry"
 )
-
-// authMigrationSuffixes are the file suffixes used to detect existing auth migrations.
-var authMigrationSuffixes = []string{
-	"_organizations.go",
-	"_accounts.go",
-	"_organization_users.go",
-	"_sessions.go",
-	"_roles.go",
-	"_account_roles.go",
-	"_role_actions.go",
-}
-
-// authMigrationsExist checks if all auth migration files exist.
-func authMigrationsExist(migrationsPath string) bool {
-	entries, err := os.ReadDir(migrationsPath)
-	if err != nil {
-		return false
-	}
-
-	found := make(map[string]bool)
-	for _, entry := range entries {
-		if entry.IsDir() {
-			continue
-		}
-		name := entry.Name()
-		for _, suffix := range authMigrationSuffixes {
-			if len(name) > len(suffix) && name[len(name)-len(suffix):] == suffix {
-				found[suffix] = true
-			}
-		}
-	}
-	return len(found) == len(authMigrationSuffixes)
-}
 
 // SignupCmd handles "shipq signup" - generates the signup handler and route.
 // This must be run after "shipq auth" has been configured.
@@ -84,7 +51,7 @@ func SignupCmd() {
 	migrationsPath := filepath.Join(roots.ShipqRoot, migrationsDir)
 
 	// Check that auth migrations exist
-	if !authMigrationsExist(migrationsPath) {
+	if !shared.AuthMigrationsExist(migrationsPath) {
 		fmt.Fprintln(os.Stderr, "error: auth migrations not found. Run `shipq auth` first.")
 		os.Exit(1)
 	}
@@ -103,11 +70,11 @@ func SignupCmd() {
 	}
 
 	// Detect whether email has been configured
-	emailEnabled := ini.Section("email") != nil
+	emailEnabled := shared.IsFeatureEnabled(ini, "email")
 
 	// Detect enabled OAuth providers BEFORE generating signup files, so that
 	// register.go includes RegisterOAuthRoutes when OAuth is configured.
-	oauthProviders := enabledOAuthProvidersFromIni(ini)
+	oauthProviders := shared.EnabledOAuthProviders(ini)
 
 	authCfg := authgen.AuthGenConfig{
 		ModulePath:      modulePath,
@@ -209,16 +176,4 @@ func SignupCmd() {
 	fmt.Println("")
 	fmt.Println("New route:")
 	fmt.Println("  POST /signup - Create a new account")
-}
-
-// enabledOAuthProvidersFromIni reads [auth] oauth_<name> flags from the ini
-// file and returns the list of enabled provider names.
-func enabledOAuthProvidersFromIni(ini *inifile.File) []string {
-	var providers []string
-	for _, name := range authgen.AllProviderNames() {
-		if strings.ToLower(ini.Get("auth", "oauth_"+name)) == "true" {
-			providers = append(providers, name)
-		}
-	}
-	return providers
 }

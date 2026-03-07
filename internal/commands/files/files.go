@@ -3,85 +3,17 @@ package files
 import (
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
-	"strings"
 	"time"
 
 	"github.com/shipq/shipq/codegen"
-	configpkg "github.com/shipq/shipq/codegen/httpserver/config"
 	codegenMigrate "github.com/shipq/shipq/codegen/migrate"
-	"github.com/shipq/shipq/dburl"
 	"github.com/shipq/shipq/inifile"
-	"github.com/shipq/shipq/internal/commands/db"
 	"github.com/shipq/shipq/internal/commands/migrate/up"
+	"github.com/shipq/shipq/internal/commands/shared"
 	shipqdag "github.com/shipq/shipq/internal/dag"
 	"github.com/shipq/shipq/project"
-	"github.com/shipq/shipq/registry"
 )
-
-const (
-	// DefaultMigrationsDir is the default directory for migration files.
-	DefaultMigrationsDir = "migrations"
-)
-
-// ProjectConfig holds the loaded project configuration.
-type ProjectConfig struct {
-	GoModRoot      string
-	ShipqRoot      string
-	ModulePath     string
-	MigrationsPath string
-	DatabaseURL    string
-	Dialect        string
-	ScopeColumn    string
-}
-
-// loadProjectConfig finds project roots and loads configuration.
-func loadProjectConfig() (*ProjectConfig, error) {
-	roots, err := project.FindProjectRoots()
-	if err != nil {
-		return nil, err
-	}
-
-	moduleInfo, err := codegen.GetModuleInfo(roots.GoModRoot, roots.ShipqRoot)
-	if err != nil {
-		return nil, err
-	}
-	modulePath := moduleInfo.FullImportPath("")
-
-	shipqIniPath := filepath.Join(roots.ShipqRoot, project.ShipqIniFile)
-	ini, err := inifile.ParseFile(shipqIniPath)
-	if err != nil {
-		return nil, err
-	}
-
-	migrationsDir := ini.Get("db", "migrations")
-	if migrationsDir == "" {
-		migrationsDir = DefaultMigrationsDir
-	}
-
-	migrationsPath := filepath.Join(roots.ShipqRoot, migrationsDir)
-
-	databaseURL := ini.Get("db", "database_url")
-	dialect := ""
-	if databaseURL != "" {
-		if d, err := dburl.InferDialectFromDBUrl(databaseURL); err == nil {
-			dialect = d
-		}
-	}
-
-	scopeColumn := ini.Get("db", "scope")
-
-	return &ProjectConfig{
-		GoModRoot:      roots.GoModRoot,
-		ShipqRoot:      roots.ShipqRoot,
-		ModulePath:     modulePath,
-		MigrationsPath: migrationsPath,
-		DatabaseURL:    databaseURL,
-		Dialect:        dialect,
-		ScopeColumn:    scopeColumn,
-	}, nil
-}
 
 // filesMigrationSuffixes are the file suffixes used to detect existing files migrations.
 var filesMigrationSuffixes = []string{
@@ -89,31 +21,9 @@ var filesMigrationSuffixes = []string{
 	"_file_access.go",
 }
 
-// filesMigrationsExist checks if all files migration files already exist.
-func filesMigrationsExist(migrationsPath string) bool {
-	entries, err := os.ReadDir(migrationsPath)
-	if err != nil {
-		return false
-	}
-
-	found := make(map[string]bool)
-	for _, entry := range entries {
-		if entry.IsDir() {
-			continue
-		}
-		name := entry.Name()
-		for _, suffix := range filesMigrationSuffixes {
-			if len(name) > len(suffix) && name[len(name)-len(suffix):] == suffix {
-				found[suffix] = true
-			}
-		}
-	}
-	return len(found) == len(filesMigrationSuffixes)
-}
-
 // FilesCmd handles "shipq files" - generates file upload system.
 func FilesCmd() {
-	cfg, err := loadProjectConfig()
+	cfg, err := shared.LoadProjectConfig()
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "error: not in a shipq project (%v)\n", err)
 		os.Exit(1)
@@ -172,7 +82,7 @@ func FilesCmd() {
 	fmt.Println("  Set [files] config in shipq.ini")
 
 	// STEP 2: Generate migrations
-	if filesMigrationsExist(cfg.MigrationsPath) {
+	if shared.MigrationsExist(cfg.MigrationsPath, filesMigrationSuffixes, true) {
 		fmt.Println("")
 		fmt.Println("Files migrations already exist, skipping migration generation...")
 		fmt.Println("")
@@ -226,61 +136,8 @@ func FilesCmd() {
 		fmt.Fprintf(os.Stderr, "error: failed to re-read shipq.ini: %v\n", iniErr)
 		os.Exit(1)
 	}
-	workersEnabled := ini.Section("workers") != nil
-	devDefaults := configpkg.DevDefaults{
-		DatabaseURL:          cfg.DatabaseURL,
-		Port:                 "8080",
-		CookieSecret:         ini.Get("auth", "cookie_secret"),
-		S3Bucket:             ini.Get("files", "s3_bucket"),
-		S3Region:             ini.Get("files", "s3_region"),
-		S3Endpoint:           ini.Get("files", "s3_endpoint"),
-		AWSAccessKeyID:       ini.Get("files", "aws_access_key_id"),
-		AWSSecretAccessKey:   ini.Get("files", "aws_secret_access_key"),
-		MaxUploadSizeMB:      ini.Get("files", "max_upload_size_mb"),
-		MultipartThresholdMB: ini.Get("files", "multipart_threshold_mb"),
-	}
-	if workersEnabled {
-		devDefaults.RedisURL = ini.Get("workers", "redis_url")
-		devDefaults.CentrifugoAPIURL = ini.Get("workers", "centrifugo_api_url")
-		devDefaults.CentrifugoAPIKey = ini.Get("workers", "centrifugo_api_key")
-		devDefaults.CentrifugoHMACSecret = ini.Get("workers", "centrifugo_hmac_secret")
-		devDefaults.CentrifugoWSURL = ini.Get("workers", "centrifugo_ws_url")
-	}
 
-	// Read OAuth flags from [auth]
-	oauthGoogle := strings.ToLower(ini.Get("auth", "oauth_google")) == "true"
-	oauthGitHub := strings.ToLower(ini.Get("auth", "oauth_github")) == "true"
-
-	// Read email flag
-	emailEnabled := ini.Section("email") != nil
-
-	// Populate OAuth dev defaults
-	if oauthGoogle || oauthGitHub {
-		devDefaults.OAuthRedirectURL = ini.Get("auth", "oauth_redirect_url")
-		devDefaults.OAuthRedirectBaseURL = ini.Get("auth", "oauth_redirect_base_url")
-	}
-
-	// Populate email dev defaults
-	if emailEnabled {
-		devDefaults.SMTPHost = ini.Get("email", "smtp_host")
-		devDefaults.SMTPPort = ini.Get("email", "smtp_port")
-		devDefaults.SMTPUsername = ini.Get("email", "smtp_username")
-		devDefaults.SMTPPassword = ini.Get("email", "smtp_password")
-		devDefaults.AppURL = ini.Get("email", "app_url")
-	}
-
-	if err := registry.GenerateConfigEarlyWithFullOptions(registry.ConfigEarlyOptions{
-		ShipqRoot:      cfg.ShipqRoot,
-		GoModRoot:      cfg.GoModRoot,
-		Dialect:        cfg.Dialect,
-		FilesEnabled:   true,
-		WorkersEnabled: workersEnabled,
-		OAuthGoogle:    oauthGoogle,
-		OAuthGitHub:    oauthGitHub,
-		EmailEnabled:   emailEnabled,
-		DevDefaults:    devDefaults,
-		CustomEnvVars:  registry.ParseCustomEnvVars(ini),
-	}); err != nil {
+	if err := shared.RegenerateConfig(ini, cfg, shared.WithFilesEnabled()); err != nil {
 		fmt.Fprintf(os.Stderr, "error: failed to generate config: %v\n", err)
 		os.Exit(1)
 	}
@@ -342,29 +199,14 @@ func FilesCmd() {
 	}
 	fmt.Println("  Created: querydefs/managed_files/queries.go")
 
-	// STEP 6: Run go mod tidy
+	// STEP 6: Run go mod tidy, compile queries, and build handler registry
 	fmt.Println("")
-	fmt.Println("Running go mod tidy...")
-	tidyCmd := exec.Command("go", "mod", "tidy")
-	tidyCmd.Dir = cfg.GoModRoot
-	if tidyOut, tidyErr := tidyCmd.CombinedOutput(); tidyErr != nil {
-		fmt.Fprintf(os.Stderr, "error: go mod tidy failed: %v\n%s\n", tidyErr, tidyOut)
+	if err := shared.GoModTidy(cfg.GoModRoot); err != nil {
+		fmt.Fprintf(os.Stderr, "error: %v\n", err)
 		os.Exit(1)
 	}
-	fmt.Println("  go mod tidy done")
 
-	// STEP 7: Compile queries
-	fmt.Println("")
-	fmt.Println("Compiling queries...")
-	db.DBCompileCmd()
-
-	// STEP 8: Compile handler registry
-	fmt.Println("")
-	fmt.Println("Compiling handler registry...")
-	if err := registry.Run(cfg.ShipqRoot, cfg.GoModRoot); err != nil {
-		fmt.Fprintf(os.Stderr, "error: failed to compile registry: %v\n", err)
-		os.Exit(1)
-	}
+	shared.CompileAndBuildRegistryOrExit(cfg.ShipqRoot, cfg.GoModRoot, false)
 
 	// STEP 9: Generate TypeScript upload helpers
 	fmt.Println("")

@@ -14,6 +14,7 @@ import (
 	"github.com/shipq/shipq/dburl"
 	"github.com/shipq/shipq/inifile"
 	"github.com/shipq/shipq/internal/commands/db"
+	"github.com/shipq/shipq/internal/commands/shared"
 	shipqdag "github.com/shipq/shipq/internal/dag"
 	"github.com/shipq/shipq/project"
 	registrypkg "github.com/shipq/shipq/registry"
@@ -66,7 +67,7 @@ func WorkersCompileCmd() {
 
 	scopeColumn := ini.Get("db", "scope")
 	hasTenancy := scopeColumn != ""
-	hasAuth := ini.Section("auth") != nil
+	hasAuth := shared.IsFeatureEnabled(ini, "auth")
 
 	databaseURL := ini.Get("db", "database_url")
 	dialect := ""

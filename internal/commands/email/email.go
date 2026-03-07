@@ -3,68 +3,21 @@ package email
 import (
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
-	"strings"
 	"time"
 
 	"github.com/shipq/shipq/codegen"
 	"github.com/shipq/shipq/codegen/authgen"
-	configpkg "github.com/shipq/shipq/codegen/httpserver/config"
 	codegenMigrate "github.com/shipq/shipq/codegen/migrate"
 	"github.com/shipq/shipq/dburl"
 	"github.com/shipq/shipq/inifile"
 	"github.com/shipq/shipq/internal/commands/db"
 	"github.com/shipq/shipq/internal/commands/migrate/up"
+	"github.com/shipq/shipq/internal/commands/shared"
 	shipqdag "github.com/shipq/shipq/internal/dag"
 	"github.com/shipq/shipq/project"
 	"github.com/shipq/shipq/registry"
 )
-
-// authMigrationSuffixes are the file suffixes used to detect existing auth migrations.
-var authMigrationSuffixes = []string{
-	"_organizations.go",
-	"_accounts.go",
-	"_organization_users.go",
-	"_sessions.go",
-	"_roles.go",
-	"_account_roles.go",
-	"_role_actions.go",
-}
-
-// authMigrationsExist checks if all auth migration files exist.
-func authMigrationsExist(migrationsPath string) bool {
-	entries, err := os.ReadDir(migrationsPath)
-	if err != nil {
-		return false
-	}
-
-	found := make(map[string]bool)
-	for _, entry := range entries {
-		if entry.IsDir() {
-			continue
-		}
-		name := entry.Name()
-		for _, suffix := range authMigrationSuffixes {
-			if len(name) > len(suffix) && name[len(name)-len(suffix):] == suffix {
-				found[suffix] = true
-			}
-		}
-	}
-	return len(found) == len(authMigrationSuffixes)
-}
-
-// enabledOAuthProvidersFromIni reads [auth] oauth_<name> flags from the ini
-// file and returns the list of enabled provider names.
-func enabledOAuthProvidersFromIni(ini *inifile.File) []string {
-	var providers []string
-	for _, name := range authgen.AllProviderNames() {
-		if strings.ToLower(ini.Get("auth", "oauth_"+name)) == "true" {
-			providers = append(providers, name)
-		}
-	}
-	return providers
-}
 
 // EmailCmd handles "shipq email" — adds email verification, password reset,
 // and SMTP support to an existing auth system.
@@ -132,7 +85,7 @@ func EmailCmd() {
 	migrationsPath := filepath.Join(roots.ShipqRoot, migrationsDir)
 
 	// Check that auth migrations exist
-	if !authMigrationsExist(migrationsPath) {
+	if !shared.AuthMigrationsExist(migrationsPath) {
 		fmt.Fprintln(os.Stderr, "error: auth migrations not found. Run `shipq auth` first.")
 		os.Exit(1)
 	}
@@ -242,15 +195,12 @@ func EmailCmd() {
 		os.Exit(1)
 	}
 
-	oauthProviders := enabledOAuthProvidersFromIni(ini)
+	oauthProviders := shared.EnabledOAuthProviders(ini)
 
 	// Detect whether signup has been run (signup.go exists)
 	authDir := filepath.Join(roots.ShipqRoot, "api", "auth")
 	signupPath := filepath.Join(authDir, "signup.go")
-	signupEnabled := false
-	if _, statErr := os.Stat(signupPath); statErr == nil {
-		signupEnabled = true
-	}
+	signupEnabled := shared.IsSignupEnabled(roots.ShipqRoot)
 
 	authCfg := authgen.AuthGenConfig{
 		ModulePath:      modulePath,
@@ -424,12 +374,7 @@ func EmailCmd() {
 	fmt.Println("")
 	fmt.Println("Regenerating auth register (email routes)...")
 
-	var registerCode []byte
-	if signupEnabled {
-		registerCode, err = authgen.GenerateSignupRegister(authCfg)
-	} else {
-		registerCode, err = authgen.GenerateRegister(authCfg)
-	}
+	registerCode, err := authgen.GenerateRegisterFile(authCfg)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "error: failed to generate register.go: %v\n", err)
 		os.Exit(1)
@@ -473,58 +418,14 @@ func EmailCmd() {
 	fmt.Println("")
 	fmt.Println("Regenerating config package...")
 
-	filesEnabled := ini.Section("files") != nil
-	workersEnabled := ini.Section("workers") != nil
-	oauthGoogle := strings.ToLower(ini.Get("auth", "oauth_google")) == "true"
-	oauthGitHub := strings.ToLower(ini.Get("auth", "oauth_github")) == "true"
-
-	devDefaults := configpkg.DevDefaults{
-		DatabaseURL:  databaseURL,
-		Port:         "8080",
-		CookieSecret: ini.Get("auth", "cookie_secret"),
-		// Email
-		SMTPHost:     ini.Get("email", "smtp_host"),
-		SMTPPort:     ini.Get("email", "smtp_port"),
-		SMTPUsername: ini.Get("email", "smtp_username"),
-		SMTPPassword: ini.Get("email", "smtp_password"),
-		AppURL:       ini.Get("email", "app_url"),
+	// Build a temporary ProjectConfig for the shared helper.
+	emailCfg := &shared.ProjectConfig{
+		GoModRoot:   roots.GoModRoot,
+		ShipqRoot:   roots.ShipqRoot,
+		DatabaseURL: databaseURL,
+		Dialect:     dialect,
 	}
-
-	if oauthGoogle || oauthGitHub {
-		devDefaults.OAuthRedirectURL = ini.Get("auth", "oauth_redirect_url")
-		devDefaults.OAuthRedirectBaseURL = ini.Get("auth", "oauth_redirect_base_url")
-	}
-
-	if workersEnabled {
-		devDefaults.RedisURL = ini.Get("workers", "redis_url")
-		devDefaults.CentrifugoAPIURL = ini.Get("workers", "centrifugo_api_url")
-		devDefaults.CentrifugoAPIKey = ini.Get("workers", "centrifugo_api_key")
-		devDefaults.CentrifugoHMACSecret = ini.Get("workers", "centrifugo_hmac_secret")
-		devDefaults.CentrifugoWSURL = ini.Get("workers", "centrifugo_ws_url")
-	}
-
-	if filesEnabled {
-		devDefaults.S3Bucket = ini.Get("files", "s3_bucket")
-		devDefaults.S3Region = ini.Get("files", "s3_region")
-		devDefaults.S3Endpoint = ini.Get("files", "s3_endpoint")
-		devDefaults.AWSAccessKeyID = ini.Get("files", "aws_access_key_id")
-		devDefaults.AWSSecretAccessKey = ini.Get("files", "aws_secret_access_key")
-		devDefaults.MaxUploadSizeMB = ini.Get("files", "max_upload_size_mb")
-		devDefaults.MultipartThresholdMB = ini.Get("files", "multipart_threshold_mb")
-	}
-
-	if err := registry.GenerateConfigEarlyWithFullOptions(registry.ConfigEarlyOptions{
-		ShipqRoot:      roots.ShipqRoot,
-		GoModRoot:      roots.GoModRoot,
-		Dialect:        dialect,
-		FilesEnabled:   filesEnabled,
-		WorkersEnabled: workersEnabled,
-		OAuthGoogle:    oauthGoogle,
-		OAuthGitHub:    oauthGitHub,
-		EmailEnabled:   true,
-		DevDefaults:    devDefaults,
-		CustomEnvVars:  registry.ParseCustomEnvVars(ini),
-	}); err != nil {
+	if err := shared.RegenerateConfig(ini, emailCfg, shared.WithEmailEnabled()); err != nil {
 		fmt.Fprintf(os.Stderr, "error: failed to generate config: %v\n", err)
 		os.Exit(1)
 	}
@@ -534,14 +435,10 @@ func EmailCmd() {
 	// Step 14: go mod tidy
 	// ---------------------------------------------------------------
 	fmt.Println("")
-	fmt.Println("Running go mod tidy...")
-	tidyCmd := exec.Command("go", "mod", "tidy")
-	tidyCmd.Dir = roots.GoModRoot
-	if tidyOut, tidyErr := tidyCmd.CombinedOutput(); tidyErr != nil {
-		fmt.Fprintf(os.Stderr, "error: go mod tidy failed: %v\n%s\n", tidyErr, tidyOut)
+	if err := shared.GoModTidy(roots.GoModRoot); err != nil {
+		fmt.Fprintf(os.Stderr, "error: %v\n", err)
 		os.Exit(1)
 	}
-	fmt.Println("  go mod tidy done")
 
 	// ---------------------------------------------------------------
 	// Step 15: db compile (recompile queries with email query methods)

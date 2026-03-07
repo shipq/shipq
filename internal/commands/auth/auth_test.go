@@ -5,6 +5,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/shipq/shipq/internal/commands/shared"
 )
 
 func TestGenerateOrganizationsMigration(t *testing.T) {
@@ -370,13 +372,13 @@ func TestMigrationCodeCompiles(t *testing.T) {
 func TestAuthMigrationsExist(t *testing.T) {
 	t.Run("returns false for empty directory", func(t *testing.T) {
 		dir := t.TempDir()
-		if authMigrationsExist(dir) {
+		if shared.AuthMigrationsExist(dir) {
 			t.Error("expected false for empty directory")
 		}
 	})
 
 	t.Run("returns false for non-existent directory", func(t *testing.T) {
-		if authMigrationsExist("/nonexistent/path/that/does/not/exist") {
+		if shared.AuthMigrationsExist("/nonexistent/path/that/does/not/exist") {
 			t.Error("expected false for non-existent directory")
 		}
 	})
@@ -385,7 +387,7 @@ func TestAuthMigrationsExist(t *testing.T) {
 		dir := t.TempDir()
 		os.WriteFile(filepath.Join(dir, "20260205120000_organizations.go"), []byte("package m"), 0644)
 		os.WriteFile(filepath.Join(dir, "20260205120001_accounts.go"), []byte("package m"), 0644)
-		if authMigrationsExist(dir) {
+		if shared.AuthMigrationsExist(dir) {
 			t.Error("expected false when only 2 of 7 migrations exist")
 		}
 	})
@@ -399,7 +401,7 @@ func TestAuthMigrationsExist(t *testing.T) {
 		os.WriteFile(filepath.Join(dir, "20260205120004_roles.go"), []byte("package m"), 0644)
 		os.WriteFile(filepath.Join(dir, "20260205120005_account_roles.go"), []byte("package m"), 0644)
 		os.WriteFile(filepath.Join(dir, "20260205120006_role_actions.go"), []byte("package m"), 0644)
-		if !authMigrationsExist(dir) {
+		if !shared.AuthMigrationsExist(dir) {
 			t.Error("expected true when all 7 migrations exist")
 		}
 	})
@@ -413,7 +415,7 @@ func TestAuthMigrationsExist(t *testing.T) {
 		os.WriteFile(filepath.Join(dir, "20260205120004_roles.go"), []byte("package m"), 0644)
 		os.WriteFile(filepath.Join(dir, "20260205120005_account_roles.go"), []byte("package m"), 0644)
 		os.WriteFile(filepath.Join(dir, "20260205120006_role_actions.go"), []byte("package m"), 0644)
-		if !authMigrationsExist(dir) {
+		if !shared.AuthMigrationsExist(dir) {
 			t.Error("expected true regardless of timestamps")
 		}
 	})

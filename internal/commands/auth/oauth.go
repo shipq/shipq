@@ -3,18 +3,16 @@ package auth
 import (
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 
 	"github.com/shipq/shipq/codegen"
 	"github.com/shipq/shipq/codegen/authgen"
-	configpkg "github.com/shipq/shipq/codegen/httpserver/config"
 	codegenMigrate "github.com/shipq/shipq/codegen/migrate"
-	"github.com/shipq/shipq/dburl"
 	"github.com/shipq/shipq/inifile"
 	"github.com/shipq/shipq/internal/commands/db"
 	"github.com/shipq/shipq/internal/commands/migrate/up"
+	"github.com/shipq/shipq/internal/commands/shared"
 	shipqdag "github.com/shipq/shipq/internal/dag"
 	"github.com/shipq/shipq/project"
 	"github.com/shipq/shipq/registry"
@@ -80,7 +78,7 @@ func AuthOAuthCmd(providerName string) {
 	provider := authgen.ProviderByName(providerName)
 
 	// Load project config
-	cfg, err := loadProjectConfig()
+	cfg, err := shared.LoadProjectConfig()
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "error: not in a shipq project (%v)\n", err)
 		os.Exit(1)
@@ -96,7 +94,7 @@ func AuthOAuthCmd(providerName string) {
 	}
 
 	// Precondition: auth migrations must already exist
-	if !authMigrationsExist(cfg.MigrationsPath) {
+	if !shared.AuthMigrationsExist(cfg.MigrationsPath) {
 		fmt.Fprintln(os.Stderr, "error: auth migrations not found. Run `shipq auth` first.")
 		os.Exit(1)
 	}
@@ -174,33 +172,14 @@ func AuthOAuthCmd(providerName string) {
 	}
 	allProviders := EnabledOAuthProviders(ini)
 
-	testDatabaseURL := ""
-	if cfg.DatabaseURL != "" {
-		if u, err := dburl.TestDatabaseURL(cfg.DatabaseURL); err == nil {
-			testDatabaseURL = u
-		}
-	}
-
 	// Detect whether signup has been run (signup.go exists)
 	authDir := filepath.Join(cfg.ShipqRoot, "api", "auth")
-	signupPath := filepath.Join(authDir, "signup.go")
-	signupEnabled := false
-	if _, statErr := os.Stat(signupPath); statErr == nil {
-		signupEnabled = true
-	}
+	signupEnabled := shared.IsSignupEnabled(cfg.ShipqRoot)
 
-	// Detect whether email has been configured
-	emailEnabled := ini.Section("email") != nil
-
-	authCfg := authgen.AuthGenConfig{
-		ModulePath:      cfg.ModulePath,
-		Dialect:         cfg.Dialect,
-		TestDatabaseURL: testDatabaseURL,
-		ScopeColumn:     cfg.ScopeColumn,
-		OAuthProviders:  allProviders,
-		SignupEnabled:   signupEnabled,
-		EmailEnabled:    emailEnabled,
-	}
+	authCfg := authgen.BuildAuthGenConfigFromIni(
+		ini, cfg.ModulePath, cfg.Dialect, cfg.TestDatabaseURL(), cfg.ScopeColumn, signupEnabled,
+	)
+	authCfg.OAuthProviders = allProviders
 
 	// ---------------------------------------------------------------
 	// 5. Generate api/auth/oauth_shared.go
@@ -304,12 +283,7 @@ func AuthOAuthCmd(providerName string) {
 	fmt.Println("")
 	fmt.Println("Regenerating auth register (OAuth routes)...")
 
-	var registerCode []byte
-	if signupEnabled {
-		registerCode, err = authgen.GenerateSignupRegister(authCfg)
-	} else {
-		registerCode, err = authgen.GenerateRegister(authCfg)
-	}
+	registerCode, err := authgen.GenerateRegisterFile(authCfg)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "error: failed to generate register.go: %v\n", err)
 		os.Exit(1)
@@ -339,42 +313,8 @@ func AuthOAuthCmd(providerName string) {
 	// ---------------------------------------------------------------
 	fmt.Println("")
 	fmt.Println("Regenerating config package...")
-	filesEnabled := ini.Section("files") != nil
-	workersEnabled := ini.Section("workers") != nil
 
-	oauthGoogle := strings.ToLower(ini.Get("auth", "oauth_google")) == "true"
-	oauthGitHub := strings.ToLower(ini.Get("auth", "oauth_github")) == "true"
-
-	devDefaults := configpkg.DevDefaults{
-		DatabaseURL:  cfg.DatabaseURL,
-		Port:         "8080",
-		CookieSecret: ini.Get("auth", "cookie_secret"),
-	}
-	if oauthGoogle || oauthGitHub {
-		devDefaults.OAuthRedirectURL = ini.Get("auth", "oauth_redirect_url")
-		devDefaults.OAuthRedirectBaseURL = ini.Get("auth", "oauth_redirect_base_url")
-	}
-
-	if emailEnabled {
-		devDefaults.SMTPHost = ini.Get("email", "smtp_host")
-		devDefaults.SMTPPort = ini.Get("email", "smtp_port")
-		devDefaults.SMTPUsername = ini.Get("email", "smtp_username")
-		devDefaults.SMTPPassword = ini.Get("email", "smtp_password")
-		devDefaults.AppURL = ini.Get("email", "app_url")
-	}
-
-	if err := registry.GenerateConfigEarlyWithFullOptions(registry.ConfigEarlyOptions{
-		ShipqRoot:      cfg.ShipqRoot,
-		GoModRoot:      cfg.GoModRoot,
-		Dialect:        cfg.Dialect,
-		FilesEnabled:   filesEnabled,
-		WorkersEnabled: workersEnabled,
-		OAuthGoogle:    oauthGoogle,
-		OAuthGitHub:    oauthGitHub,
-		EmailEnabled:   emailEnabled,
-		DevDefaults:    devDefaults,
-		CustomEnvVars:  registry.ParseCustomEnvVars(ini),
-	}); err != nil {
+	if err := shared.RegenerateConfig(ini, cfg); err != nil {
 		fmt.Fprintf(os.Stderr, "error: failed to generate config: %v\n", err)
 		os.Exit(1)
 	}
@@ -384,14 +324,10 @@ func AuthOAuthCmd(providerName string) {
 	// 11. go mod tidy
 	// ---------------------------------------------------------------
 	fmt.Println("")
-	fmt.Println("Running go mod tidy...")
-	tidyCmd := exec.Command("go", "mod", "tidy")
-	tidyCmd.Dir = cfg.GoModRoot
-	if tidyOut, tidyErr := tidyCmd.CombinedOutput(); tidyErr != nil {
-		fmt.Fprintf(os.Stderr, "error: go mod tidy failed: %v\n%s\n", tidyErr, tidyOut)
+	if err := shared.GoModTidy(cfg.GoModRoot); err != nil {
+		fmt.Fprintf(os.Stderr, "error: %v\n", err)
 		os.Exit(1)
 	}
-	fmt.Println("  go mod tidy done")
 
 	// ---------------------------------------------------------------
 	// 12. db compile

@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/shipq/shipq/inifile"
+	"github.com/shipq/shipq/internal/commands/shared"
 )
 
 func TestGenerateRandomKey(t *testing.T) {
@@ -171,13 +172,13 @@ func TestExtractRedisAddr(t *testing.T) {
 func TestJobResultsMigrationExists(t *testing.T) {
 	t.Run("returns false for empty directory", func(t *testing.T) {
 		tmpDir := t.TempDir()
-		if jobResultsMigrationExists(tmpDir) {
+		if shared.MigrationsExist(tmpDir, jobResultsMigrationSuffixes, false) {
 			t.Error("expected false for empty directory")
 		}
 	})
 
 	t.Run("returns false for non-existing directory", func(t *testing.T) {
-		if jobResultsMigrationExists("/non/existing/path") {
+		if shared.MigrationsExist("/non/existing/path", jobResultsMigrationSuffixes, false) {
 			t.Error("expected false for non-existing directory")
 		}
 	})
@@ -189,7 +190,7 @@ func TestJobResultsMigrationExists(t *testing.T) {
 			t.Fatalf("failed to create test file: %v", err)
 		}
 
-		if !jobResultsMigrationExists(tmpDir) {
+		if !shared.MigrationsExist(tmpDir, jobResultsMigrationSuffixes, false) {
 			t.Error("expected true when job_results migration exists")
 		}
 	})
@@ -201,7 +202,7 @@ func TestJobResultsMigrationExists(t *testing.T) {
 			t.Fatalf("failed to create test file: %v", err)
 		}
 
-		if jobResultsMigrationExists(tmpDir) {
+		if shared.MigrationsExist(tmpDir, jobResultsMigrationSuffixes, false) {
 			t.Error("expected false when only unrelated migrations exist")
 		}
 	})
@@ -213,7 +214,7 @@ func TestJobResultsMigrationExists(t *testing.T) {
 			t.Fatalf("failed to create test directory: %v", err)
 		}
 
-		if jobResultsMigrationExists(tmpDir) {
+		if shared.MigrationsExist(tmpDir, jobResultsMigrationSuffixes, false) {
 			t.Error("expected false when matching name is a directory")
 		}
 	})
