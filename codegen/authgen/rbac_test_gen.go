@@ -15,6 +15,7 @@ type RBACTestGenConfig struct {
 	Dialect         string // "postgres", "mysql", or "sqlite"
 	TestDatabaseURL string // test database URL derived from shipq.ini
 	ScopeColumn     string // from [db] scope in shipq.ini; controls which variant to emit
+	StripPrefix     string // URL prefix prepended to test paths (e.g., "/api")
 }
 
 // GenerateRBACTests generates api/zz_generated_rbac_test.go containing RBAC
@@ -203,7 +204,7 @@ func writeTestGlobalOwnerCanAccessAnything(buf *bytes.Buffer, cfg RBACTestGenCon
 	}
 
 	// The /me endpoint should be accessible (200, not 403)
-	req, _ := http.NewRequest("GET", ts.Server.URL+"/me", nil)
+	req, _ := http.NewRequest("GET", ts.Server.URL+"` + cfg.StripPrefix + `/me", nil)
 	req.AddCookie(&http.Cookie{Name: "session", Value: cookie})
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
@@ -229,7 +230,7 @@ func writeTestUnrestrictedRouteAllowsAnyAuthenticatedUser(buf *bytes.Buffer, cfg
 	cookie, _, _ := rbacCreateTestUser(t, ts, "noroles@test.com", "NoRoles")
 
 	// The /me endpoint has no role_actions restricting it, so it should be open to any authenticated user
-	req, _ := http.NewRequest("GET", ts.Server.URL+"/me", nil)
+	req, _ := http.NewRequest("GET", ts.Server.URL+"` + cfg.StripPrefix + `/me", nil)
 	req.AddCookie(&http.Cookie{Name: "session", Value: cookie})
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
@@ -300,7 +301,7 @@ func writeTestRestrictedRouteAllowsUserWithMatchingRole(buf *bytes.Buffer, cfg R
 	}
 
 	// User with matching role should have access
-	req, _ := http.NewRequest("GET", ts.Server.URL+"/me", nil)
+	req, _ := http.NewRequest("GET", ts.Server.URL+"` + cfg.StripPrefix + `/me", nil)
 	req.AddCookie(&http.Cookie{Name: "session", Value: cookie})
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
@@ -361,7 +362,7 @@ func writeTestRestrictedRouteDeniesUserWithoutMatchingRole(buf *bytes.Buffer, cf
 	}
 
 	// User WITHOUT the role should be denied
-	req, _ := http.NewRequest("GET", ts.Server.URL+"/me", nil)
+	req, _ := http.NewRequest("GET", ts.Server.URL+"` + cfg.StripPrefix + `/me", nil)
 	req.AddCookie(&http.Cookie{Name: "session", Value: cookie})
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
@@ -429,7 +430,7 @@ func writeTestWildcardMethodMatchesAnyMethod(buf *bytes.Buffer, cfg RBACTestGenC
 	}
 
 	// GET /me should work (wildcard matches any method)
-	req, _ := http.NewRequest("GET", ts.Server.URL+"/me", nil)
+	req, _ := http.NewRequest("GET", ts.Server.URL+"` + cfg.StripPrefix + `/me", nil)
 	req.AddCookie(&http.Cookie{Name: "session", Value: cookie})
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
@@ -489,7 +490,7 @@ func writeTestOrgScopedRolesDoNotCrossOrgs(buf *bytes.Buffer, cfg RBACTestGenCon
 
 	// User B in Org B should still have access to /me, because Org B's roles
 	// don't restrict it -- even though Org A's "admin" role does.
-	req, _ := http.NewRequest("GET", ts.Server.URL+"/me", nil)
+	req, _ := http.NewRequest("GET", ts.Server.URL+"` + cfg.StripPrefix + `/me", nil)
 	req.AddCookie(&http.Cookie{Name: "session", Value: cookieB})
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {

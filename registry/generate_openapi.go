@@ -20,9 +20,10 @@ func generateOpenAPI(cfg CompileConfig) (openAPIData, error) {
 	title := path.Base(cfg.ModulePath)
 
 	specCfg := openapigen.OpenAPIGenConfig{
-		ModulePath: cfg.ModulePath,
-		Handlers:   cfg.Handlers,
-		Title:      title,
+		ModulePath:  cfg.ModulePath,
+		Handlers:    cfg.Handlers,
+		Title:       title,
+		StripPrefix: cfg.StripPrefix,
 	}
 
 	specJSON, err := openapigen.GenerateOpenAPISpec(specCfg)
@@ -30,7 +31,7 @@ func generateOpenAPI(cfg CompileConfig) (openAPIData, error) {
 		return openAPIData{}, err
 	}
 
-	docsHTML := openapigen.GenerateDocsHTML(title + " - API Documentation")
+	docsHTML := openapigen.GenerateDocsHTML(title+" - API Documentation", cfg.StripPrefix)
 
 	return openAPIData{
 		SpecJSON: string(specJSON),

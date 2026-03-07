@@ -2024,3 +2024,207 @@ func TestEndToEnd_QueryParamPagination(t *testing.T) {
 		})
 	}
 }
+
+// -------------------------------------------------------------------------
+// Scenario: StripPrefix — verify OpenAPI, admin, health, and generated
+// tests all work when [server] strip_prefix = /api is set.
+// -------------------------------------------------------------------------
+
+// addStripPrefixToIni appends a [server] section with strip_prefix to shipq.ini.
+func addStripPrefixToIni(t *testing.T, iniPath, prefix string) {
+	t.Helper()
+	data, err := os.ReadFile(iniPath)
+	if err != nil {
+		t.Fatalf("failed to read %s: %v", iniPath, err)
+	}
+	content := string(data) + "\n[server]\nstrip_prefix = " + prefix + "\n"
+	if err := os.WriteFile(iniPath, []byte(content), 0644); err != nil {
+		t.Fatalf("failed to write %s: %v", iniPath, err)
+	}
+}
+
+func scenarioStripPrefix(t *testing.T, shipq string, db dbConfig) {
+	t.Helper()
+
+	proj := setupProject(t, shipq, "shipq-e2e-strip-prefix", db)
+	dbEnv := []string{"DATABASE_URL=" + proj.DatabaseURL}
+	tEnv := testEnvForProject(t, proj.CleanDir, db)
+
+	// Add strip_prefix BEFORE generating auth/resources so the codegen picks it up.
+	iniPath := filepath.Join(proj.CleanDir, "shipq.ini")
+	addStripPrefixToIni(t, iniPath, "/api")
+
+	// Verify it was written
+	iniContent, err := os.ReadFile(iniPath)
+	if err != nil {
+		t.Fatalf("failed to read shipq.ini: %v", err)
+	}
+	if !strings.Contains(string(iniContent), "strip_prefix = /api") {
+		t.Fatalf("shipq.ini missing strip_prefix = /api:\n%s", iniContent)
+	}
+
+	// Auth
+	t.Log("Generating auth...")
+	runWithEnv(t, proj.CleanDir, dbEnv, shipq, "auth")
+	run(t, proj.CleanDir, "go", "mod", "tidy")
+
+	// Create a resource so we have CRUD endpoints in the spec
+	t.Log("Creating pets resource...")
+	runWithEnv(t, proj.CleanDir, dbEnv,
+		shipq, "migrate", "new", "pets", "name:string", "species:string")
+	runWithEnv(t, proj.CleanDir, dbEnv,
+		shipq, "resource", "pets", "all")
+	run(t, proj.CleanDir, "go", "mod", "tidy")
+
+	// ── 1. Generated tests pass (test client prepends /api to URLs) ──
+	t.Log("Running generated tests...")
+	runWithEnv(t, proj.CleanDir, tEnv, "go", "test", "./...", "-v", "-count=1")
+	t.Log("Generated tests passed ✓")
+
+	// ── 2. OpenAPI spec has a servers block with the prefix ──
+	t.Log("Checking OpenAPI spec for servers block...")
+	serverFile := filepath.Join(proj.CleanDir, "api", "zz_generated_http.go")
+	serverCode, err := os.ReadFile(serverFile)
+	if err != nil {
+		t.Fatalf("failed to read generated server file: %v", err)
+	}
+	specJSON := extractOpenAPISpec(t, string(serverCode))
+
+	var spec map[string]any
+	if err := json.Unmarshal([]byte(specJSON), &spec); err != nil {
+		t.Fatalf("OpenAPI spec is not valid JSON: %v", err)
+	}
+
+	servers, ok := spec["servers"].([]any)
+	if !ok || len(servers) == 0 {
+		t.Fatal("OpenAPI spec missing 'servers' block when strip_prefix is set")
+	}
+	firstServer, ok := servers[0].(map[string]any)
+	if !ok {
+		t.Fatal("servers[0] is not an object")
+	}
+	if firstServer["url"] != "/api" {
+		t.Fatalf("expected servers[0].url = \"/api\", got %q", firstServer["url"])
+	}
+	t.Log("OpenAPI spec servers block correct ✓")
+
+	// ── 3. Boot the server and hit prefixed endpoints ──
+	t.Log("Building server binary...")
+	serverBin := filepath.Join(proj.CleanDir, "server")
+	runWithEnv(t, proj.CleanDir, dbEnv,
+		"go", "build", "-o", serverBin, "./cmd/server")
+
+	port := findFreePort(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	cmd := exec.CommandContext(ctx, serverBin)
+	cmd.Dir = proj.CleanDir
+	cmd.Env = append(cleanEnv(),
+		"DATABASE_URL="+proj.DatabaseURL,
+		fmt.Sprintf("PORT=%d", port),
+		"GO_ENV=test",
+	)
+	cmd.Stdout = os.Stderr
+	cmd.Stderr = os.Stderr
+	if err := cmd.Start(); err != nil {
+		t.Fatalf("failed to start server: %v", err)
+	}
+	defer func() { cancel(); _ = cmd.Wait() }()
+
+	waitForServer(t, port)
+	base := fmt.Sprintf("http://127.0.0.1:%d", port)
+
+	// Helper: GET a URL and return status + body
+	httpGet := func(url string) (int, string) {
+		resp, err := http.Get(url)
+		if err != nil {
+			t.Fatalf("GET %s failed: %v", url, err)
+		}
+		defer resp.Body.Close()
+		body, _ := io.ReadAll(resp.Body)
+		return resp.StatusCode, string(body)
+	}
+
+	// 3a. /api/health → 200
+	status, body := httpGet(base + "/api/health")
+	if status != 200 {
+		t.Fatalf("GET /api/health: expected 200, got %d; body: %s", status, body)
+	}
+	t.Log("GET /api/health → 200 ✓")
+
+	// 3b. /health (without prefix) → 404
+	status, _ = httpGet(base + "/health")
+	if status != 404 {
+		t.Fatalf("GET /health (no prefix): expected 404, got %d", status)
+	}
+	t.Log("GET /health → 404 (correctly rejected without prefix) ✓")
+
+	// 3c. /api/openapi → 200 with valid JSON spec
+	status, body = httpGet(base + "/api/openapi")
+	if status != 200 {
+		t.Fatalf("GET /api/openapi: expected 200, got %d; body: %s", status, body)
+	}
+	var liveSpec map[string]any
+	if err := json.Unmarshal([]byte(body), &liveSpec); err != nil {
+		t.Fatalf("GET /api/openapi returned invalid JSON: %v", err)
+	}
+	t.Log("GET /api/openapi → 200 with valid JSON ✓")
+
+	// 3d. /api/docs → 200 with HTML containing prefixed asset URLs
+	status, body = httpGet(base + "/api/docs")
+	if status != 200 {
+		t.Fatalf("GET /api/docs: expected 200, got %d; body: %s", status, body)
+	}
+	if !strings.Contains(body, `src="/api/openapi/assets/web-components.min.js"`) {
+		t.Fatal("docs HTML missing prefixed web-components.min.js src")
+	}
+	if !strings.Contains(body, `apiDescriptionUrl="/api/openapi"`) {
+		t.Fatal("docs HTML missing prefixed apiDescriptionUrl")
+	}
+	t.Log("GET /api/docs → 200 with prefixed asset URLs ✓")
+
+	// 3e. /api/openapi/assets/web-components.min.js → 200
+	status, _ = httpGet(base + "/api/openapi/assets/web-components.min.js")
+	if status != 200 {
+		t.Fatalf("GET /api/openapi/assets/web-components.min.js: expected 200, got %d", status)
+	}
+	t.Log("GET /api/openapi/assets/web-components.min.js → 200 ✓")
+
+	// 3f. /api/admin → 200 with HTML containing prefixed app.js src
+	status, body = httpGet(base + "/api/admin")
+	if status != 200 {
+		t.Fatalf("GET /api/admin: expected 200, got %d; body: %s", status, body)
+	}
+	if !strings.Contains(body, `src="/api/admin/app.js"`) {
+		t.Fatal("admin HTML missing prefixed app.js src")
+	}
+	if !strings.Contains(body, `data-base-path="/api"`) {
+		t.Fatal("admin HTML missing data-base-path attribute")
+	}
+	t.Log("GET /api/admin → 200 with prefixed app.js and data-base-path ✓")
+
+	// 3g. /api/admin/app.js → 200
+	status, _ = httpGet(base + "/api/admin/app.js")
+	if status != 200 {
+		t.Fatalf("GET /api/admin/app.js: expected 200, got %d", status)
+	}
+	t.Log("GET /api/admin/app.js → 200 ✓")
+
+	t.Log("All strip_prefix assertions passed!")
+}
+
+func TestEndToEnd_StripPrefix(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping end-to-end test in short mode")
+	}
+
+	repoRoot := shipqRepoRoot(t)
+	shipq := buildShipq(t, repoRoot)
+
+	for _, db := range allDBConfigs(t) {
+		t.Run(db.Name, func(t *testing.T) {
+			scenarioStripPrefix(t, shipq, db)
+		})
+	}
+}

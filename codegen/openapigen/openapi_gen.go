@@ -11,10 +11,11 @@ import (
 
 // OpenAPIGenConfig holds configuration for generating the OpenAPI spec.
 type OpenAPIGenConfig struct {
-	ModulePath string                          // e.g., "myapp"
-	Handlers   []codegen.SerializedHandlerInfo // handlers from registry
-	Title      string                          // defaults to module path base name
-	Version    string                          // defaults to "1.0.0"
+	ModulePath  string                          // e.g., "myapp"
+	Handlers    []codegen.SerializedHandlerInfo // handlers from registry
+	Title       string                          // defaults to module path base name
+	Version     string                          // defaults to "1.0.0"
+	StripPrefix string                          // URL prefix for the servers block (e.g., "/api")
 }
 
 // GenerateOpenAPISpec generates an OpenAPI 3.1.0 JSON document from the handler registry.
@@ -35,6 +36,14 @@ func GenerateOpenAPISpec(cfg OpenAPIGenConfig) ([]byte, error) {
 			"title":   title,
 			"version": version,
 		},
+	}
+
+	// When a strip prefix is configured (e.g., "/api"), add a servers block
+	// so that OpenAPI clients know to prepend the prefix to all paths.
+	if cfg.StripPrefix != "" {
+		spec["servers"] = []map[string]any{
+			{"url": cfg.StripPrefix},
+		}
 	}
 
 	// Build paths

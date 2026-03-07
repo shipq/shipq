@@ -4,7 +4,29 @@
  * All functions return typed results and throw on network errors.
  * HTTP errors are returned as { ok: false, status, message } so callers
  * can handle them gracefully.
+ *
+ * The `basePath` variable holds an optional URL prefix (e.g., "/api") that
+ * is prepended to all API calls. This supports deployments behind
+ * http.StripPrefix where the server's public URLs differ from the mux paths.
+ * It is set once via `setBasePath()` during app initialization.
  */
+
+let basePath = "";
+
+/**
+ * setBasePath configures the URL prefix for all subsequent API calls.
+ * For example, setBasePath("/api") causes login() to fetch "/api/login".
+ */
+export function setBasePath(prefix: string) {
+  basePath = prefix;
+}
+
+/**
+ * getBasePath returns the currently configured URL prefix.
+ */
+export function getBasePath(): string {
+  return basePath;
+}
 
 export interface ApiOk<T> {
   ok: true;
@@ -23,7 +45,7 @@ async function apiCall<T>(
   url: string,
   init?: RequestInit
 ): Promise<ApiResult<T>> {
-  const resp = await fetch(url, {
+  const resp = await fetch(basePath + url, {
     credentials: "include",
     headers: { "Content-Type": "application/json" },
     ...init,

@@ -25,6 +25,7 @@ func generateOpenAPITest(cfg CompileConfig) error {
 		OutputPkg:       cfg.OutputPkg,
 		DBDialect:       cfg.DBDialect,
 		TestDatabaseURL: testDatabaseURL,
+		StripPrefix:     cfg.StripPrefix,
 	}
 
 	testCode, err := openapigen.GenerateOpenAPITest(testCfg)

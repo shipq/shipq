@@ -5,7 +5,7 @@ package admingen
 
 // GenerateAdminHTML returns the HTML shell for the admin SPA.
 // It loads the admin JavaScript from /admin/app.js.
-func GenerateAdminHTML(title string) string {
+func GenerateAdminHTML(title string, prefix string) string {
 	if title == "" {
 		title = "Admin"
 	}
@@ -18,8 +18,8 @@ func GenerateAdminHTML(title string) string {
     <style>` + adminCSS + `</style>
   </head>
   <body>
-    <admin-app></admin-app>
-    <script src="/admin/app.js"></script>
+    <admin-app data-base-path="` + prefix + `"></admin-app>
+    <script src="` + prefix + `/admin/app.js"></script>
   </body>
 </html>`
 }

@@ -4,7 +4,7 @@
  * Manages auth state, loads OpenAPI spec, routes between pages.
  */
 
-import { me, logout } from "../api.js";
+import { me, logout, setBasePath, getBasePath } from "../api.js";
 import { parseSpec, ResourceInfo, OpenAPISpec } from "../openapi.js";
 import { currentRoute, onRouteChange, navigate, Route } from "../router.js";
 
@@ -15,6 +15,13 @@ export class AdminApp extends HTMLElement {
   private _unsubRoute: (() => void) | null = null;
 
   connectedCallback() {
+    // Read optional URL prefix from the HTML element (set by the Go codegen
+    // when [server] strip_prefix is configured, e.g. "/api").
+    const base = this.getAttribute("data-base-path") ?? "";
+    if (base) {
+      setBasePath(base);
+    }
+
     this._route = currentRoute();
     this._unsubRoute = onRouteChange((route) => {
       this._route = route;
@@ -52,7 +59,7 @@ export class AdminApp extends HTMLElement {
 
   private async _loadSpec() {
     try {
-      const resp = await fetch("/openapi", { credentials: "include" });
+      const resp = await fetch(getBasePath() + "/openapi", { credentials: "include" });
       if (resp.ok) {
         const spec = (await resp.json()) as OpenAPISpec;
         this._resources = parseSpec(spec);
