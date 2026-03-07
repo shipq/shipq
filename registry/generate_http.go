@@ -24,6 +24,7 @@ func generateHTTPServer(cfg CompileConfig, openAPISpec, openAPIDocsHTML, adminHT
 		ScopeColumn:     cfg.ScopeColumn,
 		HasChannels:     cfg.WorkersEnabled && len(cfg.Channels) > 0,
 		HasOAuth:        cfg.OAuthGoogle || cfg.OAuthGitHub,
+		StripPrefix:     cfg.StripPrefix,
 	}
 
 	files, err := server.GenerateHTTPServer(httpCfg)

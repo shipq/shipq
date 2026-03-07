@@ -64,6 +64,7 @@ func Run(shipqRoot, goModRoot string) error {
 	tsFrameworks := []string{"react"}
 	tsHTTPOutput := ""
 	tsChannelOutput := ""
+	stripPrefix := ""
 	if ini, err := inifile.ParseFile(shipqIniPath); err == nil {
 		scopeColumn = ini.Get("db", "scope")
 		if ini.Section("files") != nil {
@@ -97,6 +98,10 @@ func Run(shipqRoot, goModRoot string) error {
 		}
 		if o := ini.Get("typescript", "channel_output"); o != "" {
 			tsChannelOutput = o
+		}
+
+		if sp := ini.Get("server", "strip_prefix"); sp != "" {
+			stripPrefix = strings.TrimRight(strings.TrimSpace(sp), "/")
 		}
 	}
 
@@ -195,6 +200,7 @@ func Run(shipqRoot, goModRoot string) error {
 		Channels:        channels,
 		DevDefaults:     devDefaults,
 		CustomEnvVars:   customEnvVars,
+		StripPrefix:     stripPrefix,
 		TSFrameworks:    tsFrameworks,
 		TSHTTPOutput:    tsHTTPOutput,
 		TSChannelOutput: tsChannelOutput,

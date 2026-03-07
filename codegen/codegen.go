@@ -195,6 +195,61 @@ func CollectHandlerPackages(handlers []SerializedHandlerInfo) map[string]Package
 	return result
 }
 
+// FilterQueryFields returns request fields that have a `query` struct tag.
+func FilterQueryFields(h SerializedHandlerInfo) []SerializedFieldInfo {
+	if h.Request == nil {
+		return nil
+	}
+	var queryFields []SerializedFieldInfo
+	for _, f := range h.Request.Fields {
+		if f.Tags != nil && f.Tags["query"] != "" {
+			queryFields = append(queryFields, f)
+		}
+	}
+	return queryFields
+}
+
+// HasQueryFields returns true if any handler has fields with query tags.
+func HasQueryFields(handlers []SerializedHandlerInfo) bool {
+	for _, h := range handlers {
+		if len(FilterQueryFields(h)) > 0 {
+			return true
+		}
+	}
+	return false
+}
+
+// FilterBodyFields returns request fields that are NOT path parameters and NOT query parameters.
+// This is the shared implementation used by httptsgen, openapigen, and other codegen packages.
+func FilterBodyFields(h SerializedHandlerInfo) []SerializedFieldInfo {
+	if h.Request == nil {
+		return nil
+	}
+
+	pathParamNames := make(map[string]bool)
+	for _, pp := range h.PathParams {
+		pathParamNames[strings.ToLower(pp.Name)] = true
+	}
+
+	var bodyFields []SerializedFieldInfo
+	for _, f := range h.Request.Fields {
+		// Exclude fields that are path parameters
+		if f.Tags != nil && f.Tags["path"] != "" && pathParamNames[strings.ToLower(f.Tags["path"])] {
+			continue
+		}
+		if pathParamNames[strings.ToLower(f.JSONName)] || pathParamNames[strings.ToLower(f.Name)] {
+			continue
+		}
+		// Exclude fields that are query parameters
+		if f.Tags != nil && f.Tags["query"] != "" {
+			continue
+		}
+		bodyFields = append(bodyFields, f)
+	}
+
+	return bodyFields
+}
+
 // MethodHasBody returns true if the HTTP method typically has a request body.
 func MethodHasBody(method string) bool {
 	switch method {

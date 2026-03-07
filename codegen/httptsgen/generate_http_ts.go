@@ -250,6 +250,13 @@ func writeHandlerTypes(buf *bytes.Buffer, h codegen.SerializedHandlerInfo) {
 		}
 	}
 
+	// Query params type (if present)
+	queryFields := codegen.FilterQueryFields(h)
+	if len(queryFields) > 0 {
+		typeName := h.FuncName + "Params"
+		writeQueryParamsInterface(buf, typeName, queryFields)
+	}
+
 	// Response type
 	if h.Response != nil && len(h.Response.Fields) > 0 {
 		typeName := h.FuncName + "Response"
@@ -257,10 +264,21 @@ func writeHandlerTypes(buf *bytes.Buffer, h codegen.SerializedHandlerInfo) {
 	}
 }
 
+// writeQueryParamsInterface writes a TypeScript interface for query parameters.
+// All query params are optional (they have defaults or are nullable).
+func writeQueryParamsInterface(buf *bytes.Buffer, name string, fields []codegen.SerializedFieldInfo) {
+	fmt.Fprintf(buf, "\nexport interface %s {\n", name)
+	for _, field := range fields {
+		queryName := field.Tags["query"]
+		tsType := tsutil.GoTypeStringToTS(field.Type)
+		fmt.Fprintf(buf, "  %s?: %s;\n", queryName, tsType)
+	}
+	buf.WriteString("}\n")
+}
+
 // writeHandlerFunction writes the async API function for a handler.
 func writeHandlerFunction(buf *bytes.Buffer, h codegen.SerializedHandlerInfo) {
 	funcName := tsutil.ToCamelCase(h.FuncName)
-	role := DetectCRUDRole(h)
 
 	// Build the function signature
 	var params []string
@@ -281,10 +299,13 @@ func writeHandlerFunction(buf *bytes.Buffer, h codegen.SerializedHandlerInfo) {
 	reqTypeName := h.FuncName + "Request"
 	respTypeName := h.FuncName + "Response"
 
-	// For list endpoints, add optional params argument
-	isList := role == CRUDRoleList || role == CRUDRoleAdminList
-	if isList {
-		params = append(params, "params?: { cursor?: string; limit?: number }")
+	// Derive query params from query: tags
+	queryFields := codegen.FilterQueryFields(h)
+	hasQueryParams := len(queryFields) > 0
+	paramsTypeName := h.FuncName + "Params"
+
+	if hasQueryParams {
+		params = append(params, "params?: "+paramsTypeName)
 	}
 
 	// Add body param for methods that have a body
@@ -306,7 +327,7 @@ func writeHandlerFunction(buf *bytes.Buffer, h codegen.SerializedHandlerInfo) {
 		funcName, strings.Join(params, ", "), returnType)
 
 	// Build the path string
-	if isList {
+	if hasQueryParams {
 		fmt.Fprintf(buf, "  const query = buildQuery(params as Record<string, unknown>);\n")
 		fmt.Fprintf(buf, "  return request<%s>(\"%s\", `%s${query}`", returnType, h.Method, pathExpr)
 	} else {
@@ -353,6 +374,10 @@ func filterBodyFields(h codegen.SerializedHandlerInfo) []codegen.SerializedField
 			continue
 		}
 		if pathParamNames[strings.ToLower(f.JSONName)] || pathParamNames[strings.ToLower(f.Name)] {
+			continue
+		}
+		// Exclude fields that are query parameters
+		if f.Tags != nil && f.Tags["query"] != "" {
 			continue
 		}
 		bodyFields = append(bodyFields, f)

@@ -16,6 +16,116 @@ func parseINI(t *testing.T, content string) *inifile.File {
 	return f
 }
 
+// ─── ParseServerConfig tests ───
+
+func TestParseServerConfig_WithStripPrefix(t *testing.T) {
+	ini := parseINI(t, `
+[server]
+strip_prefix = /api
+`)
+
+	cfg := ParseServerConfig(ini)
+	if cfg == nil {
+		t.Fatal("expected non-nil ServerConfig")
+	}
+	if cfg.StripPrefix != "/api" {
+		t.Errorf("expected StripPrefix '/api', got %q", cfg.StripPrefix)
+	}
+}
+
+func TestParseServerConfig_StripPrefixTrailingSlash(t *testing.T) {
+	// strip_prefix = /api/ should behave the same as /api
+	ini := parseINI(t, `
+[server]
+strip_prefix = /api/
+`)
+
+	cfg := ParseServerConfig(ini)
+	if cfg == nil {
+		t.Fatal("expected non-nil ServerConfig")
+	}
+	if cfg.StripPrefix != "/api" {
+		t.Errorf("expected StripPrefix '/api' (trailing slash trimmed), got %q", cfg.StripPrefix)
+	}
+}
+
+func TestParseServerConfig_EmptyStripPrefix(t *testing.T) {
+	ini := parseINI(t, `
+[server]
+strip_prefix =
+`)
+
+	cfg := ParseServerConfig(ini)
+	if cfg == nil {
+		t.Fatal("expected non-nil ServerConfig")
+	}
+	if cfg.StripPrefix != "" {
+		t.Errorf("expected empty StripPrefix, got %q", cfg.StripPrefix)
+	}
+}
+
+func TestParseServerConfig_MissingSection(t *testing.T) {
+	ini := parseINI(t, `
+[db]
+database_url = sqlite:test.db
+`)
+
+	cfg := ParseServerConfig(ini)
+	if cfg != nil {
+		t.Errorf("expected nil ServerConfig when [server] section is missing, got %+v", cfg)
+	}
+}
+
+func TestParseServerConfig_SectionWithoutStripPrefix(t *testing.T) {
+	ini := parseINI(t, `
+[server]
+`)
+
+	cfg := ParseServerConfig(ini)
+	if cfg == nil {
+		t.Fatal("expected non-nil ServerConfig")
+	}
+	if cfg.StripPrefix != "" {
+		t.Errorf("expected empty StripPrefix when key is absent, got %q", cfg.StripPrefix)
+	}
+}
+
+func TestParseServerConfig_NestedPrefix(t *testing.T) {
+	ini := parseINI(t, `
+[server]
+strip_prefix = /v1/api
+`)
+
+	cfg := ParseServerConfig(ini)
+	if cfg == nil {
+		t.Fatal("expected non-nil ServerConfig")
+	}
+	if cfg.StripPrefix != "/v1/api" {
+		t.Errorf("expected StripPrefix '/v1/api', got %q", cfg.StripPrefix)
+	}
+}
+
+func TestParseServerConfig_WithOtherSections(t *testing.T) {
+	ini := parseINI(t, `
+[db]
+database_url = sqlite:test.db
+
+[server]
+strip_prefix = /api
+
+[llm]
+tool_pkgs = myapp/tools/weather
+`)
+
+	cfg := ParseServerConfig(ini)
+	if cfg == nil {
+		t.Fatal("expected non-nil ServerConfig")
+	}
+	if cfg.StripPrefix != "/api" {
+		t.Errorf("expected StripPrefix '/api', got %q", cfg.StripPrefix)
+	}
+}
+
 func TestParseLLMConfig_SinglePackage(t *testing.T) {
 	ini := parseINI(t, `
 [llm]

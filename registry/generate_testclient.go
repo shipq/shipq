@@ -11,9 +11,10 @@ import (
 // generateHTTPTestClient generates the HTTP test client code.
 func generateHTTPTestClient(cfg CompileConfig) error {
 	testClientCfg := testclient.HTTPTestClientGenConfig{
-		ModulePath: cfg.ModulePath,
-		Handlers:   cfg.Handlers,
-		OutputPkg:  cfg.OutputPkg,
+		ModulePath:  cfg.ModulePath,
+		Handlers:    cfg.Handlers,
+		OutputPkg:   cfg.OutputPkg,
+		StripPrefix: cfg.StripPrefix,
 	}
 
 	files, err := testclient.GenerateHTTPTestClient(testClientCfg)

@@ -723,6 +723,506 @@ func TestGenerateHTTPTestClient_UsesHttputilAddAuth(t *testing.T) {
 	}
 }
 
+// ─── Query param tests (Step 7f) ───
+
+func TestGenerateHTTPTestClient_QueryParams_AppendedToURL(t *testing.T) {
+	cfg := HTTPTestClientGenConfig{
+		ModulePath: "example.com/app",
+		Handlers: []codegen.SerializedHandlerInfo{
+			{
+				Method:      "GET",
+				Path:        "/posts",
+				FuncName:    "ListPosts",
+				PackagePath: "example.com/app/api/posts",
+				PathParams:  []codegen.SerializedPathParam{},
+				Request: &codegen.SerializedStructInfo{
+					Name:    "ListPostsRequest",
+					Package: "example.com/app/api/posts",
+					Fields: []codegen.SerializedFieldInfo{
+						{Name: "Limit", Type: "int", JSONName: "limit", Required: false, Tags: map[string]string{"query": "limit"}},
+					},
+				},
+				Response: &codegen.SerializedStructInfo{
+					Name:    "ListPostsResponse",
+					Package: "example.com/app/api/posts",
+					Fields: []codegen.SerializedFieldInfo{
+						{Name: "Items", Type: "[]string", JSONName: "items", Required: true},
+					},
+				},
+			},
+		},
+		OutputPkg: "api",
+	}
+
+	files, err := GenerateHTTPTestClient(cfg)
+	if err != nil {
+		t.Fatalf("GenerateHTTPTestClient() error = %v", err)
+	}
+
+	resFile := findResourceTestClient(files, "posts")
+	if resFile == nil {
+		t.Fatal("missing posts resource test client file")
+	}
+	codeStr := string(resFile.Content)
+
+	if !strings.Contains(codeStr, "url.Values") {
+		t.Error("missing url.Values for query param construction")
+	}
+	if !strings.Contains(codeStr, `"limit"`) {
+		t.Error("missing query param name \"limit\" in URL construction")
+	}
+	if !strings.Contains(codeStr, `qv.Encode()`) {
+		t.Error("missing qv.Encode() for query string")
+	}
+
+	_, err = parser.ParseFile(token.NewFileSet(), "", resFile.Content, parser.AllErrors)
+	if err != nil {
+		t.Errorf("generated code is not valid Go: %v\n%s", err, codeStr)
+	}
+}
+
+func TestGenerateHTTPTestClient_QueryParams_PointerString(t *testing.T) {
+	cfg := HTTPTestClientGenConfig{
+		ModulePath: "example.com/app",
+		Handlers: []codegen.SerializedHandlerInfo{
+			{
+				Method:      "GET",
+				Path:        "/posts",
+				FuncName:    "ListPosts",
+				PackagePath: "example.com/app/api/posts",
+				PathParams:  []codegen.SerializedPathParam{},
+				Request: &codegen.SerializedStructInfo{
+					Name:    "ListPostsRequest",
+					Package: "example.com/app/api/posts",
+					Fields: []codegen.SerializedFieldInfo{
+						{Name: "Cursor", Type: "*string", JSONName: "cursor", Required: false, Tags: map[string]string{"query": "cursor"}},
+					},
+				},
+				Response: &codegen.SerializedStructInfo{
+					Name:    "ListPostsResponse",
+					Package: "example.com/app/api/posts",
+					Fields: []codegen.SerializedFieldInfo{
+						{Name: "Items", Type: "[]string", JSONName: "items", Required: true},
+					},
+				},
+			},
+		},
+		OutputPkg: "api",
+	}
+
+	files, err := GenerateHTTPTestClient(cfg)
+	if err != nil {
+		t.Fatalf("GenerateHTTPTestClient() error = %v", err)
+	}
+
+	resFile := findResourceTestClient(files, "posts")
+	if resFile == nil {
+		t.Fatal("missing posts resource test client file")
+	}
+	codeStr := string(resFile.Content)
+
+	// Pointer string should check != nil before adding to url.Values
+	if !strings.Contains(codeStr, "req.Cursor != nil") {
+		t.Error("missing nil check for *string query param")
+	}
+	if !strings.Contains(codeStr, "*req.Cursor") {
+		t.Error("missing dereference *req.Cursor for *string query param")
+	}
+
+	_, err = parser.ParseFile(token.NewFileSet(), "", resFile.Content, parser.AllErrors)
+	if err != nil {
+		t.Errorf("generated code is not valid Go: %v\n%s", err, codeStr)
+	}
+}
+
+func TestGenerateHTTPTestClient_QueryParams_NoJSONBodyForGET(t *testing.T) {
+	cfg := HTTPTestClientGenConfig{
+		ModulePath: "example.com/app",
+		Handlers: []codegen.SerializedHandlerInfo{
+			{
+				Method:      "GET",
+				Path:        "/posts",
+				FuncName:    "ListPosts",
+				PackagePath: "example.com/app/api/posts",
+				PathParams:  []codegen.SerializedPathParam{},
+				Request: &codegen.SerializedStructInfo{
+					Name:    "ListPostsRequest",
+					Package: "example.com/app/api/posts",
+					Fields: []codegen.SerializedFieldInfo{
+						{Name: "Limit", Type: "int", JSONName: "limit", Required: false, Tags: map[string]string{"query": "limit"}},
+						{Name: "Cursor", Type: "*string", JSONName: "cursor", Required: false, Tags: map[string]string{"query": "cursor"}},
+					},
+				},
+				Response: &codegen.SerializedStructInfo{
+					Name:    "ListPostsResponse",
+					Package: "example.com/app/api/posts",
+					Fields: []codegen.SerializedFieldInfo{
+						{Name: "Items", Type: "[]string", JSONName: "items", Required: true},
+					},
+				},
+			},
+		},
+		OutputPkg: "api",
+	}
+
+	files, err := GenerateHTTPTestClient(cfg)
+	if err != nil {
+		t.Fatalf("GenerateHTTPTestClient() error = %v", err)
+	}
+
+	resFile := findResourceTestClient(files, "posts")
+	if resFile == nil {
+		t.Fatal("missing posts resource test client file")
+	}
+	codeStr := string(resFile.Content)
+
+	// GET handler with only query-tagged fields should NOT send JSON body
+	if strings.Contains(codeStr, "json.Marshal(req)") {
+		t.Error("GET handler with only query fields should NOT call json.Marshal(req)")
+	}
+	if strings.Contains(codeStr, "bytes.NewReader(body)") {
+		t.Error("GET handler with only query fields should NOT use bytes.NewReader(body)")
+	}
+
+	_, err = parser.ParseFile(token.NewFileSet(), "", resFile.Content, parser.AllErrors)
+	if err != nil {
+		t.Errorf("generated code is not valid Go: %v\n%s", err, codeStr)
+	}
+}
+
+func TestGenerateHTTPTestClient_QueryParams_MixedPathAndQuery(t *testing.T) {
+	cfg := HTTPTestClientGenConfig{
+		ModulePath: "example.com/app",
+		Handlers: []codegen.SerializedHandlerInfo{
+			{
+				Method:      "GET",
+				Path:        "/users/:id/posts",
+				FuncName:    "ListUserPosts",
+				PackagePath: "example.com/app/api/posts",
+				PathParams:  []codegen.SerializedPathParam{{Name: "id", Position: 1}},
+				Request: &codegen.SerializedStructInfo{
+					Name:    "ListUserPostsRequest",
+					Package: "example.com/app/api/posts",
+					Fields: []codegen.SerializedFieldInfo{
+						{Name: "ID", Type: "string", JSONName: "id", Required: true, Tags: map[string]string{"path": "id"}},
+						{Name: "Cursor", Type: "*string", JSONName: "cursor", Required: false, Tags: map[string]string{"query": "cursor"}},
+					},
+				},
+				Response: &codegen.SerializedStructInfo{
+					Name:    "ListUserPostsResponse",
+					Package: "example.com/app/api/posts",
+					Fields: []codegen.SerializedFieldInfo{
+						{Name: "Items", Type: "[]string", JSONName: "items", Required: true},
+					},
+				},
+			},
+		},
+		OutputPkg: "api",
+	}
+
+	files, err := GenerateHTTPTestClient(cfg)
+	if err != nil {
+		t.Fatalf("GenerateHTTPTestClient() error = %v", err)
+	}
+
+	resFile := findResourceTestClient(files, "posts")
+	if resFile == nil {
+		t.Fatal("missing posts resource test client file")
+	}
+	codeStr := string(resFile.Content)
+
+	// URL should have path param substitution
+	if !strings.Contains(codeStr, "strings.NewReplacer") {
+		t.Error("missing strings.NewReplacer for path param substitution")
+	}
+	if !strings.Contains(codeStr, `"{id}"`) {
+		t.Error("missing {id} replacement for path param")
+	}
+
+	// AND query param appending
+	if !strings.Contains(codeStr, "url.Values") {
+		t.Error("missing url.Values for query param")
+	}
+	if !strings.Contains(codeStr, `"cursor"`) {
+		t.Error("missing query param name \"cursor\"")
+	}
+
+	_, err = parser.ParseFile(token.NewFileSet(), "", resFile.Content, parser.AllErrors)
+	if err != nil {
+		t.Errorf("generated code is not valid Go: %v\n%s", err, codeStr)
+	}
+}
+
+func TestGenerateHTTPTestClient_QueryParams_IntFieldConversion(t *testing.T) {
+	cfg := HTTPTestClientGenConfig{
+		ModulePath: "example.com/app",
+		Handlers: []codegen.SerializedHandlerInfo{
+			{
+				Method:      "GET",
+				Path:        "/posts",
+				FuncName:    "ListPosts",
+				PackagePath: "example.com/app/api/posts",
+				PathParams:  []codegen.SerializedPathParam{},
+				Request: &codegen.SerializedStructInfo{
+					Name:    "ListPostsRequest",
+					Package: "example.com/app/api/posts",
+					Fields: []codegen.SerializedFieldInfo{
+						{Name: "Limit", Type: "int", JSONName: "limit", Required: false, Tags: map[string]string{"query": "limit"}},
+					},
+				},
+				Response: &codegen.SerializedStructInfo{
+					Name:    "ListPostsResponse",
+					Package: "example.com/app/api/posts",
+					Fields: []codegen.SerializedFieldInfo{
+						{Name: "Items", Type: "[]string", JSONName: "items", Required: true},
+					},
+				},
+			},
+		},
+		OutputPkg: "api",
+	}
+
+	files, err := GenerateHTTPTestClient(cfg)
+	if err != nil {
+		t.Fatalf("GenerateHTTPTestClient() error = %v", err)
+	}
+
+	resFile := findResourceTestClient(files, "posts")
+	if resFile == nil {
+		t.Fatal("missing posts resource test client file")
+	}
+	codeStr := string(resFile.Content)
+
+	if !strings.Contains(codeStr, "strconv.Itoa") {
+		t.Error("missing strconv.Itoa for int query param conversion")
+	}
+
+	_, err = parser.ParseFile(token.NewFileSet(), "", resFile.Content, parser.AllErrors)
+	if err != nil {
+		t.Errorf("generated code is not valid Go: %v\n%s", err, codeStr)
+	}
+}
+
+func TestGenerateHTTPTestClient_QueryParams_BoolFieldConversion(t *testing.T) {
+	cfg := HTTPTestClientGenConfig{
+		ModulePath: "example.com/app",
+		Handlers: []codegen.SerializedHandlerInfo{
+			{
+				Method:      "GET",
+				Path:        "/posts",
+				FuncName:    "ListPosts",
+				PackagePath: "example.com/app/api/posts",
+				PathParams:  []codegen.SerializedPathParam{},
+				Request: &codegen.SerializedStructInfo{
+					Name:    "ListPostsRequest",
+					Package: "example.com/app/api/posts",
+					Fields: []codegen.SerializedFieldInfo{
+						{Name: "IncludeDeleted", Type: "bool", JSONName: "include_deleted", Required: false, Tags: map[string]string{"query": "include_deleted"}},
+					},
+				},
+				Response: &codegen.SerializedStructInfo{
+					Name:    "ListPostsResponse",
+					Package: "example.com/app/api/posts",
+					Fields: []codegen.SerializedFieldInfo{
+						{Name: "Items", Type: "[]string", JSONName: "items", Required: true},
+					},
+				},
+			},
+		},
+		OutputPkg: "api",
+	}
+
+	files, err := GenerateHTTPTestClient(cfg)
+	if err != nil {
+		t.Fatalf("GenerateHTTPTestClient() error = %v", err)
+	}
+
+	resFile := findResourceTestClient(files, "posts")
+	if resFile == nil {
+		t.Fatal("missing posts resource test client file")
+	}
+	codeStr := string(resFile.Content)
+
+	if !strings.Contains(codeStr, "strconv.FormatBool") {
+		t.Error("missing strconv.FormatBool for bool query param conversion")
+	}
+
+	_, err = parser.ParseFile(token.NewFileSet(), "", resFile.Content, parser.AllErrors)
+	if err != nil {
+		t.Errorf("generated code is not valid Go: %v\n%s", err, codeStr)
+	}
+}
+
+func TestGenerateHTTPTestClient_QueryParams_WithCookiesVariant(t *testing.T) {
+	// The WithCookies variant of a POST method with query params should also
+	// correctly construct the URL with query params.
+	cfg := HTTPTestClientGenConfig{
+		ModulePath: "example.com/app",
+		Handlers: []codegen.SerializedHandlerInfo{
+			{
+				Method:      "POST",
+				Path:        "/posts",
+				FuncName:    "CreatePost",
+				PackagePath: "example.com/app/api/posts",
+				PathParams:  []codegen.SerializedPathParam{},
+				Request: &codegen.SerializedStructInfo{
+					Name:    "CreatePostRequest",
+					Package: "example.com/app/api/posts",
+					Fields: []codegen.SerializedFieldInfo{
+						{Name: "Tag", Type: "string", JSONName: "tag", Required: false, Tags: map[string]string{"query": "tag"}},
+						{Name: "Title", Type: "string", JSONName: "title", Required: true},
+					},
+				},
+				Response: &codegen.SerializedStructInfo{
+					Name:    "CreatePostResponse",
+					Package: "example.com/app/api/posts",
+					Fields: []codegen.SerializedFieldInfo{
+						{Name: "ID", Type: "string", JSONName: "id", Required: true},
+					},
+				},
+			},
+		},
+		OutputPkg: "api",
+	}
+
+	files, err := GenerateHTTPTestClient(cfg)
+	if err != nil {
+		t.Fatalf("GenerateHTTPTestClient() error = %v", err)
+	}
+
+	resFile := findResourceTestClient(files, "posts")
+	if resFile == nil {
+		t.Fatal("missing posts resource test client file")
+	}
+	codeStr := string(resFile.Content)
+
+	// Should have both the normal method and WithCookies variant
+	if !strings.Contains(codeStr, "func (c *PostsTestClient) CreatePost(") {
+		t.Error("missing CreatePost method")
+	}
+	if !strings.Contains(codeStr, "func (c *PostsTestClient) CreatePostWithCookies(") {
+		t.Error("missing CreatePostWithCookies method")
+	}
+
+	// Both should have url.Values for query param
+	// Count occurrences of url.Values{} — should appear at least twice
+	// (once for normal method, once for WithCookies)
+	count := strings.Count(codeStr, "url.Values{}")
+	if count < 2 {
+		t.Errorf("expected url.Values{} at least twice (normal + WithCookies), got %d", count)
+	}
+
+	_, err = parser.ParseFile(token.NewFileSet(), "", resFile.Content, parser.AllErrors)
+	if err != nil {
+		t.Errorf("generated code is not valid Go: %v\n%s", err, codeStr)
+	}
+}
+
+func TestGenerateHTTPTestClient_QueryParams_ImportsPresent(t *testing.T) {
+	cfg := HTTPTestClientGenConfig{
+		ModulePath: "example.com/app",
+		Handlers: []codegen.SerializedHandlerInfo{
+			{
+				Method:      "GET",
+				Path:        "/posts",
+				FuncName:    "ListPosts",
+				PackagePath: "example.com/app/api/posts",
+				PathParams:  []codegen.SerializedPathParam{},
+				Request: &codegen.SerializedStructInfo{
+					Name:    "ListPostsRequest",
+					Package: "example.com/app/api/posts",
+					Fields: []codegen.SerializedFieldInfo{
+						{Name: "Limit", Type: "int", JSONName: "limit", Required: false, Tags: map[string]string{"query": "limit"}},
+						{Name: "Cursor", Type: "*string", JSONName: "cursor", Required: false, Tags: map[string]string{"query": "cursor"}},
+					},
+				},
+				Response: &codegen.SerializedStructInfo{
+					Name:    "ListPostsResponse",
+					Package: "example.com/app/api/posts",
+					Fields: []codegen.SerializedFieldInfo{
+						{Name: "Items", Type: "[]string", JSONName: "items", Required: true},
+					},
+				},
+			},
+		},
+		OutputPkg: "api",
+	}
+
+	files, err := GenerateHTTPTestClient(cfg)
+	if err != nil {
+		t.Fatalf("GenerateHTTPTestClient() error = %v", err)
+	}
+
+	resFile := findResourceTestClient(files, "posts")
+	if resFile == nil {
+		t.Fatal("missing posts resource test client file")
+	}
+	codeStr := string(resFile.Content)
+
+	if !strings.Contains(codeStr, `"net/url"`) {
+		t.Error("missing \"net/url\" import when query-tagged fields exist")
+	}
+	if !strings.Contains(codeStr, `"strconv"`) {
+		t.Error("missing \"strconv\" import when int query-tagged fields exist")
+	}
+
+	_, err = parser.ParseFile(token.NewFileSet(), "", resFile.Content, parser.AllErrors)
+	if err != nil {
+		t.Errorf("generated code is not valid Go: %v\n%s", err, codeStr)
+	}
+}
+
+func TestGenerateHTTPTestClient_QueryParams_NoImportsWhenNotNeeded(t *testing.T) {
+	cfg := HTTPTestClientGenConfig{
+		ModulePath: "example.com/app",
+		Handlers: []codegen.SerializedHandlerInfo{
+			{
+				Method:      "POST",
+				Path:        "/posts",
+				FuncName:    "CreatePost",
+				PackagePath: "example.com/app/api/posts",
+				PathParams:  []codegen.SerializedPathParam{},
+				Request: &codegen.SerializedStructInfo{
+					Name:    "CreatePostRequest",
+					Package: "example.com/app/api/posts",
+					Fields: []codegen.SerializedFieldInfo{
+						{Name: "Title", Type: "string", JSONName: "title", Required: true},
+						{Name: "Body", Type: "string", JSONName: "body", Required: true},
+					},
+				},
+				Response: &codegen.SerializedStructInfo{
+					Name:    "CreatePostResponse",
+					Package: "example.com/app/api/posts",
+					Fields: []codegen.SerializedFieldInfo{
+						{Name: "ID", Type: "string", JSONName: "id", Required: true},
+					},
+				},
+			},
+		},
+		OutputPkg: "api",
+	}
+
+	files, err := GenerateHTTPTestClient(cfg)
+	if err != nil {
+		t.Fatalf("GenerateHTTPTestClient() error = %v", err)
+	}
+
+	resFile := findResourceTestClient(files, "posts")
+	if resFile == nil {
+		t.Fatal("missing posts resource test client file")
+	}
+	codeStr := string(resFile.Content)
+
+	if strings.Contains(codeStr, `"net/url"`) {
+		t.Error("\"net/url\" should NOT be imported when no query-tagged fields exist")
+	}
+
+	_, err = parser.ParseFile(token.NewFileSet(), "", resFile.Content, parser.AllErrors)
+	if err != nil {
+		t.Errorf("generated code is not valid Go: %v\n%s", err, codeStr)
+	}
+}
+
 func TestTestClientTypeName(t *testing.T) {
 	tests := []struct {
 		resource string

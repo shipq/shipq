@@ -8,6 +8,180 @@ import (
 	"github.com/shipq/shipq/codegen"
 )
 
+// ─── FilterQueryFields tests ───
+
+func TestFilterQueryFields_ReturnsQueryTagged(t *testing.T) {
+	h := codegen.SerializedHandlerInfo{
+		Request: &codegen.SerializedStructInfo{
+			Name: "ListPostsRequest",
+			Fields: []codegen.SerializedFieldInfo{
+				{Name: "Limit", Type: "int", JSONName: "limit", Tags: map[string]string{"query": "limit"}},
+				{Name: "Title", Type: "string", JSONName: "title"},
+			},
+		},
+	}
+	result := codegen.FilterQueryFields(h)
+	if len(result) != 1 {
+		t.Fatalf("expected 1 query field, got %d", len(result))
+	}
+	if result[0].Name != "Limit" {
+		t.Errorf("expected field name Limit, got %s", result[0].Name)
+	}
+}
+
+func TestFilterQueryFields_NilRequest(t *testing.T) {
+	h := codegen.SerializedHandlerInfo{
+		Request: nil,
+	}
+	result := codegen.FilterQueryFields(h)
+	if result != nil {
+		t.Errorf("expected nil, got %v", result)
+	}
+}
+
+func TestFilterQueryFields_NoQueryTags(t *testing.T) {
+	h := codegen.SerializedHandlerInfo{
+		Request: &codegen.SerializedStructInfo{
+			Name: "CreatePostRequest",
+			Fields: []codegen.SerializedFieldInfo{
+				{Name: "Title", Type: "string", JSONName: "title"},
+				{Name: "Body", Type: "string", JSONName: "body"},
+			},
+		},
+	}
+	result := codegen.FilterQueryFields(h)
+	if len(result) != 0 {
+		t.Errorf("expected 0 query fields, got %d", len(result))
+	}
+}
+
+func TestFilterQueryFields_MixedPathAndQuery(t *testing.T) {
+	h := codegen.SerializedHandlerInfo{
+		PathParams: []codegen.SerializedPathParam{{Name: "id", Position: 1}},
+		Request: &codegen.SerializedStructInfo{
+			Name: "ListUserPostsRequest",
+			Fields: []codegen.SerializedFieldInfo{
+				{Name: "ID", Type: "string", JSONName: "id", Tags: map[string]string{"path": "id"}},
+				{Name: "Cursor", Type: "*string", JSONName: "cursor", Tags: map[string]string{"query": "cursor"}},
+				{Name: "Title", Type: "string", JSONName: "title"},
+			},
+		},
+	}
+	result := codegen.FilterQueryFields(h)
+	if len(result) != 1 {
+		t.Fatalf("expected 1 query field, got %d", len(result))
+	}
+	if result[0].Name != "Cursor" {
+		t.Errorf("expected field name Cursor, got %s", result[0].Name)
+	}
+}
+
+func TestFilterQueryFields_MultipleQueryTags(t *testing.T) {
+	h := codegen.SerializedHandlerInfo{
+		Request: &codegen.SerializedStructInfo{
+			Name: "SearchRequest",
+			Fields: []codegen.SerializedFieldInfo{
+				{Name: "Q", Type: "string", JSONName: "q", Tags: map[string]string{"query": "q"}},
+				{Name: "Limit", Type: "int", JSONName: "limit", Tags: map[string]string{"query": "limit"}},
+			},
+		},
+	}
+	result := codegen.FilterQueryFields(h)
+	if len(result) != 2 {
+		t.Fatalf("expected 2 query fields, got %d", len(result))
+	}
+	if result[0].Name != "Q" {
+		t.Errorf("expected first field Q, got %s", result[0].Name)
+	}
+	if result[1].Name != "Limit" {
+		t.Errorf("expected second field Limit, got %s", result[1].Name)
+	}
+}
+
+// ─── FilterBodyFields tests ───
+
+func TestFilterBodyFields_ExcludesQueryAndPathFields(t *testing.T) {
+	h := codegen.SerializedHandlerInfo{
+		PathParams: []codegen.SerializedPathParam{{Name: "id", Position: 1}},
+		Request: &codegen.SerializedStructInfo{
+			Name: "UpdatePostRequest",
+			Fields: []codegen.SerializedFieldInfo{
+				{Name: "ID", Type: "string", JSONName: "id", Tags: map[string]string{"path": "id"}},
+				{Name: "Tag", Type: "string", JSONName: "tag", Tags: map[string]string{"query": "tag"}},
+				{Name: "Title", Type: "string", JSONName: "title"},
+				{Name: "Body", Type: "string", JSONName: "body"},
+			},
+		},
+	}
+	result := codegen.FilterBodyFields(h)
+	if len(result) != 2 {
+		t.Fatalf("expected 2 body fields, got %d", len(result))
+	}
+	if result[0].Name != "Title" {
+		t.Errorf("expected Title, got %s", result[0].Name)
+	}
+	if result[1].Name != "Body" {
+		t.Errorf("expected Body, got %s", result[1].Name)
+	}
+}
+
+func TestFilterBodyFields_NilRequest(t *testing.T) {
+	h := codegen.SerializedHandlerInfo{Request: nil}
+	result := codegen.FilterBodyFields(h)
+	if result != nil {
+		t.Errorf("expected nil, got %v", result)
+	}
+}
+
+func TestFilterBodyFields_AllBodyFields(t *testing.T) {
+	h := codegen.SerializedHandlerInfo{
+		Request: &codegen.SerializedStructInfo{
+			Name: "CreatePostRequest",
+			Fields: []codegen.SerializedFieldInfo{
+				{Name: "Title", Type: "string", JSONName: "title"},
+				{Name: "Body", Type: "string", JSONName: "body"},
+			},
+		},
+	}
+	result := codegen.FilterBodyFields(h)
+	if len(result) != 2 {
+		t.Fatalf("expected 2 body fields, got %d", len(result))
+	}
+}
+
+func TestFilterBodyFields_OnlyQueryFields(t *testing.T) {
+	h := codegen.SerializedHandlerInfo{
+		Request: &codegen.SerializedStructInfo{
+			Name: "SearchRequest",
+			Fields: []codegen.SerializedFieldInfo{
+				{Name: "Q", Type: "string", JSONName: "q", Tags: map[string]string{"query": "q"}},
+				{Name: "Limit", Type: "int", JSONName: "limit", Tags: map[string]string{"query": "limit"}},
+			},
+		},
+	}
+	result := codegen.FilterBodyFields(h)
+	if len(result) != 0 {
+		t.Errorf("expected 0 body fields, got %d", len(result))
+	}
+}
+
+func TestFilterBodyFields_EmptyQueryTag(t *testing.T) {
+	// A field with query:"" (empty tag value) should NOT be excluded
+	h := codegen.SerializedHandlerInfo{
+		Request: &codegen.SerializedStructInfo{
+			Name: "TestRequest",
+			Fields: []codegen.SerializedFieldInfo{
+				{Name: "Foo", Type: "string", JSONName: "foo", Tags: map[string]string{"query": ""}},
+				{Name: "Bar", Type: "string", JSONName: "bar"},
+			},
+		},
+	}
+	result := codegen.FilterBodyFields(h)
+	if len(result) != 2 {
+		t.Errorf("expected 2 body fields (empty query tag should not exclude), got %d", len(result))
+	}
+}
+
 func TestGetModulePath(t *testing.T) {
 	tests := []struct {
 		name         string

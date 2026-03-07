@@ -1147,3 +1147,1160 @@ func TestGenerateHTTPServer_OAuthNoConfigImport(t *testing.T) {
 		t.Errorf("top-level code is not valid Go: %v\n%s", err, topCode)
 	}
 }
+
+// ─── Query parameter binding tests ───
+// These tests verify that fields with `query:"..."` struct tags are bound from
+// r.URL.Query() in the generated handler wrappers. Currently the codegen does
+// NOT emit query param binding code, so these tests document the expected
+// behaviour and will pass once the fix lands.
+
+func TestGenerateHTTPServer_QueryParamBinding_StringField(t *testing.T) {
+	cfg := HTTPServerGenConfig{
+		ModulePath: "example.com/app",
+		Handlers: []codegen.SerializedHandlerInfo{
+			{
+				Method:      "GET",
+				Path:        "/posts",
+				FuncName:    "ListPosts",
+				PackagePath: "example.com/app/api/posts",
+				PathParams:  []codegen.SerializedPathParam{},
+				Request: &codegen.SerializedStructInfo{
+					Name:    "ListPostsRequest",
+					Package: "example.com/app/api/posts",
+					Fields: []codegen.SerializedFieldInfo{
+						{Name: "Cursor", Type: "*string", JSONName: "cursor", Required: false, Tags: map[string]string{"query": "cursor"}},
+					},
+				},
+				Response: &codegen.SerializedStructInfo{
+					Name:    "ListPostsResponse",
+					Package: "example.com/app/api/posts",
+					Fields: []codegen.SerializedFieldInfo{
+						{Name: "Items", Type: "[]string", JSONName: "items", Required: true},
+					},
+				},
+			},
+		},
+		OutputPkg: "api",
+	}
+
+	files, err := GenerateHTTPServer(cfg)
+	if err != nil {
+		t.Fatalf("GenerateHTTPServer() error = %v", err)
+	}
+
+	resFile := findResourceHTTP(files, "posts")
+	if resFile == nil {
+		t.Fatal("missing posts resource file")
+	}
+	codeStr := string(resFile.Content)
+
+	// The generated wrapper must bind query params from r.URL.Query()
+	if !strings.Contains(codeStr, `r.URL.Query()`) {
+		t.Error("missing r.URL.Query() call for query-tagged field")
+	}
+	if !strings.Contains(codeStr, `"cursor"`) {
+		t.Error("missing query param name \"cursor\" in generated binding code")
+	}
+
+	_, err = parser.ParseFile(token.NewFileSet(), "", resFile.Content, parser.AllErrors)
+	if err != nil {
+		t.Errorf("generated code is not valid Go: %v\n%s", err, codeStr)
+	}
+}
+
+func TestGenerateHTTPServer_QueryParamBinding_IntField(t *testing.T) {
+	cfg := HTTPServerGenConfig{
+		ModulePath: "example.com/app",
+		Handlers: []codegen.SerializedHandlerInfo{
+			{
+				Method:      "GET",
+				Path:        "/posts",
+				FuncName:    "ListPosts",
+				PackagePath: "example.com/app/api/posts",
+				PathParams:  []codegen.SerializedPathParam{},
+				Request: &codegen.SerializedStructInfo{
+					Name:    "ListPostsRequest",
+					Package: "example.com/app/api/posts",
+					Fields: []codegen.SerializedFieldInfo{
+						{Name: "Limit", Type: "int", JSONName: "limit", Required: false, Tags: map[string]string{"query": "limit"}},
+					},
+				},
+				Response: &codegen.SerializedStructInfo{
+					Name:    "ListPostsResponse",
+					Package: "example.com/app/api/posts",
+					Fields: []codegen.SerializedFieldInfo{
+						{Name: "Items", Type: "[]string", JSONName: "items", Required: true},
+					},
+				},
+			},
+		},
+		OutputPkg: "api",
+	}
+
+	files, err := GenerateHTTPServer(cfg)
+	if err != nil {
+		t.Fatalf("GenerateHTTPServer() error = %v", err)
+	}
+
+	resFile := findResourceHTTP(files, "posts")
+	if resFile == nil {
+		t.Fatal("missing posts resource file")
+	}
+	codeStr := string(resFile.Content)
+
+	// Int query params need strconv conversion
+	if !strings.Contains(codeStr, `r.URL.Query()`) {
+		t.Error("missing r.URL.Query() call for query-tagged int field")
+	}
+	if !strings.Contains(codeStr, `"limit"`) {
+		t.Error("missing query param name \"limit\" in generated binding code")
+	}
+	if !strings.Contains(codeStr, "strconv.Atoi") && !strings.Contains(codeStr, "strconv.ParseInt") {
+		t.Error("missing strconv conversion for int query param")
+	}
+
+	_, err = parser.ParseFile(token.NewFileSet(), "", resFile.Content, parser.AllErrors)
+	if err != nil {
+		t.Errorf("generated code is not valid Go: %v\n%s", err, codeStr)
+	}
+}
+
+func TestGenerateHTTPServer_QueryParamBinding_MultipleFields(t *testing.T) {
+	cfg := HTTPServerGenConfig{
+		ModulePath: "example.com/app",
+		Handlers: []codegen.SerializedHandlerInfo{
+			{
+				Method:      "GET",
+				Path:        "/posts",
+				FuncName:    "ListPosts",
+				PackagePath: "example.com/app/api/posts",
+				PathParams:  []codegen.SerializedPathParam{},
+				Request: &codegen.SerializedStructInfo{
+					Name:    "ListPostsRequest",
+					Package: "example.com/app/api/posts",
+					Fields: []codegen.SerializedFieldInfo{
+						{Name: "Limit", Type: "int", JSONName: "limit", Required: false, Tags: map[string]string{"query": "limit"}},
+						{Name: "Cursor", Type: "*string", JSONName: "cursor", Required: false, Tags: map[string]string{"query": "cursor"}},
+					},
+				},
+				Response: &codegen.SerializedStructInfo{
+					Name:    "ListPostsResponse",
+					Package: "example.com/app/api/posts",
+					Fields: []codegen.SerializedFieldInfo{
+						{Name: "Items", Type: "[]string", JSONName: "items", Required: true},
+						{Name: "NextCursor", Type: "*string", JSONName: "next_cursor", Required: false},
+					},
+				},
+			},
+		},
+		OutputPkg: "api",
+	}
+
+	files, err := GenerateHTTPServer(cfg)
+	if err != nil {
+		t.Fatalf("GenerateHTTPServer() error = %v", err)
+	}
+
+	resFile := findResourceHTTP(files, "posts")
+	if resFile == nil {
+		t.Fatal("missing posts resource file")
+	}
+	codeStr := string(resFile.Content)
+
+	// Both query params must be bound
+	if !strings.Contains(codeStr, `"limit"`) {
+		t.Error("missing binding for \"limit\" query param")
+	}
+	if !strings.Contains(codeStr, `"cursor"`) {
+		t.Error("missing binding for \"cursor\" query param")
+	}
+	if !strings.Contains(codeStr, `r.URL.Query()`) {
+		t.Error("missing r.URL.Query() call")
+	}
+
+	_, err = parser.ParseFile(token.NewFileSet(), "", resFile.Content, parser.AllErrors)
+	if err != nil {
+		t.Errorf("generated code is not valid Go: %v\n%s", err, codeStr)
+	}
+}
+
+func TestGenerateHTTPServer_QueryParamBinding_MixedWithPathParams(t *testing.T) {
+	// A handler that has both path params and query params. The generated
+	// wrapper must bind path params via r.PathValue and query params via
+	// r.URL.Query().Get.
+	cfg := HTTPServerGenConfig{
+		ModulePath: "example.com/app",
+		Handlers: []codegen.SerializedHandlerInfo{
+			{
+				Method:      "GET",
+				Path:        "/users/:id/posts",
+				FuncName:    "ListUserPosts",
+				PackagePath: "example.com/app/api/posts",
+				PathParams: []codegen.SerializedPathParam{
+					{Name: "id", Position: 1},
+				},
+				Request: &codegen.SerializedStructInfo{
+					Name:    "ListUserPostsRequest",
+					Package: "example.com/app/api/posts",
+					Fields: []codegen.SerializedFieldInfo{
+						{Name: "ID", Type: "string", JSONName: "id", Required: true, Tags: map[string]string{"path": "id"}},
+						{Name: "Limit", Type: "int", JSONName: "limit", Required: false, Tags: map[string]string{"query": "limit"}},
+						{Name: "Cursor", Type: "*string", JSONName: "cursor", Required: false, Tags: map[string]string{"query": "cursor"}},
+					},
+				},
+				Response: &codegen.SerializedStructInfo{
+					Name:    "ListUserPostsResponse",
+					Package: "example.com/app/api/posts",
+					Fields: []codegen.SerializedFieldInfo{
+						{Name: "Items", Type: "[]string", JSONName: "items", Required: true},
+					},
+				},
+			},
+		},
+		OutputPkg: "api",
+	}
+
+	files, err := GenerateHTTPServer(cfg)
+	if err != nil {
+		t.Fatalf("GenerateHTTPServer() error = %v", err)
+	}
+
+	resFile := findResourceHTTP(files, "posts")
+	if resFile == nil {
+		t.Fatal("missing posts resource file")
+	}
+	codeStr := string(resFile.Content)
+
+	// Path param should use r.PathValue
+	if !strings.Contains(codeStr, `r.PathValue("id")`) {
+		t.Error("missing r.PathValue(\"id\") for path param")
+	}
+
+	// Query params should use r.URL.Query()
+	if !strings.Contains(codeStr, `r.URL.Query()`) {
+		t.Error("missing r.URL.Query() for query params")
+	}
+
+	_, err = parser.ParseFile(token.NewFileSet(), "", resFile.Content, parser.AllErrors)
+	if err != nil {
+		t.Errorf("generated code is not valid Go: %v\n%s", err, codeStr)
+	}
+}
+
+func TestGenerateHTTPServer_QueryParamBinding_NoQueryTag_NoBinding(t *testing.T) {
+	// A handler whose request fields do NOT have query tags should NOT
+	// produce any r.URL.Query() calls (the fields are body fields).
+	cfg := HTTPServerGenConfig{
+		ModulePath: "example.com/app",
+		Handlers: []codegen.SerializedHandlerInfo{
+			{
+				Method:      "POST",
+				Path:        "/posts",
+				FuncName:    "CreatePost",
+				PackagePath: "example.com/app/api/posts",
+				PathParams:  []codegen.SerializedPathParam{},
+				Request: &codegen.SerializedStructInfo{
+					Name:    "CreatePostRequest",
+					Package: "example.com/app/api/posts",
+					Fields: []codegen.SerializedFieldInfo{
+						{Name: "Title", Type: "string", JSONName: "title", Required: true},
+						{Name: "Body", Type: "string", JSONName: "body", Required: true},
+					},
+				},
+				Response: &codegen.SerializedStructInfo{
+					Name:    "CreatePostResponse",
+					Package: "example.com/app/api/posts",
+					Fields: []codegen.SerializedFieldInfo{
+						{Name: "ID", Type: "string", JSONName: "id", Required: true},
+					},
+				},
+			},
+		},
+		OutputPkg: "api",
+	}
+
+	files, err := GenerateHTTPServer(cfg)
+	if err != nil {
+		t.Fatalf("GenerateHTTPServer() error = %v", err)
+	}
+
+	resFile := findResourceHTTP(files, "posts")
+	if resFile == nil {
+		t.Fatal("missing posts resource file")
+	}
+	codeStr := string(resFile.Content)
+
+	if strings.Contains(codeStr, `r.URL.Query()`) {
+		t.Error("should NOT call r.URL.Query() when no fields have query tags")
+	}
+
+	_, err = parser.ParseFile(token.NewFileSet(), "", resFile.Content, parser.AllErrors)
+	if err != nil {
+		t.Errorf("generated code is not valid Go: %v\n%s", err, codeStr)
+	}
+}
+
+func TestGenerateHTTPServer_QueryParamBinding_GetNoJSONBody(t *testing.T) {
+	// A GET handler with only query-tagged fields should NOT produce JSON
+	// body decoding (json.NewDecoder). GET requests have no body.
+	cfg := HTTPServerGenConfig{
+		ModulePath: "example.com/app",
+		Handlers: []codegen.SerializedHandlerInfo{
+			{
+				Method:      "GET",
+				Path:        "/search",
+				FuncName:    "SearchPosts",
+				PackagePath: "example.com/app/api/posts",
+				PathParams:  []codegen.SerializedPathParam{},
+				Request: &codegen.SerializedStructInfo{
+					Name:    "SearchPostsRequest",
+					Package: "example.com/app/api/posts",
+					Fields: []codegen.SerializedFieldInfo{
+						{Name: "Q", Type: "string", JSONName: "q", Required: true, Tags: map[string]string{"query": "q"}},
+						{Name: "Page", Type: "int", JSONName: "page", Required: false, Tags: map[string]string{"query": "page"}},
+					},
+				},
+				Response: &codegen.SerializedStructInfo{
+					Name:    "SearchPostsResponse",
+					Package: "example.com/app/api/posts",
+					Fields: []codegen.SerializedFieldInfo{
+						{Name: "Results", Type: "[]string", JSONName: "results", Required: true},
+					},
+				},
+			},
+		},
+		OutputPkg: "api",
+	}
+
+	files, err := GenerateHTTPServer(cfg)
+	if err != nil {
+		t.Fatalf("GenerateHTTPServer() error = %v", err)
+	}
+
+	resFile := findResourceHTTP(files, "posts")
+	if resFile == nil {
+		t.Fatal("missing posts resource file")
+	}
+	codeStr := string(resFile.Content)
+
+	// Should have query param binding
+	if !strings.Contains(codeStr, `r.URL.Query()`) {
+		t.Error("missing r.URL.Query() for query-tagged fields on GET handler")
+	}
+
+	// Should NOT have JSON body decoding for GET
+	if strings.Contains(codeStr, "json.NewDecoder(r.Body)") {
+		t.Error("GET handler with only query fields should NOT decode JSON body")
+	}
+
+	_, err = parser.ParseFile(token.NewFileSet(), "", resFile.Content, parser.AllErrors)
+	if err != nil {
+		t.Errorf("generated code is not valid Go: %v\n%s", err, codeStr)
+	}
+}
+
+func TestGenerateHTTPServer_QueryParamBinding_BoolField(t *testing.T) {
+	cfg := HTTPServerGenConfig{
+		ModulePath: "example.com/app",
+		Handlers: []codegen.SerializedHandlerInfo{
+			{
+				Method:      "GET",
+				Path:        "/posts",
+				FuncName:    "ListPosts",
+				PackagePath: "example.com/app/api/posts",
+				PathParams:  []codegen.SerializedPathParam{},
+				Request: &codegen.SerializedStructInfo{
+					Name:    "ListPostsRequest",
+					Package: "example.com/app/api/posts",
+					Fields: []codegen.SerializedFieldInfo{
+						{Name: "IncludeDeleted", Type: "bool", JSONName: "include_deleted", Required: false, Tags: map[string]string{"query": "include_deleted"}},
+					},
+				},
+				Response: &codegen.SerializedStructInfo{
+					Name:    "ListPostsResponse",
+					Package: "example.com/app/api/posts",
+					Fields: []codegen.SerializedFieldInfo{
+						{Name: "Items", Type: "[]string", JSONName: "items", Required: true},
+					},
+				},
+			},
+		},
+		OutputPkg: "api",
+	}
+
+	files, err := GenerateHTTPServer(cfg)
+	if err != nil {
+		t.Fatalf("GenerateHTTPServer() error = %v", err)
+	}
+
+	resFile := findResourceHTTP(files, "posts")
+	if resFile == nil {
+		t.Fatal("missing posts resource file")
+	}
+	codeStr := string(resFile.Content)
+
+	// Bool query params need strconv.ParseBool
+	if !strings.Contains(codeStr, `r.URL.Query()`) {
+		t.Error("missing r.URL.Query() for bool query param")
+	}
+	if !strings.Contains(codeStr, `"include_deleted"`) {
+		t.Error("missing query param name \"include_deleted\"")
+	}
+	if !strings.Contains(codeStr, "strconv.ParseBool") {
+		t.Error("missing strconv.ParseBool for bool query param")
+	}
+
+	_, err = parser.ParseFile(token.NewFileSet(), "", resFile.Content, parser.AllErrors)
+	if err != nil {
+		t.Errorf("generated code is not valid Go: %v\n%s", err, codeStr)
+	}
+}
+
+func TestGenerateHTTPServer_QueryParamBinding_Int64Field(t *testing.T) {
+	cfg := HTTPServerGenConfig{
+		ModulePath: "example.com/app",
+		Handlers: []codegen.SerializedHandlerInfo{
+			{
+				Method:      "GET",
+				Path:        "/posts",
+				FuncName:    "ListPosts",
+				PackagePath: "example.com/app/api/posts",
+				PathParams:  []codegen.SerializedPathParam{},
+				Request: &codegen.SerializedStructInfo{
+					Name:    "ListPostsRequest",
+					Package: "example.com/app/api/posts",
+					Fields: []codegen.SerializedFieldInfo{
+						{Name: "AuthorID", Type: "int64", JSONName: "author_id", Required: false, Tags: map[string]string{"query": "author_id"}},
+					},
+				},
+				Response: &codegen.SerializedStructInfo{
+					Name:    "ListPostsResponse",
+					Package: "example.com/app/api/posts",
+					Fields: []codegen.SerializedFieldInfo{
+						{Name: "Items", Type: "[]string", JSONName: "items", Required: true},
+					},
+				},
+			},
+		},
+		OutputPkg: "api",
+	}
+
+	files, err := GenerateHTTPServer(cfg)
+	if err != nil {
+		t.Fatalf("GenerateHTTPServer() error = %v", err)
+	}
+
+	resFile := findResourceHTTP(files, "posts")
+	if resFile == nil {
+		t.Fatal("missing posts resource file")
+	}
+	codeStr := string(resFile.Content)
+
+	if !strings.Contains(codeStr, `r.URL.Query()`) {
+		t.Error("missing r.URL.Query() for int64 query param")
+	}
+	if !strings.Contains(codeStr, "strconv.ParseInt") {
+		t.Error("missing strconv.ParseInt for int64 query param")
+	}
+
+	_, err = parser.ParseFile(token.NewFileSet(), "", resFile.Content, parser.AllErrors)
+	if err != nil {
+		t.Errorf("generated code is not valid Go: %v\n%s", err, codeStr)
+	}
+}
+
+func TestGenerateHTTPServer_QueryParamBinding_PointerStringField(t *testing.T) {
+	// A *string query param should be set only when the query key is
+	// present, assigning a pointer to the retrieved value.
+	cfg := HTTPServerGenConfig{
+		ModulePath: "example.com/app",
+		Handlers: []codegen.SerializedHandlerInfo{
+			{
+				Method:      "GET",
+				Path:        "/posts",
+				FuncName:    "ListPosts",
+				PackagePath: "example.com/app/api/posts",
+				PathParams:  []codegen.SerializedPathParam{},
+				Request: &codegen.SerializedStructInfo{
+					Name:    "ListPostsRequest",
+					Package: "example.com/app/api/posts",
+					Fields: []codegen.SerializedFieldInfo{
+						{Name: "Cursor", Type: "*string", JSONName: "cursor", Required: false, Tags: map[string]string{"query": "cursor"}},
+					},
+				},
+				Response: &codegen.SerializedStructInfo{
+					Name:    "ListPostsResponse",
+					Package: "example.com/app/api/posts",
+					Fields: []codegen.SerializedFieldInfo{
+						{Name: "Items", Type: "[]string", JSONName: "items", Required: true},
+					},
+				},
+			},
+		},
+		OutputPkg: "api",
+	}
+
+	files, err := GenerateHTTPServer(cfg)
+	if err != nil {
+		t.Fatalf("GenerateHTTPServer() error = %v", err)
+	}
+
+	resFile := findResourceHTTP(files, "posts")
+	if resFile == nil {
+		t.Fatal("missing posts resource file")
+	}
+	codeStr := string(resFile.Content)
+
+	// The generated wrapper must bind query params from r.URL.Query()
+	if !strings.Contains(codeStr, `r.URL.Query()`) {
+		t.Error("missing r.URL.Query() call for *string query-tagged field")
+	}
+	if !strings.Contains(codeStr, `"cursor"`) {
+		t.Error("missing query param name \"cursor\" in generated binding code")
+	}
+	// Pointer string: should assign &v when present
+	if !strings.Contains(codeStr, `&v`) {
+		t.Error("missing &v pointer assignment for *string query param")
+	}
+
+	_, err = parser.ParseFile(token.NewFileSet(), "", resFile.Content, parser.AllErrors)
+	if err != nil {
+		t.Errorf("generated code is not valid Go: %v\n%s", err, codeStr)
+	}
+}
+
+// ─── StripPrefix tests ───
+
+func TestGenerateHTTPServer_StripPrefix_GeneratesWrapper(t *testing.T) {
+	cfg := HTTPServerGenConfig{
+		ModulePath: "example.com/app",
+		Handlers: []codegen.SerializedHandlerInfo{
+			{
+				Method:      "GET",
+				Path:        "/posts",
+				FuncName:    "ListPosts",
+				PackagePath: "example.com/app/api/posts",
+				PathParams:  []codegen.SerializedPathParam{},
+				Request: &codegen.SerializedStructInfo{
+					Name:    "ListPostsRequest",
+					Package: "example.com/app/api/posts",
+					Fields:  []codegen.SerializedFieldInfo{},
+				},
+				Response: &codegen.SerializedStructInfo{
+					Name:    "ListPostsResponse",
+					Package: "example.com/app/api/posts",
+					Fields: []codegen.SerializedFieldInfo{
+						{Name: "Items", Type: "[]string", JSONName: "items", Required: true},
+					},
+				},
+			},
+		},
+		OutputPkg:   "api",
+		StripPrefix: "/api",
+	}
+
+	files, err := GenerateHTTPServer(cfg)
+	if err != nil {
+		t.Fatalf("GenerateHTTPServer() error = %v", err)
+	}
+
+	topLevel := findTopLevel(files)
+	if topLevel == nil {
+		t.Fatal("missing top-level file")
+	}
+	codeStr := string(topLevel.Content)
+
+	// Should contain http.StripPrefix wrapper
+	if !strings.Contains(codeStr, `http.StripPrefix("/api"`) {
+		t.Error("missing http.StripPrefix(\"/api\") wrapper when StripPrefix is configured")
+	}
+
+	// Health check exclusion path should be prefixed
+	if !strings.Contains(codeStr, `"/api/health"`) {
+		t.Error("health check exclusion path should be \"/api/health\" when StripPrefix is \"/api\"")
+	}
+
+	_, err = parser.ParseFile(token.NewFileSet(), "", topLevel.Content, parser.AllErrors)
+	if err != nil {
+		t.Errorf("generated code is not valid Go: %v\n%s", err, codeStr)
+	}
+}
+
+func TestGenerateHTTPServer_StripPrefix_AbsentWhenEmpty(t *testing.T) {
+	cfg := HTTPServerGenConfig{
+		ModulePath: "example.com/app",
+		Handlers: []codegen.SerializedHandlerInfo{
+			{
+				Method:      "GET",
+				Path:        "/posts",
+				FuncName:    "ListPosts",
+				PackagePath: "example.com/app/api/posts",
+				PathParams:  []codegen.SerializedPathParam{},
+				Request: &codegen.SerializedStructInfo{
+					Name:    "ListPostsRequest",
+					Package: "example.com/app/api/posts",
+					Fields:  []codegen.SerializedFieldInfo{},
+				},
+				Response: &codegen.SerializedStructInfo{
+					Name:    "ListPostsResponse",
+					Package: "example.com/app/api/posts",
+					Fields: []codegen.SerializedFieldInfo{
+						{Name: "Items", Type: "[]string", JSONName: "items", Required: true},
+					},
+				},
+			},
+		},
+		OutputPkg:   "api",
+		StripPrefix: "",
+	}
+
+	files, err := GenerateHTTPServer(cfg)
+	if err != nil {
+		t.Fatalf("GenerateHTTPServer() error = %v", err)
+	}
+
+	topLevel := findTopLevel(files)
+	if topLevel == nil {
+		t.Fatal("missing top-level file")
+	}
+	codeStr := string(topLevel.Content)
+
+	// Should NOT contain http.StripPrefix when StripPrefix is empty
+	if strings.Contains(codeStr, "http.StripPrefix") {
+		t.Error("http.StripPrefix should NOT appear when StripPrefix is empty")
+	}
+
+	// Health check should use plain /health
+	if !strings.Contains(codeStr, `"/health"`) {
+		t.Error("health check path should be \"/health\" when StripPrefix is empty")
+	}
+
+	_, err = parser.ParseFile(token.NewFileSet(), "", topLevel.Content, parser.AllErrors)
+	if err != nil {
+		t.Errorf("generated code is not valid Go: %v\n%s", err, codeStr)
+	}
+}
+
+func TestGenerateHTTPServer_StripPrefix_ValidGoWithChannels(t *testing.T) {
+	// Verify StripPrefix + HasChannels produces valid Go
+	cfg := HTTPServerGenConfig{
+		ModulePath: "example.com/app",
+		Handlers: []codegen.SerializedHandlerInfo{
+			{
+				Method:      "GET",
+				Path:        "/posts",
+				FuncName:    "ListPosts",
+				PackagePath: "example.com/app/api/posts",
+				PathParams:  []codegen.SerializedPathParam{},
+				Request: &codegen.SerializedStructInfo{
+					Name:    "ListPostsRequest",
+					Package: "example.com/app/api/posts",
+					Fields:  []codegen.SerializedFieldInfo{},
+				},
+				Response: &codegen.SerializedStructInfo{
+					Name:    "ListPostsResponse",
+					Package: "example.com/app/api/posts",
+					Fields: []codegen.SerializedFieldInfo{
+						{Name: "Items", Type: "[]string", JSONName: "items", Required: true},
+					},
+				},
+			},
+		},
+		OutputPkg:   "api",
+		StripPrefix: "/v1/api",
+		HasChannels: true,
+	}
+
+	files, err := GenerateHTTPServer(cfg)
+	if err != nil {
+		t.Fatalf("GenerateHTTPServer() error = %v", err)
+	}
+
+	topLevel := findTopLevel(files)
+	if topLevel == nil {
+		t.Fatal("missing top-level file")
+	}
+	codeStr := string(topLevel.Content)
+
+	// Should contain http.StripPrefix with the nested prefix
+	if !strings.Contains(codeStr, `http.StripPrefix("/v1/api"`) {
+		t.Error("missing http.StripPrefix(\"/v1/api\") wrapper")
+	}
+
+	// Health check exclusion path should be prefixed
+	if !strings.Contains(codeStr, `"/v1/api/health"`) {
+		t.Error("health check exclusion path should be \"/v1/api/health\"")
+	}
+
+	// Must still have SetupMux since HasChannels is true
+	if !strings.Contains(codeStr, "func SetupMux") {
+		t.Error("should still generate SetupMux when HasChannels is true")
+	}
+
+	_, err = parser.ParseFile(token.NewFileSet(), "", topLevel.Content, parser.AllErrors)
+	if err != nil {
+		t.Errorf("generated code is not valid Go: %v\n%s", err, codeStr)
+	}
+}
+
+func TestGenerateHTTPServer_QueryParamBinding_PlainStringField(t *testing.T) {
+	// A non-pointer string query field should do simple req.Field = v assignment.
+	cfg := HTTPServerGenConfig{
+		ModulePath: "example.com/app",
+		Handlers: []codegen.SerializedHandlerInfo{
+			{
+				Method:      "GET",
+				Path:        "/search",
+				FuncName:    "SearchPosts",
+				PackagePath: "example.com/app/api/posts",
+				PathParams:  []codegen.SerializedPathParam{},
+				Request: &codegen.SerializedStructInfo{
+					Name:    "SearchPostsRequest",
+					Package: "example.com/app/api/posts",
+					Fields: []codegen.SerializedFieldInfo{
+						{Name: "Q", Type: "string", JSONName: "q", Required: false, Tags: map[string]string{"query": "q"}},
+					},
+				},
+				Response: &codegen.SerializedStructInfo{
+					Name:    "SearchPostsResponse",
+					Package: "example.com/app/api/posts",
+					Fields: []codegen.SerializedFieldInfo{
+						{Name: "Items", Type: "[]string", JSONName: "items", Required: true},
+					},
+				},
+			},
+		},
+		OutputPkg: "api",
+	}
+
+	files, err := GenerateHTTPServer(cfg)
+	if err != nil {
+		t.Fatalf("GenerateHTTPServer() error = %v", err)
+	}
+
+	resFile := findResourceHTTP(files, "posts")
+	if resFile == nil {
+		t.Fatal("missing posts resource file")
+	}
+	codeStr := string(resFile.Content)
+
+	if !strings.Contains(codeStr, `r.URL.Query()`) {
+		t.Error("missing r.URL.Query() for plain string query param")
+	}
+	if !strings.Contains(codeStr, `req.Q = v`) {
+		t.Error("missing simple req.Q = v assignment for plain string query param")
+	}
+	// Should NOT have pointer indirection
+	if strings.Contains(codeStr, `&v`) {
+		t.Error("plain string query param should NOT use &v pointer indirection")
+	}
+
+	_, err = parser.ParseFile(token.NewFileSet(), "", resFile.Content, parser.AllErrors)
+	if err != nil {
+		t.Errorf("generated code is not valid Go: %v\n%s", err, codeStr)
+	}
+}
+
+func TestGenerateHTTPServer_QueryParamBinding_Int32Field(t *testing.T) {
+	cfg := HTTPServerGenConfig{
+		ModulePath: "example.com/app",
+		Handlers: []codegen.SerializedHandlerInfo{
+			{
+				Method:      "GET",
+				Path:        "/posts",
+				FuncName:    "ListPosts",
+				PackagePath: "example.com/app/api/posts",
+				PathParams:  []codegen.SerializedPathParam{},
+				Request: &codegen.SerializedStructInfo{
+					Name:    "ListPostsRequest",
+					Package: "example.com/app/api/posts",
+					Fields: []codegen.SerializedFieldInfo{
+						{Name: "Page", Type: "int32", JSONName: "page", Required: false, Tags: map[string]string{"query": "page"}},
+					},
+				},
+				Response: &codegen.SerializedStructInfo{
+					Name:    "ListPostsResponse",
+					Package: "example.com/app/api/posts",
+					Fields: []codegen.SerializedFieldInfo{
+						{Name: "Items", Type: "[]string", JSONName: "items", Required: true},
+					},
+				},
+			},
+		},
+		OutputPkg: "api",
+	}
+
+	files, err := GenerateHTTPServer(cfg)
+	if err != nil {
+		t.Fatalf("GenerateHTTPServer() error = %v", err)
+	}
+
+	resFile := findResourceHTTP(files, "posts")
+	if resFile == nil {
+		t.Fatal("missing posts resource file")
+	}
+	codeStr := string(resFile.Content)
+
+	if !strings.Contains(codeStr, `r.URL.Query()`) {
+		t.Error("missing r.URL.Query() for int32 query param")
+	}
+	if !strings.Contains(codeStr, "strconv.ParseInt") {
+		t.Error("missing strconv.ParseInt for int32 query param")
+	}
+	if !strings.Contains(codeStr, "int32(parsed)") {
+		t.Error("missing int32 cast for int32 query param")
+	}
+
+	_, err = parser.ParseFile(token.NewFileSet(), "", resFile.Content, parser.AllErrors)
+	if err != nil {
+		t.Errorf("generated code is not valid Go: %v\n%s", err, codeStr)
+	}
+}
+
+func TestGenerateHTTPServer_QueryParamBinding_Uint64Field(t *testing.T) {
+	cfg := HTTPServerGenConfig{
+		ModulePath: "example.com/app",
+		Handlers: []codegen.SerializedHandlerInfo{
+			{
+				Method:      "GET",
+				Path:        "/posts",
+				FuncName:    "ListPosts",
+				PackagePath: "example.com/app/api/posts",
+				PathParams:  []codegen.SerializedPathParam{},
+				Request: &codegen.SerializedStructInfo{
+					Name:    "ListPostsRequest",
+					Package: "example.com/app/api/posts",
+					Fields: []codegen.SerializedFieldInfo{
+						{Name: "Since", Type: "uint64", JSONName: "since", Required: false, Tags: map[string]string{"query": "since"}},
+					},
+				},
+				Response: &codegen.SerializedStructInfo{
+					Name:    "ListPostsResponse",
+					Package: "example.com/app/api/posts",
+					Fields: []codegen.SerializedFieldInfo{
+						{Name: "Items", Type: "[]string", JSONName: "items", Required: true},
+					},
+				},
+			},
+		},
+		OutputPkg: "api",
+	}
+
+	files, err := GenerateHTTPServer(cfg)
+	if err != nil {
+		t.Fatalf("GenerateHTTPServer() error = %v", err)
+	}
+
+	resFile := findResourceHTTP(files, "posts")
+	if resFile == nil {
+		t.Fatal("missing posts resource file")
+	}
+	codeStr := string(resFile.Content)
+
+	if !strings.Contains(codeStr, `r.URL.Query()`) {
+		t.Error("missing r.URL.Query() for uint64 query param")
+	}
+	if !strings.Contains(codeStr, "strconv.ParseUint") {
+		t.Error("missing strconv.ParseUint for uint64 query param")
+	}
+
+	_, err = parser.ParseFile(token.NewFileSet(), "", resFile.Content, parser.AllErrors)
+	if err != nil {
+		t.Errorf("generated code is not valid Go: %v\n%s", err, codeStr)
+	}
+}
+
+func TestGenerateHTTPServer_QueryParamBinding_PointerIntField(t *testing.T) {
+	cfg := HTTPServerGenConfig{
+		ModulePath: "example.com/app",
+		Handlers: []codegen.SerializedHandlerInfo{
+			{
+				Method:      "GET",
+				Path:        "/posts",
+				FuncName:    "ListPosts",
+				PackagePath: "example.com/app/api/posts",
+				PathParams:  []codegen.SerializedPathParam{},
+				Request: &codegen.SerializedStructInfo{
+					Name:    "ListPostsRequest",
+					Package: "example.com/app/api/posts",
+					Fields: []codegen.SerializedFieldInfo{
+						{Name: "Limit", Type: "*int", JSONName: "limit", Required: false, Tags: map[string]string{"query": "limit"}},
+					},
+				},
+				Response: &codegen.SerializedStructInfo{
+					Name:    "ListPostsResponse",
+					Package: "example.com/app/api/posts",
+					Fields: []codegen.SerializedFieldInfo{
+						{Name: "Items", Type: "[]string", JSONName: "items", Required: true},
+					},
+				},
+			},
+		},
+		OutputPkg: "api",
+	}
+
+	files, err := GenerateHTTPServer(cfg)
+	if err != nil {
+		t.Fatalf("GenerateHTTPServer() error = %v", err)
+	}
+
+	resFile := findResourceHTTP(files, "posts")
+	if resFile == nil {
+		t.Fatal("missing posts resource file")
+	}
+	codeStr := string(resFile.Content)
+
+	if !strings.Contains(codeStr, `r.URL.Query()`) {
+		t.Error("missing r.URL.Query() for *int query param")
+	}
+	if !strings.Contains(codeStr, "strconv.Atoi") {
+		t.Error("missing strconv.Atoi for *int query param")
+	}
+	if !strings.Contains(codeStr, "&parsed") {
+		t.Error("missing &parsed pointer assignment for *int query param")
+	}
+
+	_, err = parser.ParseFile(token.NewFileSet(), "", resFile.Content, parser.AllErrors)
+	if err != nil {
+		t.Errorf("generated code is not valid Go: %v\n%s", err, codeStr)
+	}
+}
+
+func TestGenerateHTTPServer_QueryParamBinding_PostWithQueryAndBody(t *testing.T) {
+	// POST handler with both query:"tag" field and plain body fields.
+	// Query field bound from URL, body fields from json.NewDecoder,
+	// query field NOT in JSON decode target.
+	cfg := HTTPServerGenConfig{
+		ModulePath: "example.com/app",
+		Handlers: []codegen.SerializedHandlerInfo{
+			{
+				Method:      "POST",
+				Path:        "/posts",
+				FuncName:    "CreatePost",
+				PackagePath: "example.com/app/api/posts",
+				PathParams:  []codegen.SerializedPathParam{},
+				Request: &codegen.SerializedStructInfo{
+					Name:    "CreatePostRequest",
+					Package: "example.com/app/api/posts",
+					Fields: []codegen.SerializedFieldInfo{
+						{Name: "Tag", Type: "string", JSONName: "tag", Required: false, Tags: map[string]string{"query": "tag"}},
+						{Name: "Title", Type: "string", JSONName: "title", Required: true},
+						{Name: "Body", Type: "string", JSONName: "body", Required: true},
+					},
+				},
+				Response: &codegen.SerializedStructInfo{
+					Name:    "CreatePostResponse",
+					Package: "example.com/app/api/posts",
+					Fields: []codegen.SerializedFieldInfo{
+						{Name: "ID", Type: "string", JSONName: "id", Required: true},
+					},
+				},
+			},
+		},
+		OutputPkg: "api",
+	}
+
+	files, err := GenerateHTTPServer(cfg)
+	if err != nil {
+		t.Fatalf("GenerateHTTPServer() error = %v", err)
+	}
+
+	resFile := findResourceHTTP(files, "posts")
+	if resFile == nil {
+		t.Fatal("missing posts resource file")
+	}
+	codeStr := string(resFile.Content)
+
+	// Query param should be bound from URL
+	if !strings.Contains(codeStr, `r.URL.Query()`) {
+		t.Error("missing r.URL.Query() for query-tagged field on POST handler")
+	}
+	if !strings.Contains(codeStr, `"tag"`) {
+		t.Error("missing query param name \"tag\"")
+	}
+
+	// Body fields should still be decoded from JSON
+	if !strings.Contains(codeStr, "json.NewDecoder(r.Body)") {
+		t.Error("POST handler with body fields should still decode JSON body")
+	}
+
+	_, err = parser.ParseFile(token.NewFileSet(), "", resFile.Content, parser.AllErrors)
+	if err != nil {
+		t.Errorf("generated code is not valid Go: %v\n%s", err, codeStr)
+	}
+}
+
+func TestGenerateHTTPServer_QueryParamBinding_DeleteWithQueryField(t *testing.T) {
+	// DELETE handler with a query:"force" bool field — query param is bound,
+	// no body decoding.
+	cfg := HTTPServerGenConfig{
+		ModulePath: "example.com/app",
+		Handlers: []codegen.SerializedHandlerInfo{
+			{
+				Method:      "DELETE",
+				Path:        "/posts/:id",
+				FuncName:    "DeletePost",
+				PackagePath: "example.com/app/api/posts",
+				PathParams:  []codegen.SerializedPathParam{{Name: "id", Position: 1}},
+				Request: &codegen.SerializedStructInfo{
+					Name:    "DeletePostRequest",
+					Package: "example.com/app/api/posts",
+					Fields: []codegen.SerializedFieldInfo{
+						{Name: "ID", Type: "string", JSONName: "id", Required: true, Tags: map[string]string{"path": "id"}},
+						{Name: "Force", Type: "bool", JSONName: "force", Required: false, Tags: map[string]string{"query": "force"}},
+					},
+				},
+				Response: &codegen.SerializedStructInfo{
+					Name:    "DeletePostResponse",
+					Package: "example.com/app/api/posts",
+					Fields: []codegen.SerializedFieldInfo{
+						{Name: "Deleted", Type: "bool", JSONName: "deleted", Required: true},
+					},
+				},
+			},
+		},
+		OutputPkg: "api",
+	}
+
+	files, err := GenerateHTTPServer(cfg)
+	if err != nil {
+		t.Fatalf("GenerateHTTPServer() error = %v", err)
+	}
+
+	resFile := findResourceHTTP(files, "posts")
+	if resFile == nil {
+		t.Fatal("missing posts resource file")
+	}
+	codeStr := string(resFile.Content)
+
+	// Query param should be bound
+	if !strings.Contains(codeStr, `r.URL.Query()`) {
+		t.Error("missing r.URL.Query() for query param on DELETE handler")
+	}
+	if !strings.Contains(codeStr, "strconv.ParseBool") {
+		t.Error("missing strconv.ParseBool for bool query param on DELETE handler")
+	}
+
+	// DELETE does not have a body — no JSON decoding
+	if strings.Contains(codeStr, "json.NewDecoder(r.Body)") {
+		t.Error("DELETE handler should NOT decode JSON body")
+	}
+
+	_, err = parser.ParseFile(token.NewFileSet(), "", resFile.Content, parser.AllErrors)
+	if err != nil {
+		t.Errorf("generated code is not valid Go: %v\n%s", err, codeStr)
+	}
+}
+
+func TestGenerateHTTPServer_QueryParamBinding_QueryAndPathSameName(t *testing.T) {
+	// Edge case: a query field and a path param that happen to have the same
+	// JSON name but different query/path tags — path param uses r.PathValue,
+	// query param uses r.URL.Query(), no collision.
+	cfg := HTTPServerGenConfig{
+		ModulePath: "example.com/app",
+		Handlers: []codegen.SerializedHandlerInfo{
+			{
+				Method:      "GET",
+				Path:        "/users/:id/posts",
+				FuncName:    "ListUserPosts",
+				PackagePath: "example.com/app/api/posts",
+				PathParams:  []codegen.SerializedPathParam{{Name: "id", Position: 1}},
+				Request: &codegen.SerializedStructInfo{
+					Name:    "ListUserPostsRequest",
+					Package: "example.com/app/api/posts",
+					Fields: []codegen.SerializedFieldInfo{
+						{Name: "ID", Type: "string", JSONName: "id", Required: true, Tags: map[string]string{"path": "id"}},
+						{Name: "Filter", Type: "string", JSONName: "id", Required: false, Tags: map[string]string{"query": "id"}},
+					},
+				},
+				Response: &codegen.SerializedStructInfo{
+					Name:    "ListUserPostsResponse",
+					Package: "example.com/app/api/posts",
+					Fields: []codegen.SerializedFieldInfo{
+						{Name: "Items", Type: "[]string", JSONName: "items", Required: true},
+					},
+				},
+			},
+		},
+		OutputPkg: "api",
+	}
+
+	files, err := GenerateHTTPServer(cfg)
+	if err != nil {
+		t.Fatalf("GenerateHTTPServer() error = %v", err)
+	}
+
+	resFile := findResourceHTTP(files, "posts")
+	if resFile == nil {
+		t.Fatal("missing posts resource file")
+	}
+	codeStr := string(resFile.Content)
+
+	// Path param should use r.PathValue
+	if !strings.Contains(codeStr, `r.PathValue("id")`) {
+		t.Error("missing r.PathValue(\"id\") for path param")
+	}
+
+	// Query param should use r.URL.Query()
+	if !strings.Contains(codeStr, `r.URL.Query()`) {
+		t.Error("missing r.URL.Query() for query param")
+	}
+
+	_, err = parser.ParseFile(token.NewFileSet(), "", resFile.Content, parser.AllErrors)
+	if err != nil {
+		t.Errorf("generated code is not valid Go: %v\n%s", err, codeStr)
+	}
+}
+
+func TestGenerateHTTPServer_QueryParamBinding_EmptyQueryTag(t *testing.T) {
+	// A field with query:"" (empty string tag value) should be treated as
+	// no query tag and should NOT produce query binding.
+	cfg := HTTPServerGenConfig{
+		ModulePath: "example.com/app",
+		Handlers: []codegen.SerializedHandlerInfo{
+			{
+				Method:      "GET",
+				Path:        "/posts",
+				FuncName:    "ListPosts",
+				PackagePath: "example.com/app/api/posts",
+				PathParams:  []codegen.SerializedPathParam{},
+				Request: &codegen.SerializedStructInfo{
+					Name:    "ListPostsRequest",
+					Package: "example.com/app/api/posts",
+					Fields: []codegen.SerializedFieldInfo{
+						{Name: "Foo", Type: "string", JSONName: "foo", Required: false, Tags: map[string]string{"query": ""}},
+					},
+				},
+				Response: &codegen.SerializedStructInfo{
+					Name:    "ListPostsResponse",
+					Package: "example.com/app/api/posts",
+					Fields: []codegen.SerializedFieldInfo{
+						{Name: "Items", Type: "[]string", JSONName: "items", Required: true},
+					},
+				},
+			},
+		},
+		OutputPkg: "api",
+	}
+
+	files, err := GenerateHTTPServer(cfg)
+	if err != nil {
+		t.Fatalf("GenerateHTTPServer() error = %v", err)
+	}
+
+	resFile := findResourceHTTP(files, "posts")
+	if resFile == nil {
+		t.Fatal("missing posts resource file")
+	}
+	codeStr := string(resFile.Content)
+
+	// Empty query tag means no query binding
+	if strings.Contains(codeStr, `r.URL.Query()`) {
+		t.Error("field with empty query tag should NOT produce r.URL.Query() binding")
+	}
+
+	_, err = parser.ParseFile(token.NewFileSet(), "", resFile.Content, parser.AllErrors)
+	if err != nil {
+		t.Errorf("generated code is not valid Go: %v\n%s", err, codeStr)
+	}
+}

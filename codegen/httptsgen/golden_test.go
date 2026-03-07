@@ -70,6 +70,13 @@ func makeMultiResourceHandlers() []codegen.SerializedHandlerInfo {
 			FuncName:    "ListPosts",
 			PackagePath: "myapp/api/posts",
 			RequireAuth: false,
+			Request: &codegen.SerializedStructInfo{
+				Name: "ListPostsRequest",
+				Fields: []codegen.SerializedFieldInfo{
+					{Name: "Cursor", Type: "*string", JSONName: "cursor", Required: false, Tags: map[string]string{"query": "cursor"}},
+					{Name: "Limit", Type: "int", JSONName: "limit", Required: false, Tags: map[string]string{"query": "limit"}},
+				},
+			},
 			Response: &codegen.SerializedStructInfo{
 				Name: "ListPostsResponse",
 				Fields: []codegen.SerializedFieldInfo{
@@ -116,6 +123,13 @@ func makeMultiResourceHandlers() []codegen.SerializedHandlerInfo {
 			FuncName:    "AdminListPosts",
 			PackagePath: "myapp/api/posts",
 			RequireAuth: true,
+			Request: &codegen.SerializedStructInfo{
+				Name: "AdminListPostsRequest",
+				Fields: []codegen.SerializedFieldInfo{
+					{Name: "Cursor", Type: "*string", JSONName: "cursor", Required: false, Tags: map[string]string{"query": "cursor"}},
+					{Name: "Limit", Type: "int", JSONName: "limit", Required: false, Tags: map[string]string{"query": "limit"}},
+				},
+			},
 			Response: &codegen.SerializedStructInfo{
 				Name: "AdminListPostsResponse",
 				Fields: []codegen.SerializedFieldInfo{
@@ -177,6 +191,13 @@ func makeMultiResourceHandlers() []codegen.SerializedHandlerInfo {
 			FuncName:    "ListComments",
 			PackagePath: "myapp/api/comments",
 			RequireAuth: false,
+			Request: &codegen.SerializedStructInfo{
+				Name: "ListCommentsRequest",
+				Fields: []codegen.SerializedFieldInfo{
+					{Name: "Cursor", Type: "*string", JSONName: "cursor", Required: false, Tags: map[string]string{"query": "cursor"}},
+					{Name: "Limit", Type: "int", JSONName: "limit", Required: false, Tags: map[string]string{"query": "limit"}},
+				},
+			},
 			Response: &codegen.SerializedStructInfo{
 				Name: "ListCommentsResponse",
 				Fields: []codegen.SerializedFieldInfo{

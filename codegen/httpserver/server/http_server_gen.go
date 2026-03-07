@@ -22,6 +22,7 @@ type HTTPServerGenConfig struct {
 	ScopeColumn     string                          // from [db] scope in shipq.ini; controls RBAC query variant
 	HasChannels     bool                            // true when [workers] channels exist; generates SetupMux
 	HasOAuth        bool                            // true when any OAuth provider is enabled; registers OAuth routes
+	StripPrefix     string                          // URL prefix to strip from incoming requests (e.g., "/api")
 }
 
 // GeneratedHTTPFile represents a single generated file.
@@ -323,7 +324,9 @@ func generateResourceHandlerWrapper(buf *bytes.Buffer, h codegen.SerializedHandl
 
 	// Determine if we need to declare a request variable
 	hasRequest := h.Request != nil && (len(h.Request.Fields) > 0 || len(h.PathParams) > 0)
-	needsJSONBody := hasRequest && codegen.MethodHasBody(h.Method)
+	queryFields := codegen.FilterQueryFields(h)
+	bodyFields := codegen.FilterBodyFields(h)
+	needsJSONBody := hasRequest && codegen.MethodHasBody(h.Method) && len(bodyFields) > 0
 
 	if hasRequest {
 		reqType := pkgAlias + "." + h.Request.Name
@@ -331,6 +334,10 @@ func generateResourceHandlerWrapper(buf *bytes.Buffer, h codegen.SerializedHandl
 
 		if len(h.PathParams) > 0 {
 			generatePathParamBinding(buf, h)
+		}
+
+		if len(queryFields) > 0 {
+			generateQueryParamBinding(buf, h, queryFields)
 		}
 
 		if needsJSONBody {
@@ -452,9 +459,14 @@ func generateTopLevelHTTP(cfg HTTPServerGenConfig, groups []ResourceGroup) ([]by
 // raw *http.ServeMux, register channel routes, then wrap with logging.Decorate.
 func NewMux(q httpserver.PingableQuerier, runner queries.Runner, logger *slog.Logger) http.Handler {
 	mux := SetupMux(q, runner)
-	return logging.Decorate([]string{"/health"}, logger, mux)
-}
 `)
+		if cfg.StripPrefix != "" {
+			fmt.Fprintf(&buf, "\tvar handler http.Handler = http.StripPrefix(%q, mux)\n", cfg.StripPrefix)
+			fmt.Fprintf(&buf, "\treturn logging.Decorate([]string{%q}, logger, handler)\n", cfg.StripPrefix+"/health")
+		} else {
+			buf.WriteString("\treturn logging.Decorate([]string{\"/health\"}, logger, mux)\n")
+		}
+		buf.WriteString("}\n")
 	} else {
 		buf.WriteString(`// NewMux creates an http.ServeMux with all registered handlers.
 // The provided PingableQuerier will be injected into each request's context
@@ -498,10 +510,15 @@ func NewMux(q httpserver.PingableQuerier, runner queries.Runner, logger *slog.Lo
 		}
 
 		buf.WriteString(`
-	// Wrap with logging middleware, excluding /health
-	return logging.Decorate([]string{"/health"}, logger, mux)
-}
 `)
+		if cfg.StripPrefix != "" {
+			fmt.Fprintf(&buf, "\tvar handler http.Handler = http.StripPrefix(%q, mux)\n", cfg.StripPrefix)
+			fmt.Fprintf(&buf, "\treturn logging.Decorate([]string{%q}, logger, handler)\n", cfg.StripPrefix+"/health")
+		} else {
+			buf.WriteString("\t// Wrap with logging middleware, excluding /health\n")
+			buf.WriteString("\treturn logging.Decorate([]string{\"/health\"}, logger, mux)\n")
+		}
+		buf.WriteString("}\n")
 	}
 
 	// Generate the registerOpenAPIRoutes helper function
@@ -669,12 +686,13 @@ func findAuthPackagePath(handlers []codegen.SerializedHandlerInfo) string {
 
 // needsStrconv checks if any handler needs strconv for type conversion.
 // needsJSONImport returns true if any handler has a method with a body (POST,
-// PUT, PATCH) AND a request type with fields or path params. In that case the
-// generated wrapper calls json.NewDecoder to bind the JSON body.
+// PUT, PATCH) AND a request type with body fields (excluding path and query params).
+// In that case the generated wrapper calls json.NewDecoder to bind the JSON body.
 func needsJSONImport(handlers []codegen.SerializedHandlerInfo) bool {
 	for _, h := range handlers {
 		hasRequest := h.Request != nil && (len(h.Request.Fields) > 0 || len(h.PathParams) > 0)
-		if hasRequest && codegen.MethodHasBody(h.Method) {
+		bodyFields := codegen.FilterBodyFields(h)
+		if hasRequest && codegen.MethodHasBody(h.Method) && len(bodyFields) > 0 {
 			return true
 		}
 	}
@@ -701,6 +719,10 @@ func needsHTTPError(handlers []codegen.SerializedHandlerInfo) bool {
 			}
 		}
 	}
+	// Also needed when JSON body binding is present
+	if needsJSONImport(handlers) {
+		return true
+	}
 	return false
 }
 
@@ -709,6 +731,7 @@ func needsStrconv(handlers []codegen.SerializedHandlerInfo) bool {
 		if h.Request == nil {
 			continue
 		}
+		// Check path params that need type conversion
 		for _, field := range h.Request.Fields {
 			for _, param := range h.PathParams {
 				if strings.EqualFold(field.JSONName, param.Name) || strings.EqualFold(field.Name, param.Name) {
@@ -716,6 +739,13 @@ func needsStrconv(handlers []codegen.SerializedHandlerInfo) bool {
 						return true
 					}
 				}
+			}
+		}
+		// Check query params that need type conversion
+		queryFields := codegen.FilterQueryFields(h)
+		for _, f := range queryFields {
+			if f.Type != "string" && f.Type != "*string" {
+				return true
 			}
 		}
 	}
@@ -804,4 +834,68 @@ func generateJSONBodyBinding(buf *bytes.Buffer, h codegen.SerializedHandlerInfo)
 	buf.WriteString("\t\thttputil.WriteError(w, httperror.BadRequest(\"invalid JSON body\"))\n")
 	buf.WriteString("\t\treturn\n")
 	buf.WriteString("\t}\n\n")
+}
+
+// generateQueryParamBinding generates code to bind query parameters to request fields.
+func generateQueryParamBinding(buf *bytes.Buffer, h codegen.SerializedHandlerInfo, queryFields []codegen.SerializedFieldInfo) {
+	buf.WriteString("\t// Bind query parameters\n")
+	buf.WriteString("\tqueryValues := r.URL.Query()\n")
+
+	for _, field := range queryFields {
+		queryKey := field.Tags["query"]
+
+		switch field.Type {
+		case "string":
+			fmt.Fprintf(buf, "\tif v := queryValues.Get(%q); v != \"\" {\n", queryKey)
+			fmt.Fprintf(buf, "\t\treq.%s = v\n", field.Name)
+			buf.WriteString("\t}\n")
+		case "*string":
+			fmt.Fprintf(buf, "\tif v := queryValues.Get(%q); v != \"\" {\n", queryKey)
+			fmt.Fprintf(buf, "\t\treq.%s = &v\n", field.Name)
+			buf.WriteString("\t}\n")
+		case "int":
+			fmt.Fprintf(buf, "\tif v := queryValues.Get(%q); v != \"\" {\n", queryKey)
+			fmt.Fprintf(buf, "\t\tif parsed, err := strconv.Atoi(v); err == nil {\n")
+			fmt.Fprintf(buf, "\t\t\treq.%s = parsed\n", field.Name)
+			buf.WriteString("\t\t}\n")
+			buf.WriteString("\t}\n")
+		case "*int":
+			fmt.Fprintf(buf, "\tif v := queryValues.Get(%q); v != \"\" {\n", queryKey)
+			fmt.Fprintf(buf, "\t\tif parsed, err := strconv.Atoi(v); err == nil {\n")
+			fmt.Fprintf(buf, "\t\t\treq.%s = &parsed\n", field.Name)
+			buf.WriteString("\t\t}\n")
+			buf.WriteString("\t}\n")
+		case "int64":
+			fmt.Fprintf(buf, "\tif v := queryValues.Get(%q); v != \"\" {\n", queryKey)
+			fmt.Fprintf(buf, "\t\tif parsed, err := strconv.ParseInt(v, 10, 64); err == nil {\n")
+			fmt.Fprintf(buf, "\t\t\treq.%s = parsed\n", field.Name)
+			buf.WriteString("\t\t}\n")
+			buf.WriteString("\t}\n")
+		case "int32":
+			fmt.Fprintf(buf, "\tif v := queryValues.Get(%q); v != \"\" {\n", queryKey)
+			fmt.Fprintf(buf, "\t\tif parsed, err := strconv.ParseInt(v, 10, 32); err == nil {\n")
+			fmt.Fprintf(buf, "\t\t\treq.%s = int32(parsed)\n", field.Name)
+			buf.WriteString("\t\t}\n")
+			buf.WriteString("\t}\n")
+		case "uint64":
+			fmt.Fprintf(buf, "\tif v := queryValues.Get(%q); v != \"\" {\n", queryKey)
+			fmt.Fprintf(buf, "\t\tif parsed, err := strconv.ParseUint(v, 10, 64); err == nil {\n")
+			fmt.Fprintf(buf, "\t\t\treq.%s = parsed\n", field.Name)
+			buf.WriteString("\t\t}\n")
+			buf.WriteString("\t}\n")
+		case "bool":
+			fmt.Fprintf(buf, "\tif v := queryValues.Get(%q); v != \"\" {\n", queryKey)
+			fmt.Fprintf(buf, "\t\tif parsed, err := strconv.ParseBool(v); err == nil {\n")
+			fmt.Fprintf(buf, "\t\t\treq.%s = parsed\n", field.Name)
+			buf.WriteString("\t\t}\n")
+			buf.WriteString("\t}\n")
+		default:
+			// For unknown types, treat as string
+			fmt.Fprintf(buf, "\tif v := queryValues.Get(%q); v != \"\" {\n", queryKey)
+			fmt.Fprintf(buf, "\t\treq.%s = v\n", field.Name)
+			buf.WriteString("\t}\n")
+		}
+	}
+
+	buf.WriteString("\n")
 }

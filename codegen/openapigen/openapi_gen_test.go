@@ -766,3 +766,328 @@ func TestGenerateOpenAPISpec_ValidJSON(t *testing.T) {
 		t.Fatalf("generated spec is not valid JSON: %v", err)
 	}
 }
+
+// ─── Query param tests (Step 7h) ───
+
+func TestGenerateOpenAPISpec_QueryParams(t *testing.T) {
+	cfg := OpenAPIGenConfig{
+		ModulePath: "example.com/app",
+		Handlers: []codegen.SerializedHandlerInfo{
+			{
+				Method:      "GET",
+				Path:        "/posts",
+				FuncName:    "ListPosts",
+				PackagePath: "example.com/app/api/posts",
+				PathParams:  []codegen.SerializedPathParam{},
+				Request: &codegen.SerializedStructInfo{
+					Name:    "ListPostsRequest",
+					Package: "example.com/app/api/posts",
+					Fields: []codegen.SerializedFieldInfo{
+						{Name: "Limit", Type: "int", JSONName: "limit", Required: false, Tags: map[string]string{"query": "limit"}},
+						{Name: "Cursor", Type: "*string", JSONName: "cursor", Required: false, Tags: map[string]string{"query": "cursor"}},
+					},
+				},
+				Response: &codegen.SerializedStructInfo{
+					Name:    "ListPostsResponse",
+					Package: "example.com/app/api/posts",
+					Fields: []codegen.SerializedFieldInfo{
+						{Name: "Items", Type: "[]string", JSONName: "items", Required: true},
+					},
+				},
+			},
+		},
+	}
+
+	spec := parseSpec(t, cfg)
+
+	paths, ok := spec["paths"].(map[string]any)
+	if !ok {
+		t.Fatal("missing paths in spec")
+	}
+	postsPath, ok := paths["/posts"].(map[string]any)
+	if !ok {
+		t.Fatal("missing /posts path")
+	}
+	getOp, ok := postsPath["get"].(map[string]any)
+	if !ok {
+		t.Fatal("missing get operation on /posts")
+	}
+	params, ok := getOp["parameters"].([]any)
+	if !ok {
+		t.Fatal("missing parameters on GET /posts")
+	}
+
+	// Should have 2 query parameters
+	if len(params) != 2 {
+		t.Fatalf("expected 2 parameters, got %d", len(params))
+	}
+
+	// Check each parameter
+	foundLimit := false
+	foundCursor := false
+	for _, p := range params {
+		param, ok := p.(map[string]any)
+		if !ok {
+			continue
+		}
+		name, _ := param["name"].(string)
+		in, _ := param["in"].(string)
+		if in != "query" {
+			t.Errorf("expected parameter %q to be 'in: query', got %q", name, in)
+		}
+
+		switch name {
+		case "limit":
+			foundLimit = true
+			schema, _ := param["schema"].(map[string]any)
+			if schema["type"] != "integer" {
+				t.Errorf("expected limit schema type 'integer', got %v", schema["type"])
+			}
+		case "cursor":
+			foundCursor = true
+			schema, _ := param["schema"].(map[string]any)
+			if schema["type"] != "string" {
+				t.Errorf("expected cursor schema type 'string', got %v", schema["type"])
+			}
+			if schema["nullable"] != true {
+				t.Error("expected cursor schema to be nullable (*string)")
+			}
+		}
+	}
+
+	if !foundLimit {
+		t.Error("missing 'limit' query parameter")
+	}
+	if !foundCursor {
+		t.Error("missing 'cursor' query parameter")
+	}
+}
+
+func TestGenerateOpenAPISpec_QueryParamsNotInRequestBody(t *testing.T) {
+	cfg := OpenAPIGenConfig{
+		ModulePath: "example.com/app",
+		Handlers: []codegen.SerializedHandlerInfo{
+			{
+				Method:      "POST",
+				Path:        "/posts",
+				FuncName:    "CreatePost",
+				PackagePath: "example.com/app/api/posts",
+				PathParams:  []codegen.SerializedPathParam{},
+				Request: &codegen.SerializedStructInfo{
+					Name:    "CreatePostRequest",
+					Package: "example.com/app/api/posts",
+					Fields: []codegen.SerializedFieldInfo{
+						{Name: "Tag", Type: "string", JSONName: "tag", Required: false, Tags: map[string]string{"query": "tag"}},
+						{Name: "Title", Type: "string", JSONName: "title", Required: true},
+						{Name: "Body", Type: "string", JSONName: "body", Required: true},
+					},
+				},
+				Response: &codegen.SerializedStructInfo{
+					Name:    "CreatePostResponse",
+					Package: "example.com/app/api/posts",
+					Fields: []codegen.SerializedFieldInfo{
+						{Name: "ID", Type: "string", JSONName: "id", Required: true},
+					},
+				},
+			},
+		},
+	}
+
+	spec := parseSpec(t, cfg)
+
+	paths, _ := spec["paths"].(map[string]any)
+	postsPath, _ := paths["/posts"].(map[string]any)
+	postOp, _ := postsPath["post"].(map[string]any)
+
+	// The query-tagged field should appear in parameters, not requestBody
+	params, hasParams := postOp["parameters"].([]any)
+	if !hasParams || len(params) == 0 {
+		t.Fatal("expected parameters with query param 'tag'")
+	}
+
+	foundTag := false
+	for _, p := range params {
+		param, _ := p.(map[string]any)
+		if param["name"] == "tag" && param["in"] == "query" {
+			foundTag = true
+		}
+	}
+	if !foundTag {
+		t.Error("query-tagged field 'tag' should appear in parameters with in=query")
+	}
+
+	// The requestBody should contain title and body, but NOT tag
+	reqBody, _ := postOp["requestBody"].(map[string]any)
+	if reqBody == nil {
+		t.Fatal("expected requestBody for POST handler with body fields")
+	}
+	content, _ := reqBody["content"].(map[string]any)
+	jsonContent, _ := content["application/json"].(map[string]any)
+	schema, _ := jsonContent["schema"].(map[string]any)
+	properties, _ := schema["properties"].(map[string]any)
+
+	if _, hasTitle := properties["title"]; !hasTitle {
+		t.Error("requestBody should contain 'title' field")
+	}
+	if _, hasBody := properties["body"]; !hasBody {
+		t.Error("requestBody should contain 'body' field")
+	}
+	if _, hasTag := properties["tag"]; hasTag {
+		t.Error("requestBody should NOT contain query-tagged 'tag' field")
+	}
+}
+
+func TestGenerateOpenAPISpec_QueryParamsBoolType(t *testing.T) {
+	cfg := OpenAPIGenConfig{
+		ModulePath: "example.com/app",
+		Handlers: []codegen.SerializedHandlerInfo{
+			{
+				Method:      "GET",
+				Path:        "/posts",
+				FuncName:    "ListPosts",
+				PackagePath: "example.com/app/api/posts",
+				PathParams:  []codegen.SerializedPathParam{},
+				Request: &codegen.SerializedStructInfo{
+					Name:    "ListPostsRequest",
+					Package: "example.com/app/api/posts",
+					Fields: []codegen.SerializedFieldInfo{
+						{Name: "IncludeDeleted", Type: "bool", JSONName: "include_deleted", Required: false, Tags: map[string]string{"query": "include_deleted"}},
+					},
+				},
+				Response: &codegen.SerializedStructInfo{
+					Name:    "ListPostsResponse",
+					Package: "example.com/app/api/posts",
+					Fields: []codegen.SerializedFieldInfo{
+						{Name: "Items", Type: "[]string", JSONName: "items", Required: true},
+					},
+				},
+			},
+		},
+	}
+
+	spec := parseSpec(t, cfg)
+
+	paths, _ := spec["paths"].(map[string]any)
+	postsPath, _ := paths["/posts"].(map[string]any)
+	getOp, _ := postsPath["get"].(map[string]any)
+	params, _ := getOp["parameters"].([]any)
+
+	if len(params) != 1 {
+		t.Fatalf("expected 1 parameter, got %d", len(params))
+	}
+
+	param, _ := params[0].(map[string]any)
+	if param["name"] != "include_deleted" {
+		t.Errorf("expected parameter name 'include_deleted', got %v", param["name"])
+	}
+	schema, _ := param["schema"].(map[string]any)
+	if schema["type"] != "boolean" {
+		t.Errorf("expected bool query param schema type 'boolean', got %v", schema["type"])
+	}
+}
+
+func TestGenerateOpenAPISpec_NoQueryParamsNoParameters(t *testing.T) {
+	cfg := OpenAPIGenConfig{
+		ModulePath: "example.com/app",
+		Handlers: []codegen.SerializedHandlerInfo{
+			{
+				Method:      "POST",
+				Path:        "/posts",
+				FuncName:    "CreatePost",
+				PackagePath: "example.com/app/api/posts",
+				PathParams:  []codegen.SerializedPathParam{},
+				Request: &codegen.SerializedStructInfo{
+					Name:    "CreatePostRequest",
+					Package: "example.com/app/api/posts",
+					Fields: []codegen.SerializedFieldInfo{
+						{Name: "Title", Type: "string", JSONName: "title", Required: true},
+						{Name: "Body", Type: "string", JSONName: "body", Required: true},
+					},
+				},
+				Response: &codegen.SerializedStructInfo{
+					Name:    "CreatePostResponse",
+					Package: "example.com/app/api/posts",
+					Fields: []codegen.SerializedFieldInfo{
+						{Name: "ID", Type: "string", JSONName: "id", Required: true},
+					},
+				},
+			},
+		},
+	}
+
+	spec := parseSpec(t, cfg)
+
+	paths, _ := spec["paths"].(map[string]any)
+	postsPath, _ := paths["/posts"].(map[string]any)
+	postOp, _ := postsPath["post"].(map[string]any)
+
+	// No path params, no query params — parameters should be absent
+	if _, hasParams := postOp["parameters"]; hasParams {
+		t.Error("POST handler with only body fields should NOT have parameters key")
+	}
+}
+
+func TestGenerateOpenAPISpec_MixedPathAndQueryParams(t *testing.T) {
+	cfg := OpenAPIGenConfig{
+		ModulePath: "example.com/app",
+		Handlers: []codegen.SerializedHandlerInfo{
+			{
+				Method:      "GET",
+				Path:        "/users/:id/posts",
+				FuncName:    "ListUserPosts",
+				PackagePath: "example.com/app/api/posts",
+				PathParams:  []codegen.SerializedPathParam{{Name: "id", Position: 1}},
+				Request: &codegen.SerializedStructInfo{
+					Name:    "ListUserPostsRequest",
+					Package: "example.com/app/api/posts",
+					Fields: []codegen.SerializedFieldInfo{
+						{Name: "ID", Type: "string", JSONName: "id", Required: true, Tags: map[string]string{"path": "id"}},
+						{Name: "Cursor", Type: "*string", JSONName: "cursor", Required: false, Tags: map[string]string{"query": "cursor"}},
+					},
+				},
+				Response: &codegen.SerializedStructInfo{
+					Name:    "ListUserPostsResponse",
+					Package: "example.com/app/api/posts",
+					Fields: []codegen.SerializedFieldInfo{
+						{Name: "Items", Type: "[]string", JSONName: "items", Required: true},
+					},
+				},
+			},
+		},
+	}
+
+	spec := parseSpec(t, cfg)
+
+	paths, _ := spec["paths"].(map[string]any)
+	postsPath, _ := paths["/users/{id}/posts"].(map[string]any)
+	if postsPath == nil {
+		t.Fatal("missing /users/{id}/posts path")
+	}
+	getOp, _ := postsPath["get"].(map[string]any)
+	params, _ := getOp["parameters"].([]any)
+
+	if len(params) != 2 {
+		t.Fatalf("expected 2 parameters (1 path + 1 query), got %d", len(params))
+	}
+
+	foundPathParam := false
+	foundQueryParam := false
+	for _, p := range params {
+		param, _ := p.(map[string]any)
+		in, _ := param["in"].(string)
+		name, _ := param["name"].(string)
+		if in == "path" && name == "id" {
+			foundPathParam = true
+		}
+		if in == "query" && name == "cursor" {
+			foundQueryParam = true
+		}
+	}
+
+	if !foundPathParam {
+		t.Error("missing path parameter 'id' with in=path")
+	}
+	if !foundQueryParam {
+		t.Error("missing query parameter 'cursor' with in=query")
+	}
+}
