@@ -42,6 +42,7 @@ func generateRBACTests(cfg CompileConfig) error {
 		Dialect:         cfg.DBDialect,
 		TestDatabaseURL: testDatabaseURL,
 		ScopeColumn:     rbacScopeColumn,
+		StripPrefix:     cfg.StripPrefix,
 	}
 
 	testCode, err := authgen.GenerateRBACTests(testCfg)

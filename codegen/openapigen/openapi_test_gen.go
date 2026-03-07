@@ -14,6 +14,7 @@ type OpenAPITestGenConfig struct {
 	OutputPkg       string // package name for generated code (e.g., "api")
 	DBDialect       string // "mysql", "postgres", or "sqlite"
 	TestDatabaseURL string // test database URL derived from shipq.ini
+	StripPrefix     string // URL prefix prepended to test paths (e.g., "/api")
 }
 
 // GenerateOpenAPITest generates a test file that verifies the OpenAPI
@@ -28,9 +29,9 @@ func GenerateOpenAPITest(cfg OpenAPITestGenConfig) ([]byte, error) {
 
 	generateOpenAPITestImports(&buf, cfg)
 	generateOpenAPITestServerSetup(&buf, cfg)
-	generateTestOpenAPISpecEndpoint(&buf)
-	generateTestDocsEndpoint(&buf)
-	generateTestAssetsEndpoint(&buf)
+	generateTestOpenAPISpecEndpoint(&buf, cfg.StripPrefix)
+	generateTestDocsEndpoint(&buf, cfg.StripPrefix)
+	generateTestAssetsEndpoint(&buf, cfg.StripPrefix)
 
 	formatted, err := format.Source(buf.Bytes())
 	if err != nil {
@@ -95,11 +96,11 @@ func newOpenAPITestServer(t *testing.T) string {
 `)
 }
 
-func generateTestOpenAPISpecEndpoint(buf *bytes.Buffer) {
+func generateTestOpenAPISpecEndpoint(buf *bytes.Buffer, prefix string) {
 	buf.WriteString(`func TestOpenAPISpec(t *testing.T) {
 	serverURL := newOpenAPITestServer(t)
 
-	resp, err := http.Get(serverURL + "/openapi")
+	resp, err := http.Get(serverURL + "` + prefix + `/openapi")
 	if err != nil {
 		t.Fatalf("GET /openapi failed: %v", err)
 	}
@@ -140,11 +141,11 @@ func generateTestOpenAPISpecEndpoint(buf *bytes.Buffer) {
 `)
 }
 
-func generateTestDocsEndpoint(buf *bytes.Buffer) {
+func generateTestDocsEndpoint(buf *bytes.Buffer, prefix string) {
 	buf.WriteString(`func TestOpenAPIDocs(t *testing.T) {
 	serverURL := newOpenAPITestServer(t)
 
-	resp, err := http.Get(serverURL + "/docs")
+	resp, err := http.Get(serverURL + "` + prefix + `/docs")
 	if err != nil {
 		t.Fatalf("GET /docs failed: %v", err)
 	}
@@ -176,7 +177,7 @@ func generateTestDocsEndpoint(buf *bytes.Buffer) {
 `)
 }
 
-func generateTestAssetsEndpoint(buf *bytes.Buffer) {
+func generateTestAssetsEndpoint(buf *bytes.Buffer, prefix string) {
 	buf.WriteString(`func TestOpenAPIAssets(t *testing.T) {
 	serverURL := newOpenAPITestServer(t)
 
@@ -184,8 +185,8 @@ func generateTestAssetsEndpoint(buf *bytes.Buffer) {
 		path        string
 		contentType string
 	}{
-		{"/openapi/assets/web-components.min.js", "application/javascript"},
-		{"/openapi/assets/styles.min.css", "text/css"},
+		{"` + prefix + `/openapi/assets/web-components.min.js", "application/javascript"},
+		{"` + prefix + `/openapi/assets/styles.min.css", "text/css"},
 	}
 
 	for _, tt := range tests {
