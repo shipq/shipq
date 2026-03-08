@@ -11,11 +11,14 @@ import {
 import {
   type CreateCommentRequest,
   type CreateCommentResponse,
+  type ListCommentsParams,
   type ListCommentsResponse,
+  type AdminListPostsParams,
   type AdminListPostsResponse,
   type CreatePostRequest,
   type CreatePostResponse,
   type GetPostResponse,
+  type ListPostsParams,
   type ListPostsResponse,
   type PublishPostResponse,
   type UpdatePostRequest,
@@ -55,7 +58,7 @@ export function useCreateComment(
 }
 
 export function useListComments(
-  params?: { cursor?: string; limit?: number },
+  params?: ListCommentsParams,
   options?: Partial<UseQueryOptions<ListCommentsResponse>>,
 ) {
   return useQuery({
@@ -92,7 +95,7 @@ export const postsKeys = {
 };
 
 export function useAdminListPosts(
-  params?: { cursor?: string; limit?: number },
+  params?: AdminListPostsParams,
   options?: Partial<UseQueryOptions<AdminListPostsResponse>>,
 ) {
   return useQuery({
@@ -127,7 +130,7 @@ export function useGetPost(
 }
 
 export function useListPosts(
-  params?: { cursor?: string; limit?: number },
+  params?: ListPostsParams,
   options?: Partial<UseQueryOptions<ListPostsResponse>>,
 ) {
   return useQuery({

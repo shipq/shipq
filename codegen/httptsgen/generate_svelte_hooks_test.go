@@ -174,7 +174,7 @@ func TestGenerateSvelteHooks_CreateListPostsQuery(t *testing.T) {
 
 	mustContain := []string{
 		"export function createListPostsQuery(",
-		"params?: { cursor?: string; limit?: number }",
+		"params?: ListPostsParams",
 		"options?: Partial<CreateQueryOptions<ListPostsResponse>>",
 		"[...postsKeys.listPosts(), params] as const,",
 		"queryFn: () => listPosts(params),",
@@ -373,7 +373,7 @@ func TestGenerateSvelteHooks_AdminListHook(t *testing.T) {
 
 	mustContain := []string{
 		"export function createAdminListPostsQuery(",
-		"params?: { cursor?: string; limit?: number }",
+		"params?: AdminListPostsParams",
 		"[...postsKeys.adminListPosts(), params] as const,",
 		"queryFn: () => adminListPosts(params),",
 	}

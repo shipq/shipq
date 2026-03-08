@@ -507,15 +507,15 @@ func (c StringColumn) Desc() OrderByExpr {
 }
 
 // Like matches using SQL LIKE pattern.
-func (c StringColumn) Like(pattern string) Expr {
-	return BinaryExpr{Left: ColumnExpr{c}, Op: OpLike, Right: LiteralExpr{Value: pattern}}
+func (c StringColumn) Like(pattern any) Expr {
+	return BinaryExpr{Left: ColumnExpr{c}, Op: OpLike, Right: toExpr(pattern)}
 }
 
 // ILike matches using case-insensitive pattern (translated per database).
-func (c StringColumn) ILike(pattern string) Expr {
+func (c StringColumn) ILike(pattern any) Expr {
 	return FuncExpr{
 		Name: "ILIKE",
-		Args: []Expr{ColumnExpr{c}, LiteralExpr{Value: pattern}},
+		Args: []Expr{ColumnExpr{c}, toExpr(pattern)},
 	}
 }
 
@@ -569,14 +569,14 @@ func (c NullStringColumn) Desc() OrderByExpr {
 	return OrderByExpr{Expr: ColumnExpr{c}, Desc: true}
 }
 
-func (c NullStringColumn) Like(pattern string) Expr {
-	return BinaryExpr{Left: ColumnExpr{c}, Op: OpLike, Right: LiteralExpr{Value: pattern}}
+func (c NullStringColumn) Like(pattern any) Expr {
+	return BinaryExpr{Left: ColumnExpr{c}, Op: OpLike, Right: toExpr(pattern)}
 }
 
-func (c NullStringColumn) ILike(pattern string) Expr {
+func (c NullStringColumn) ILike(pattern any) Expr {
 	return FuncExpr{
 		Name: "ILIKE",
-		Args: []Expr{ColumnExpr{c}, LiteralExpr{Value: pattern}},
+		Args: []Expr{ColumnExpr{c}, toExpr(pattern)},
 	}
 }
 
