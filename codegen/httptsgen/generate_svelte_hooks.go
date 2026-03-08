@@ -73,6 +73,10 @@ func GenerateSvelteHooks(handlers []codegen.SerializedHandlerInfo) ([]byte, erro
 				typeImports = append(typeImports, h.FuncName+"Request")
 			}
 
+			if hasQueryParams(h) {
+				typeImports = append(typeImports, h.FuncName+"Params")
+			}
+
 			hasResponse := h.Response != nil && len(h.Response.Fields) > 0
 			if hasResponse {
 				typeImports = append(typeImports, h.FuncName+"Response")
@@ -183,14 +187,15 @@ func writeSvelteQueryHook(buf *bytes.Buffer, pkgName string, h codegen.Serialize
 	funcName := tsutil.ToCamelCase(h.FuncName)
 	wrapperName := svelteHookName(h)
 	baseFuncRef := svelteBaseFuncRef(h)
-	role := DetectCRUDRole(h)
-	isList := role == CRUDRoleList || role == CRUDRoleAdminList
 
 	hasResponse := h.Response != nil && len(h.Response.Fields) > 0
 	respType := "void"
 	if hasResponse {
 		respType = h.FuncName + "Response"
 	}
+
+	withParams := hasQueryParams(h)
+	paramsTypeName := h.FuncName + "Params"
 
 	buf.WriteString("\n")
 
@@ -199,8 +204,8 @@ func writeSvelteQueryHook(buf *bytes.Buffer, pkgName string, h codegen.Serialize
 	for _, pp := range h.PathParams {
 		params = append(params, pp.Name+": string")
 	}
-	if isList {
-		params = append(params, "params?: { cursor?: string; limit?: number }")
+	if withParams {
+		params = append(params, "params?: "+paramsTypeName)
 	}
 	params = append(params, fmt.Sprintf("options?: Partial<CreateQueryOptions<%s>>", respType))
 
@@ -211,7 +216,7 @@ func writeSvelteQueryHook(buf *bytes.Buffer, pkgName string, h codegen.Serialize
 	buf.WriteString(") {\n")
 
 	// Query key
-	if isList {
+	if withParams {
 		var keyArgs []string
 		for _, pp := range h.PathParams {
 			keyArgs = append(keyArgs, pp.Name)
@@ -236,7 +241,7 @@ func writeSvelteQueryHook(buf *bytes.Buffer, pkgName string, h codegen.Serialize
 	for _, pp := range h.PathParams {
 		callArgs = append(callArgs, pp.Name)
 	}
-	if isList {
+	if withParams {
 		callArgs = append(callArgs, "params")
 	}
 	fmt.Fprintf(buf, "    queryFn: () => %s(%s),\n", baseFuncRef, strings.Join(callArgs, ", "))

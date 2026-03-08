@@ -132,7 +132,7 @@ func TestGenerateReactHooks_UseListPostsHook(t *testing.T) {
 
 	mustContain := []string{
 		"export function useListPosts(",
-		"params?: { cursor?: string; limit?: number }",
+		"params?: ListPostsParams",
 		"options?: Partial<UseQueryOptions<ListPostsResponse>>",
 		"[...postsKeys.listPosts(), params] as const,",
 		"queryFn: () => listPosts(params),",
@@ -330,7 +330,7 @@ func TestGenerateReactHooks_AdminListHook(t *testing.T) {
 
 	mustContain := []string{
 		"export function useAdminListPosts(",
-		"params?: { cursor?: string; limit?: number }",
+		"params?: AdminListPostsParams",
 		"[...postsKeys.adminListPosts(), params] as const,",
 		"queryFn: () => adminListPosts(params),",
 	}

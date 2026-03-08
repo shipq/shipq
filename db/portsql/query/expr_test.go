@@ -208,6 +208,51 @@ func TestStringColumn_Like(t *testing.T) {
 	}
 }
 
+func TestStringColumn_Like_WithParam(t *testing.T) {
+	col := StringColumn{Table: "users", Name: "name"}
+	expr := col.Like(Param[string]("pattern"))
+
+	binExpr, ok := expr.(BinaryExpr)
+	if !ok {
+		t.Fatalf("expected BinaryExpr, got %T", expr)
+	}
+	if binExpr.Op != OpLike {
+		t.Errorf("expected Op = OpLike, got %v", binExpr.Op)
+	}
+
+	right, ok := binExpr.Right.(ParamExpr)
+	if !ok {
+		t.Fatalf("expected ParamExpr, got %T", binExpr.Right)
+	}
+	if right.Name != "pattern" {
+		t.Errorf("expected param name = %q, got %q", "pattern", right.Name)
+	}
+	if right.GoType != "string" {
+		t.Errorf("expected param GoType = %q, got %q", "string", right.GoType)
+	}
+}
+
+func TestNullStringColumn_Like_WithParam(t *testing.T) {
+	col := NullStringColumn{Table: "users", Name: "bio"}
+	expr := col.Like(Param[string]("pattern"))
+
+	binExpr, ok := expr.(BinaryExpr)
+	if !ok {
+		t.Fatalf("expected BinaryExpr, got %T", expr)
+	}
+	if binExpr.Op != OpLike {
+		t.Errorf("expected Op = OpLike, got %v", binExpr.Op)
+	}
+
+	right, ok := binExpr.Right.(ParamExpr)
+	if !ok {
+		t.Fatalf("expected ParamExpr, got %T", binExpr.Right)
+	}
+	if right.Name != "pattern" {
+		t.Errorf("expected param name = %q, got %q", "pattern", right.Name)
+	}
+}
+
 func TestStringColumn_ILike(t *testing.T) {
 	col := StringColumn{Table: "users", Name: "name"}
 	expr := col.ILike("%john%")
@@ -221,6 +266,54 @@ func TestStringColumn_ILike(t *testing.T) {
 	}
 	if len(funcExpr.Args) != 2 {
 		t.Errorf("expected 2 args, got %d", len(funcExpr.Args))
+	}
+}
+
+func TestStringColumn_ILike_WithParam(t *testing.T) {
+	col := StringColumn{Table: "users", Name: "name"}
+	expr := col.ILike(Param[string]("pattern"))
+
+	funcExpr, ok := expr.(FuncExpr)
+	if !ok {
+		t.Fatalf("expected FuncExpr, got %T", expr)
+	}
+	if funcExpr.Name != "ILIKE" {
+		t.Errorf("expected Name = %q, got %q", "ILIKE", funcExpr.Name)
+	}
+	if len(funcExpr.Args) != 2 {
+		t.Fatalf("expected 2 args, got %d", len(funcExpr.Args))
+	}
+
+	right, ok := funcExpr.Args[1].(ParamExpr)
+	if !ok {
+		t.Fatalf("expected second arg to be ParamExpr, got %T", funcExpr.Args[1])
+	}
+	if right.Name != "pattern" {
+		t.Errorf("expected param name = %q, got %q", "pattern", right.Name)
+	}
+}
+
+func TestNullStringColumn_ILike_WithParam(t *testing.T) {
+	col := NullStringColumn{Table: "users", Name: "bio"}
+	expr := col.ILike(Param[string]("pattern"))
+
+	funcExpr, ok := expr.(FuncExpr)
+	if !ok {
+		t.Fatalf("expected FuncExpr, got %T", expr)
+	}
+	if funcExpr.Name != "ILIKE" {
+		t.Errorf("expected Name = %q, got %q", "ILIKE", funcExpr.Name)
+	}
+	if len(funcExpr.Args) != 2 {
+		t.Fatalf("expected 2 args, got %d", len(funcExpr.Args))
+	}
+
+	right, ok := funcExpr.Args[1].(ParamExpr)
+	if !ok {
+		t.Fatalf("expected second arg to be ParamExpr, got %T", funcExpr.Args[1])
+	}
+	if right.Name != "pattern" {
+		t.Errorf("expected param name = %q, got %q", "pattern", right.Name)
 	}
 }
 

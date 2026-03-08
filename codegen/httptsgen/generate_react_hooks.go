@@ -10,6 +10,11 @@ import (
 	"github.com/shipq/shipq/codegen/tsutil"
 )
 
+// hasQueryParams returns true if the handler has any query-tagged fields.
+func hasQueryParams(h codegen.SerializedHandlerInfo) bool {
+	return len(codegen.FilterQueryFields(h)) > 0
+}
+
 // GenerateReactHooks generates the React integration layer (react/shipq-api.ts).
 // It produces TanStack Query hooks (useQuery/useMutation) for every handler,
 // with per-package query key factories and automatic CRUD cache invalidation.
@@ -42,6 +47,10 @@ func GenerateReactHooks(handlers []codegen.SerializedHandlerInfo) ([]byte, error
 			hasBody := codegen.MethodHasBody(h.Method) && h.Request != nil && len(filterBodyFields(h)) > 0
 			if hasBody {
 				typeImports = append(typeImports, h.FuncName+"Request")
+			}
+
+			if hasQueryParams(h) {
+				typeImports = append(typeImports, h.FuncName+"Params")
 			}
 
 			hasResponse := h.Response != nil && len(h.Response.Fields) > 0
@@ -127,14 +136,15 @@ func writeReactHooks(buf *bytes.Buffer, pkgName string, handlers []codegen.Seria
 func writeReactQueryHook(buf *bytes.Buffer, pkgName string, h codegen.SerializedHandlerInfo) {
 	funcName := tsutil.ToCamelCase(h.FuncName)
 	hookName := "use" + h.FuncName
-	role := DetectCRUDRole(h)
-	isList := role == CRUDRoleList || role == CRUDRoleAdminList
 
 	hasResponse := h.Response != nil && len(h.Response.Fields) > 0
 	respType := "void"
 	if hasResponse {
 		respType = h.FuncName + "Response"
 	}
+
+	withParams := hasQueryParams(h)
+	paramsTypeName := h.FuncName + "Params"
 
 	buf.WriteString("\n")
 
@@ -143,8 +153,8 @@ func writeReactQueryHook(buf *bytes.Buffer, pkgName string, h codegen.Serialized
 	for _, pp := range h.PathParams {
 		params = append(params, pp.Name+": string")
 	}
-	if isList {
-		params = append(params, "params?: { cursor?: string; limit?: number }")
+	if withParams {
+		params = append(params, "params?: "+paramsTypeName)
 	}
 	params = append(params, fmt.Sprintf("options?: Partial<UseQueryOptions<%s>>", respType))
 
@@ -155,7 +165,7 @@ func writeReactQueryHook(buf *bytes.Buffer, pkgName string, h codegen.Serialized
 	buf.WriteString(") {\n")
 
 	// Query key
-	if isList {
+	if withParams {
 		var keyArgs []string
 		for _, pp := range h.PathParams {
 			keyArgs = append(keyArgs, pp.Name)
@@ -181,7 +191,7 @@ func writeReactQueryHook(buf *bytes.Buffer, pkgName string, h codegen.Serialized
 	for _, pp := range h.PathParams {
 		callArgs = append(callArgs, pp.Name)
 	}
-	if isList {
+	if withParams {
 		callArgs = append(callArgs, "params")
 	}
 	fmt.Fprintf(buf, "    queryFn: () => %s(%s),\n", funcName, strings.Join(callArgs, ", "))
