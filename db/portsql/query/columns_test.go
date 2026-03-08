@@ -271,8 +271,8 @@ func TestNullJSONColumn(t *testing.T) {
 	if !col.IsNullable() {
 		t.Error("expected IsNullable() = true")
 	}
-	if col.GoType() != "json.RawMessage" {
-		t.Errorf("expected GoType() = %q, got %q", "json.RawMessage", col.GoType())
+	if col.GoType() != "*json.RawMessage" {
+		t.Errorf("expected GoType() = %q, got %q", "*json.RawMessage", col.GoType())
 	}
 }
 

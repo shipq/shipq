@@ -162,6 +162,7 @@ func TestColumnJSONMapping(t *testing.T) {
 		{"NullTime", NullTimeColumn{Table: "t", Name: "c"}, "*time.Time"},
 		{"Bytes", BytesColumn{Table: "t", Name: "c"}, "[]byte"},
 		{"JSON", JSONColumn{Table: "t", Name: "c"}, "json.RawMessage"},
+		{"NullJSON", NullJSONColumn{Table: "t", Name: "c"}, "*json.RawMessage"},
 	}
 
 	for _, tt := range tests {

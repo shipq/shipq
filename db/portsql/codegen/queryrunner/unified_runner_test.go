@@ -1335,3 +1335,217 @@ func equalStringSlices(a, b []string) bool {
 	}
 	return true
 }
+
+// makeNullableJSONSelectQuery builds a Postgres SELECT query that includes a
+// nullable JSON column (GoType "*json.RawMessage") alongside a regular string
+// column. This lets us verify the generated scan code handles NULL JSONB.
+func makeNullableJSONSelectQuery() query.SerializedQuery {
+	return query.SerializedQuery{
+		Name:       "GetEventByID",
+		ReturnType: query.ReturnOne,
+		AST: &query.SerializedAST{
+			Kind:      "select",
+			FromTable: query.SerializedTableRef{Name: "events"},
+			SelectCols: []query.SerializedSelectExpr{
+				{
+					Expr: query.SerializedExpr{
+						Type: "column",
+						Column: &query.SerializedColumn{
+							Table:  "events",
+							Name:   "id",
+							GoType: "int64",
+						},
+					},
+				},
+				{
+					Expr: query.SerializedExpr{
+						Type: "column",
+						Column: &query.SerializedColumn{
+							Table:  "events",
+							Name:   "name",
+							GoType: "string",
+						},
+					},
+				},
+				{
+					Expr: query.SerializedExpr{
+						Type: "column",
+						Column: &query.SerializedColumn{
+							Table:  "events",
+							Name:   "metadata",
+							GoType: "*json.RawMessage",
+						},
+					},
+				},
+			},
+			Where: &query.SerializedExpr{
+				Type: "binary",
+				Binary: &query.SerializedBinary{
+					Left: query.SerializedExpr{
+						Type: "column",
+						Column: &query.SerializedColumn{
+							Table:  "events",
+							Name:   "id",
+							GoType: "int64",
+						},
+					},
+					Op: "=",
+					Right: query.SerializedExpr{
+						Type: "param",
+						Param: &query.SerializedParam{
+							Name:   "id",
+							GoType: "int64",
+						},
+					},
+				},
+			},
+			Params: []query.SerializedParamInfo{
+				{Name: "id", GoType: "int64"},
+			},
+		},
+	}
+}
+
+// TestGenerateUnifiedRunner_Postgres_NullableJSONColumn_ScansViaNullRawMessage
+// reproduces a bug where a nullable JSONB column in Postgres was scanned
+// directly into json.RawMessage ([]byte). When the column is NULL at runtime,
+// pgx/v5/stdlib can fail because there is no sql.NullString intermediate to
+// absorb the NULL. The fix is to scan into a *json.RawMessage so that the
+// driver can set the pointer to nil for NULL values.
+func TestGenerateUnifiedRunner_Postgres_NullableJSONColumn_ScansViaNullRawMessage(t *testing.T) {
+	cfg := UnifiedRunnerConfig{
+		ModulePath:  "example.com/myapp",
+		Dialect:     dburl.DialectPostgres,
+		UserQueries: []query.SerializedQuery{makeNullableJSONSelectQuery()},
+	}
+
+	runnerCode, err := GenerateUnifiedRunner(cfg)
+	if err != nil {
+		t.Fatalf("GenerateUnifiedRunner failed: %v", err)
+	}
+
+	typesCode, err := GenerateSharedTypes(cfg)
+	if err != nil {
+		t.Fatalf("GenerateSharedTypes failed: %v", err)
+	}
+
+	runner := string(runnerCode)
+	types := string(typesCode)
+
+	// The result struct field should be *json.RawMessage (pointer) so that
+	// a nil pointer cleanly represents SQL NULL.
+	if !strings.Contains(types, "*json.RawMessage") {
+		t.Errorf("expected result struct to use *json.RawMessage for nullable JSON column, got:\n%s", types)
+	}
+
+	// The scan code must NOT scan directly into &result.Metadata when the
+	// column can be NULL. It should scan into an intermediate (e.g.
+	// *json.RawMessage or sql.NullString) that can represent NULL.
+	//
+	// A direct "&result.Metadata" scan for a json.RawMessage field means
+	// the generated code cannot distinguish NULL from a valid JSON value.
+	// At minimum, the generated code should not just do:
+	//   row.Scan(..., &result.Metadata, ...)
+	// for a json.RawMessage field that could be NULL.
+	//
+	// Instead we expect either:
+	//   - The field type in the result struct is *json.RawMessage and the
+	//     scan target is &result.Metadata (pointer-to-pointer absorbs NULL)
+	//   - Or an intermediate variable is used, similar to SQLite's approach
+	if strings.Contains(types, "Metadata json.RawMessage") {
+		t.Errorf("result struct should use *json.RawMessage for nullable JSON, not json.RawMessage:\n%s", types)
+	}
+
+	_ = runner // runner should compile; we only inspect types here
+}
+
+// TestGenerateUnifiedRunner_Postgres_NullableJSONColumn_ReturnMany verifies
+// the same nullable-JSON fix for queries that return multiple rows.
+func TestGenerateUnifiedRunner_Postgres_NullableJSONColumn_ReturnMany(t *testing.T) {
+	q := makeNullableJSONSelectQuery()
+	q.Name = "ListEvents"
+	q.ReturnType = query.ReturnMany
+
+	cfg := UnifiedRunnerConfig{
+		ModulePath:  "example.com/myapp",
+		Dialect:     dburl.DialectPostgres,
+		UserQueries: []query.SerializedQuery{q},
+	}
+
+	typesCode, err := GenerateSharedTypes(cfg)
+	if err != nil {
+		t.Fatalf("GenerateSharedTypes failed: %v", err)
+	}
+
+	types := string(typesCode)
+
+	if !strings.Contains(types, "*json.RawMessage") {
+		t.Errorf("expected *json.RawMessage for nullable JSON column in ReturnMany result, got:\n%s", types)
+	}
+
+	if strings.Contains(types, "Metadata json.RawMessage") {
+		t.Errorf("result struct should use *json.RawMessage, not json.RawMessage:\n%s", types)
+	}
+}
+
+// TestGenerateUnifiedRunner_Postgres_NonNullableJSONColumn_RemainsRawMessage
+// ensures that a non-nullable JSON column still uses plain json.RawMessage
+// (not a pointer), since it can never be NULL.
+func TestGenerateUnifiedRunner_Postgres_NonNullableJSONColumn_RemainsRawMessage(t *testing.T) {
+	// Build a query with an explicitly non-nullable JSON column
+	// (GoType "json.RawMessage", no pointer).
+	q := query.SerializedQuery{
+		Name:       "GetEventByID",
+		ReturnType: query.ReturnOne,
+		AST: &query.SerializedAST{
+			Kind:      "select",
+			FromTable: query.SerializedTableRef{Name: "events"},
+			SelectCols: []query.SerializedSelectExpr{
+				{
+					Expr: query.SerializedExpr{
+						Type: "column",
+						Column: &query.SerializedColumn{
+							Table:  "events",
+							Name:   "id",
+							GoType: "int64",
+						},
+					},
+				},
+				{
+					Expr: query.SerializedExpr{
+						Type: "column",
+						Column: &query.SerializedColumn{
+							Table:  "events",
+							Name:   "metadata",
+							GoType: "json.RawMessage",
+						},
+					},
+				},
+			},
+			Params: []query.SerializedParamInfo{
+				{Name: "id", GoType: "int64"},
+			},
+		},
+	}
+
+	cfg := UnifiedRunnerConfig{
+		ModulePath:  "example.com/myapp",
+		Dialect:     dburl.DialectPostgres,
+		UserQueries: []query.SerializedQuery{q},
+	}
+
+	typesCode, err := GenerateSharedTypes(cfg)
+	if err != nil {
+		t.Fatalf("GenerateSharedTypes failed: %v", err)
+	}
+
+	types := string(typesCode)
+
+	// Non-nullable JSON should remain json.RawMessage, not *json.RawMessage.
+	if !strings.Contains(types, "Metadata json.RawMessage") {
+		t.Errorf("expected non-nullable JSON to remain json.RawMessage in result struct, got:\n%s", types)
+	}
+	if strings.Contains(types, "*json.RawMessage") {
+		t.Errorf("non-nullable JSON column should NOT use *json.RawMessage:\n%s", types)
+	}
+}

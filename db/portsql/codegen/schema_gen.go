@@ -198,7 +198,7 @@ func MapColumnType(col ddl.ColumnDefinition) TypeMapping {
 	case ddl.JSONType:
 		if col.Nullable {
 			return TypeMapping{
-				GoType:         "json.RawMessage",
+				GoType:         "*json.RawMessage",
 				ColumnType:     "NullJSONColumn",
 				NeedsImport:    "encoding/json",
 				SQLiteScanType: "sql.NullString",
