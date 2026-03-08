@@ -1543,7 +1543,15 @@ func writePaginatedMethod(buf *bytes.Buffer, qi userQueryInfo, cfg UnifiedRunner
 	for _, col := range qi.CursorColumns {
 		fieldName := dbstrings.ToPascalCase(col.Name)
 		if col.GoType == "time.Time" {
-			buf.WriteString(fmt.Sprintf("\t\t\t%s: lastItem.%s.UTC().Format(time.RFC3339Nano),\n", fieldName, fieldName))
+			if isSQLite {
+				// SQLite stores timestamps via strftime('%Y-%m-%dT%H:%M:%fZ','now')
+				// which always produces exactly 3 fractional digits (e.g. ".000").
+				// time.RFC3339Nano trims trailing zeros, producing a different
+				// string that breaks lexicographic cursor comparisons in SQLite.
+				buf.WriteString(fmt.Sprintf("\t\t\t%s: lastItem.%s.UTC().Format(\"2006-01-02T15:04:05.000Z\"),\n", fieldName, fieldName))
+			} else {
+				buf.WriteString(fmt.Sprintf("\t\t\t%s: lastItem.%s.UTC().Format(time.RFC3339Nano),\n", fieldName, fieldName))
+			}
 		} else {
 			buf.WriteString(fmt.Sprintf("\t\t\t%s: fmt.Sprint(lastItem.%s),\n", fieldName, fieldName))
 		}
