@@ -611,7 +611,7 @@ func (c ColumnJson) ToColumn() Column {
 			return NullStringColumn{Table: c.Table, Name: c.Name}
 		case "*time.Time":
 			return NullTimeColumn{Table: c.Table, Name: c.Name}
-		case "json.RawMessage":
+		case "*json.RawMessage":
 			return NullJSONColumn{Table: c.Table, Name: c.Name}
 		default:
 			return NullStringColumn{Table: c.Table, Name: c.Name}

@@ -306,7 +306,7 @@ func TestMapColumnType(t *testing.T) {
 		{
 			name:           "json nullable",
 			col:            ddl.ColumnDefinition{Type: ddl.JSONType, Nullable: true},
-			wantGo:         "json.RawMessage",
+			wantGo:         "*json.RawMessage",
 			wantColumn:     "NullJSONColumn",
 			wantSQLiteScan: "sql.NullString",
 		},

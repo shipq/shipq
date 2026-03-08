@@ -295,7 +295,7 @@ type NullJSONColumn struct {
 func (c NullJSONColumn) TableName() string  { return c.Table }
 func (c NullJSONColumn) ColumnName() string { return c.Name }
 func (c NullJSONColumn) IsNullable() bool   { return true }
-func (c NullJSONColumn) GoType() string     { return "json.RawMessage" }
+func (c NullJSONColumn) GoType() string     { return "*json.RawMessage" }
 
 // WithTable returns a copy of this column with a different table name (for aliases).
 func (c NullJSONColumn) WithTable(tableName string) NullJSONColumn {

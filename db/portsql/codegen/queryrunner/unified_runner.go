@@ -1136,7 +1136,7 @@ func writeUserQueryMethod(buf *bytes.Buffer, qi userQueryInfo, cfg UnifiedRunner
 					switch r.GoType {
 					case "time.Time":
 						buf.WriteString(fmt.Sprintf("\tvar %s string\n", tmp))
-					case "*time.Time", "json.RawMessage":
+					case "*time.Time", "json.RawMessage", "*json.RawMessage":
 						buf.WriteString(fmt.Sprintf("\tvar %s sql.NullString\n", tmp))
 					}
 				}
@@ -1197,6 +1197,8 @@ func writeUserQueryMethod(buf *bytes.Buffer, qi userQueryInfo, cfg UnifiedRunner
 						buf.WriteString(fmt.Sprintf("\tresult.%s = parsed%s\n", r.Name, r.Name))
 					case "json.RawMessage":
 						buf.WriteString(fmt.Sprintf("\tif %s.Valid {\n\t\tresult.%s = []byte(%s.String)\n\t}\n", tmp, r.Name, tmp))
+					case "*json.RawMessage":
+						buf.WriteString(fmt.Sprintf("\tif %s.Valid {\n\t\tv := json.RawMessage(%s.String)\n\t\tresult.%s = &v\n\t}\n", tmp, tmp, r.Name))
 					}
 				}
 			}
@@ -1247,7 +1249,7 @@ func writeUserQueryMethod(buf *bytes.Buffer, qi userQueryInfo, cfg UnifiedRunner
 				switch r.GoType {
 				case "time.Time":
 					buf.WriteString(fmt.Sprintf("\t\tvar %s string\n", tmp))
-				case "*time.Time", "json.RawMessage":
+				case "*time.Time", "json.RawMessage", "*json.RawMessage":
 					buf.WriteString(fmt.Sprintf("\t\tvar %s sql.NullString\n", tmp))
 				}
 			}
@@ -1305,6 +1307,8 @@ func writeUserQueryMethod(buf *bytes.Buffer, qi userQueryInfo, cfg UnifiedRunner
 					buf.WriteString(fmt.Sprintf("\t\titem.%s = parsed%s\n", r.Name, r.Name))
 				case "json.RawMessage":
 					buf.WriteString(fmt.Sprintf("\t\tif %s.Valid {\n\t\t\titem.%s = []byte(%s.String)\n\t\t}\n", tmp, r.Name, tmp))
+				case "*json.RawMessage":
+					buf.WriteString(fmt.Sprintf("\t\tif %s.Valid {\n\t\t\tv := json.RawMessage(%s.String)\n\t\t\titem.%s = &v\n\t\t}\n", tmp, tmp, r.Name))
 				}
 			}
 		}
@@ -1516,6 +1520,8 @@ func writePaginatedMethod(buf *bytes.Buffer, qi userQueryInfo, cfg UnifiedRunner
 				buf.WriteString(fmt.Sprintf("\t\titem.%s = parsed%s\n", r.Name, r.Name))
 			case "json.RawMessage":
 				buf.WriteString(fmt.Sprintf("\t\tif %s.Valid {\n\t\t\titem.%s = []byte(%s.String)\n\t\t}\n", tmp, r.Name, tmp))
+			case "*json.RawMessage":
+				buf.WriteString(fmt.Sprintf("\t\tif %s.Valid {\n\t\t\tv := json.RawMessage(%s.String)\n\t\t\titem.%s = &v\n\t\t}\n", tmp, tmp, r.Name))
 			}
 		}
 	}
@@ -1558,7 +1564,7 @@ func sqliteScanType(goType string) string {
 		return "string"
 	case "*time.Time":
 		return "sql.NullString"
-	case "json.RawMessage":
+	case "json.RawMessage", "*json.RawMessage":
 		return "sql.NullString"
 	default:
 		return ""
@@ -1694,7 +1700,7 @@ func singular(name string) string {
 }
 
 func isSQLiteSpecialResultGoType(goType string) bool {
-	return goType == "time.Time" || goType == "*time.Time" || goType == "json.RawMessage"
+	return goType == "time.Time" || goType == "*time.Time" || goType == "json.RawMessage" || goType == "*json.RawMessage"
 }
 
 // jsonAggColsHaveBool returns true if any column in the json_agg has a bool Go type.
