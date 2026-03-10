@@ -210,11 +210,12 @@ func TestMySQL_SelectWithGroupBy(t *testing.T) {
 	}
 }
 
-// Regression: GROUP BY on string columns must include COLLATE utf8mb4_bin for MySQL
-// so that grouping uses binary comparison, matching SQLite (binary default) and
-// Postgres (COLLATE "C"). Without this, MySQL uses its default utf8mb4 collation
-// which is case-insensitive and can group strings differently than the other databases.
-func TestMySQL_GroupByStringCollation(t *testing.T) {
+// Regression: GROUP BY must NOT include COLLATE annotations at the query level.
+// Adding COLLATE to GROUP BY changes the expression identity, causing MySQL with
+// sql_mode=only_full_group_by to reject the query because the SELECT column no
+// longer matches the GROUP BY expression. Cross-database consistency for string
+// comparison is instead handled at table creation time (COLLATE=utf8mb4_bin).
+func TestMySQL_GroupByStringNoCollation(t *testing.T) {
 	nameCol := query.StringColumn{Table: "authors", Name: "name"}
 
 	ast := &query.AST{
@@ -231,8 +232,11 @@ func TestMySQL_GroupByStringCollation(t *testing.T) {
 		t.Fatalf("Compile failed: %v", err)
 	}
 
-	if !containsStr(sql, "GROUP BY `authors`.`name` COLLATE utf8mb4_bin") {
-		t.Errorf("MySQL GROUP BY on string column should include COLLATE utf8mb4_bin: %s", sql)
+	if containsStr(sql, "COLLATE") {
+		t.Errorf("MySQL GROUP BY should NOT include COLLATE (breaks SELECT/GROUP BY matching): %s", sql)
+	}
+	if !containsStr(sql, "GROUP BY `authors`.`name`") {
+		t.Errorf("expected plain GROUP BY clause: %s", sql)
 	}
 }
 
@@ -258,7 +262,7 @@ func TestMySQL_GroupByIntNoCollation(t *testing.T) {
 	}
 }
 
-func TestMySQL_GroupByNullableStringCollation(t *testing.T) {
+func TestMySQL_GroupByNullableStringNoCollation(t *testing.T) {
 	nickCol := query.NullStringColumn{Table: "authors", Name: "nickname"}
 
 	ast := &query.AST{
@@ -275,8 +279,11 @@ func TestMySQL_GroupByNullableStringCollation(t *testing.T) {
 		t.Fatalf("Compile failed: %v", err)
 	}
 
-	if !containsStr(sql, "GROUP BY `authors`.`nickname` COLLATE utf8mb4_bin") {
-		t.Errorf("MySQL GROUP BY on nullable string column should include COLLATE utf8mb4_bin: %s", sql)
+	if containsStr(sql, "COLLATE") {
+		t.Errorf("MySQL GROUP BY on nullable string column should NOT include COLLATE (breaks SELECT/GROUP BY matching): %s", sql)
+	}
+	if !containsStr(sql, "GROUP BY `authors`.`nickname`") {
+		t.Errorf("expected plain GROUP BY clause: %s", sql)
 	}
 }
 

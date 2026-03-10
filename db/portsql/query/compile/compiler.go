@@ -158,9 +158,7 @@ func (c *Compiler) compileSelect(ast *query.AST) (string, error) {
 			if i > 0 {
 				b.WriteString(", ")
 			}
-			c.dialect.WriteGroupByColumn(&b, col, func(col query.Column) {
-				c.writeColumn(&b, col)
-			})
+			c.writeColumn(&b, col)
 		}
 	}
 
