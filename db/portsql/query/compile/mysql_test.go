@@ -652,7 +652,10 @@ func TestMySQL_StringEscaping(t *testing.T) {
 	}
 }
 
-func TestMySQL_OrderByStringCollation(t *testing.T) {
+// Regression: ORDER BY must NOT include COLLATE annotations at the query level.
+// Collation is now handled at the schema level (COLLATE=utf8mb4_bin on the table),
+// so per-query COLLATE is unnecessary and would be redundant.
+func TestMySQL_OrderByStringNoCollation(t *testing.T) {
 	nameCol := query.StringColumn{Table: "authors", Name: "name"}
 
 	ast := &query.AST{
@@ -671,9 +674,12 @@ func TestMySQL_OrderByStringCollation(t *testing.T) {
 		t.Fatalf("Compile failed: %v", err)
 	}
 
-	// MySQL should add COLLATE utf8mb4_bin for case-sensitive ordering
-	if !containsStr(sql, "COLLATE utf8mb4_bin") {
-		t.Errorf("MySQL ORDER BY on string column should include COLLATE utf8mb4_bin: %s", sql)
+	// Collation is at the table level, so ORDER BY should NOT include COLLATE
+	if containsStr(sql, "COLLATE") {
+		t.Errorf("MySQL ORDER BY should NOT include COLLATE (handled at schema level): %s", sql)
+	}
+	if !containsStr(sql, "ORDER BY `authors`.`name`") {
+		t.Errorf("expected plain ORDER BY clause: %s", sql)
 	}
 }
 

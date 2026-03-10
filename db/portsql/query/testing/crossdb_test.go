@@ -994,8 +994,9 @@ func TestCrossDB_OrderByConsistency(t *testing.T) {
 		dbs.ClearAllData(t)
 
 		// Insert several authors with mixed case names
-		// The MySQL compiler uses COLLATE utf8mb4_bin to ensure case-sensitive
-		// ordering that matches Postgres and SQLite behavior
+		// Cross-database ordering consistency is ensured at the schema level:
+		// Postgres columns use COLLATE "C", MySQL tables use COLLATE=utf8mb4_bin,
+		// and SQLite uses binary collation by default.
 		numAuthors := g.IntRange(3, 10)
 		for i := 0; i < numAuthors; i++ {
 			publicID := uniqueID(g.Identifier(15))
