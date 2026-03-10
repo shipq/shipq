@@ -137,8 +137,8 @@ func TestPostgres_CreateTable_String(t *testing.T) {
 
 	sql := generatePostgresCreateTable(table)
 
-	if !strings.Contains(sql, `"name" VARCHAR(255) NOT NULL`) {
-		t.Errorf("expected VARCHAR(255) column, got:\n%s", sql)
+	if !strings.Contains(sql, `"name" VARCHAR(255) COLLATE "C" NOT NULL`) {
+		t.Errorf("expected VARCHAR(255) COLLATE \"C\" column, got:\n%s", sql)
 	}
 }
 
@@ -149,8 +149,8 @@ func TestPostgres_CreateTable_VarChar(t *testing.T) {
 
 	sql := generatePostgresCreateTable(table)
 
-	if !strings.Contains(sql, `"code" VARCHAR(50) NOT NULL`) {
-		t.Errorf("expected VARCHAR(50) column, got:\n%s", sql)
+	if !strings.Contains(sql, `"code" VARCHAR(50) COLLATE "C" NOT NULL`) {
+		t.Errorf("expected VARCHAR(50) COLLATE \"C\" column, got:\n%s", sql)
 	}
 }
 
@@ -161,8 +161,8 @@ func TestPostgres_CreateTable_Text(t *testing.T) {
 
 	sql := generatePostgresCreateTable(table)
 
-	if !strings.Contains(sql, `"description" TEXT NOT NULL`) {
-		t.Errorf("expected TEXT column, got:\n%s", sql)
+	if !strings.Contains(sql, `"description" TEXT COLLATE "C" NOT NULL`) {
+		t.Errorf("expected TEXT COLLATE \"C\" column, got:\n%s", sql)
 	}
 }
 
@@ -258,12 +258,12 @@ func TestPostgres_CreateTable_Nullable(t *testing.T) {
 	sql := generatePostgresCreateTable(table)
 
 	// Nullable columns should NOT have NOT NULL
-	if strings.Contains(sql, `"bio" VARCHAR(255) NOT NULL`) {
+	if strings.Contains(sql, `"bio" VARCHAR(255) COLLATE "C" NOT NULL`) {
 		t.Errorf("nullable column should not have NOT NULL, got:\n%s", sql)
 	}
-	// Should just be the type without NOT NULL
-	if !strings.Contains(sql, `"bio" VARCHAR(255)`) {
-		t.Errorf("expected VARCHAR(255) column, got:\n%s", sql)
+	// Should just be the type with COLLATE but without NOT NULL
+	if !strings.Contains(sql, `"bio" VARCHAR(255) COLLATE "C"`) {
+		t.Errorf("expected VARCHAR(255) COLLATE \"C\" column, got:\n%s", sql)
 	}
 }
 
@@ -441,8 +441,8 @@ func TestPostgres_AlterTable_AddColumn(t *testing.T) {
 
 	sql := generatePostgresAlterTable("users", ops)
 
-	if !strings.Contains(sql, `ALTER TABLE "users" ADD COLUMN "email" VARCHAR(255) NOT NULL`) {
-		t.Errorf("expected ADD COLUMN statement, got:\n%s", sql)
+	if !strings.Contains(sql, `ALTER TABLE "users" ADD COLUMN "email" VARCHAR(255) COLLATE "C" NOT NULL`) {
+		t.Errorf("expected ADD COLUMN statement with COLLATE \"C\", got:\n%s", sql)
 	}
 }
 

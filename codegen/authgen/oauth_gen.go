@@ -119,6 +119,21 @@ type oauthUser struct {
 	AvatarURL      string // profile picture URL (may be empty)
 }
 
+// isOAuthUniqueViolation checks whether an error is a unique-constraint
+// violation. Different database drivers surface this differently, so we
+// do a case-insensitive substring match on common markers.
+func isOAuthUniqueViolation(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, "unique") ||
+		strings.Contains(msg, "duplicate") ||
+		strings.Contains(msg, "violates unique constraint") ||
+		strings.Contains(msg, "duplicate entry") ||
+		strings.Contains(msg, "unique_violation")
+}
+
 `)
 
 	// generateOAuthState
@@ -287,7 +302,12 @@ func findOrCreateOAuthAccount(ctx context.Context, runner queries.Runner, provid
 			LastName:              user.LastName,
 			Email:                 user.Email,
 			DefaultOrganizationId: org.Id,
-		})
+`)
+		if cfg.EmailEnabled {
+			buf.WriteString(`			Verified:              true,
+`)
+		}
+		buf.WriteString(`		})
 		if err != nil {
 			return 0, "", fmt.Errorf("failed to create account: %w", err)
 		}
@@ -317,6 +337,18 @@ func findOrCreateOAuthAccount(ctx context.Context, runner queries.Runner, provid
 		AvatarUrl:       user.AvatarURL,
 	})
 	if err != nil {
+		// Unique constraint violation — another concurrent request already
+		// linked this provider+user. Roll back and re-read the existing row.
+		if isOAuthUniqueViolation(err) {
+			_ = txRunner.Rollback()
+			oauthAcct2, retryErr := runner.FindOAuthAccount(ctx, queries.FindOAuthAccountParams{
+				Provider:       provider,
+				ProviderUserId: user.ProviderUserID,
+			})
+			if retryErr == nil && oauthAcct2 != nil {
+				return oauthAcct2.AccountId, oauthAcct2.PublicId, nil
+			}
+		}
 		return 0, "", fmt.Errorf("failed to create oauth account link: %w", err)
 	}
 
@@ -375,6 +407,17 @@ func findOrCreateOAuthAccount(ctx context.Context, runner queries.Runner, provid
 		AvatarUrl:       user.AvatarURL,
 	})
 	if err != nil {
+		// Unique constraint violation — another concurrent request already
+		// linked this provider+user. Re-read and return the existing row.
+		if isOAuthUniqueViolation(err) {
+			oauthAcct2, retryErr := runner.FindOAuthAccount(ctx, queries.FindOAuthAccountParams{
+				Provider:       provider,
+				ProviderUserId: user.ProviderUserID,
+			})
+			if retryErr == nil && oauthAcct2 != nil {
+				return oauthAcct2.AccountId, oauthAcct2.PublicId, nil
+			}
+		}
 		return 0, "", fmt.Errorf("failed to create oauth account link: %w", err)
 	}
 
@@ -600,6 +643,9 @@ func fetchGoogleUser(accessToken string) (*oauthUser, error) {
 	}
 	if info.ID == "" {
 		return nil, fmt.Errorf("google did not return a user ID")
+	}
+	if !info.VerifiedEmail {
+		return nil, fmt.Errorf("google email %q is not verified", info.Email)
 	}
 
 	return &oauthUser{

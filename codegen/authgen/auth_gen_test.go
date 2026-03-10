@@ -1227,6 +1227,86 @@ func TestGenerateSignupHandler_EmailEnabled_TransactionCoversVerificationToken(t
 	}
 }
 
+func TestGenerateAuthQueryDefs_EmailEnabled_OAuthCreateAccountIncludesVerified(t *testing.T) {
+	cfg := AuthGenConfig{
+		ModulePath:     "example.com/myapp",
+		OAuthProviders: []string{"google"},
+		EmailEnabled:   true,
+	}
+
+	code, err := GenerateAuthQueryDefs(cfg)
+	if err != nil {
+		t.Fatalf("GenerateAuthQueryDefs() error = %v", err)
+	}
+
+	codeStr := string(code)
+
+	// Find the OAuthCreateAccount query definition (use the quoted query name
+	// to skip past the comment line and land inside the MustDefineOne call).
+	marker := `"OAuthCreateAccount"`
+	oauthIdx := strings.Index(codeStr, marker)
+	if oauthIdx == -1 {
+		t.Fatal("OAuthCreateAccount query definition not found in output")
+	}
+
+	// Get the section from the query name to the next query.MustDefine (or end of file)
+	section := codeStr[oauthIdx+len(marker):]
+	nextQuery := strings.Index(section, "query.MustDefine")
+	if nextQuery > 0 {
+		section = section[:nextQuery]
+	}
+
+	if !strings.Contains(section, "Accounts.Verified()") {
+		t.Error("OAuthCreateAccount should include Verified column when EmailEnabled is true")
+	}
+	if !strings.Contains(section, "query.Literal(true)") {
+		t.Error("OAuthCreateAccount should include query.Literal(true) when EmailEnabled is true")
+	}
+
+	// Verify it's valid Go
+	_, parseErr := parser.ParseFile(token.NewFileSet(), "queries.go", code, parser.AllErrors)
+	if parseErr != nil {
+		t.Errorf("generated queries.go with OAuth + email is not valid Go: %v\n%s", parseErr, string(code))
+	}
+}
+
+func TestGenerateAuthQueryDefs_EmailDisabled_OAuthCreateAccountExcludesVerified(t *testing.T) {
+	cfg := AuthGenConfig{
+		ModulePath:     "example.com/myapp",
+		OAuthProviders: []string{"google"},
+		EmailEnabled:   false,
+	}
+
+	code, err := GenerateAuthQueryDefs(cfg)
+	if err != nil {
+		t.Fatalf("GenerateAuthQueryDefs() error = %v", err)
+	}
+
+	codeStr := string(code)
+
+	// Find the OAuthCreateAccount query definition (use the quoted query name
+	// to skip past the comment line and land inside the MustDefineOne call).
+	marker := `"OAuthCreateAccount"`
+	oauthIdx := strings.Index(codeStr, marker)
+	if oauthIdx == -1 {
+		t.Fatal("OAuthCreateAccount query definition not found in output")
+	}
+
+	// Get the section from the query name to the next query.MustDefine (or end of file)
+	section := codeStr[oauthIdx+len(marker):]
+	nextQuery := strings.Index(section, "query.MustDefine")
+	if nextQuery > 0 {
+		section = section[:nextQuery]
+	}
+
+	if strings.Contains(section, "Accounts.Verified()") {
+		t.Error("OAuthCreateAccount should NOT include Verified column when EmailEnabled is false")
+	}
+	if strings.Contains(section, "query.Literal(true)") {
+		t.Error("OAuthCreateAccount should NOT include query.Literal(true) when EmailEnabled is false")
+	}
+}
+
 func TestGenerateLoginHandler_AlwaysHasNilGuard(t *testing.T) {
 	// Empty config: no OAuth, no email — nil guard must still be present
 	// because password_hash is always nullable.

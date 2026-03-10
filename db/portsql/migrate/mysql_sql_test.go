@@ -409,6 +409,11 @@ func TestMySQL_CreateTable_EngineAndCharset(t *testing.T) {
 	if !strings.Contains(sql, "DEFAULT CHARSET=utf8mb4") {
 		t.Errorf("expected DEFAULT CHARSET=utf8mb4, got:\n%s", sql)
 	}
+	// Should include binary collation so that GROUP BY / WHERE on string
+	// columns behaves identically to Postgres and SQLite (case-sensitive).
+	if !strings.Contains(sql, "COLLATE=utf8mb4_bin") {
+		t.Errorf("expected COLLATE=utf8mb4_bin for binary string comparison, got:\n%s", sql)
+	}
 }
 
 func TestMySQL_CreateTable_MultipleColumns(t *testing.T) {

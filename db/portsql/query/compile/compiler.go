@@ -177,7 +177,7 @@ func (c *Compiler) compileSelect(ast *query.AST) (string, error) {
 			if i > 0 {
 				b.WriteString(", ")
 			}
-			if err := c.writeOrderByExpr(&b, ob.Expr, ast.Distinct); err != nil {
+			if err := c.writeOrderByExpr(&b, ob.Expr); err != nil {
 				return "", err
 			}
 			if ob.Desc {
@@ -533,12 +533,10 @@ func (c *Compiler) writeJSONAgg(b *strings.Builder, j query.JSONAggExpr) error {
 	})
 }
 
-func (c *Compiler) writeOrderByExpr(b *strings.Builder, expr query.Expr, distinct bool) error {
+func (c *Compiler) writeOrderByExpr(b *strings.Builder, expr query.Expr) error {
 	return c.dialect.WriteOrderByExpr(b, expr, func(e query.Expr) error {
 		return c.writeExpr(b, e)
-	}, func(col query.Column) {
-		c.writeColumn(b, col)
-	}, distinct)
+	})
 }
 
 // =============================================================================
@@ -615,7 +613,7 @@ func (c *Compiler) compileSetOpInto(ast *query.AST, b *strings.Builder) error {
 			if i > 0 {
 				b.WriteString(", ")
 			}
-			if err := c.writeOrderByExpr(b, ob.Expr, false); err != nil {
+			if err := c.writeOrderByExpr(b, ob.Expr); err != nil {
 				return err
 			}
 			if ob.Desc {

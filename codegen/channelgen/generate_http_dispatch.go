@@ -542,7 +542,7 @@ func generateJobStatusHandler(buf *bytes.Buffer, cfg ChannelHTTPGenConfig) {
 	buf.WriteString("\t\t\"retry_count\":     jobResult.RetryCount,\n")
 	buf.WriteString("\t}\n")
 	buf.WriteString("\tif jobResult.ResultPayload != nil {\n")
-	buf.WriteString("\t\tresult[\"result_payload\"] = json.RawMessage(jobResult.ResultPayload)\n")
+	buf.WriteString("\t\tresult[\"result_payload\"] = json.RawMessage(*jobResult.ResultPayload)\n")
 	buf.WriteString("\t}\n")
 	buf.WriteString("\tif jobResult.ErrorMessage != nil {\n")
 	buf.WriteString("\t\tresult[\"error_message\"] = *jobResult.ErrorMessage\n")

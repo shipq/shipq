@@ -210,6 +210,76 @@ func TestSQLite_SelectWithGroupBy(t *testing.T) {
 	}
 }
 
+// Regression: GROUP BY on string columns should NOT add COLLATE for SQLite
+// because SQLite already uses binary collation by default, which matches the
+// behavior we enforce on Postgres (COLLATE "C") and MySQL (COLLATE utf8mb4_bin).
+func TestSQLite_GroupByStringNoCollation(t *testing.T) {
+	nameCol := query.StringColumn{Table: "authors", Name: "name"}
+
+	ast := &query.AST{
+		Kind:      query.SelectQuery,
+		FromTable: query.TableRef{Name: "authors"},
+		SelectCols: []query.SelectExpr{
+			{Expr: query.ColumnExpr{Column: nameCol}},
+		},
+		GroupBy: []query.Column{nameCol},
+	}
+
+	sql, _, err := NewCompiler(SQLite).Compile(ast)
+	if err != nil {
+		t.Fatalf("Compile failed: %v", err)
+	}
+
+	// SQLite uses binary collation by default — no COLLATE needed
+	if containsStr(sql, "COLLATE") {
+		t.Errorf("SQLite GROUP BY on string column should NOT include COLLATE: %s", sql)
+	}
+}
+
+func TestSQLite_GroupByIntNoCollation(t *testing.T) {
+	idCol := query.Int64Column{Table: "authors", Name: "id"}
+
+	ast := &query.AST{
+		Kind:      query.SelectQuery,
+		FromTable: query.TableRef{Name: "authors"},
+		SelectCols: []query.SelectExpr{
+			{Expr: query.ColumnExpr{Column: idCol}},
+		},
+		GroupBy: []query.Column{idCol},
+	}
+
+	sql, _, err := NewCompiler(SQLite).Compile(ast)
+	if err != nil {
+		t.Fatalf("Compile failed: %v", err)
+	}
+
+	if containsStr(sql, "COLLATE") {
+		t.Errorf("SQLite GROUP BY on non-string column should NOT include COLLATE: %s", sql)
+	}
+}
+
+func TestSQLite_GroupByNullableStringNoCollation(t *testing.T) {
+	nickCol := query.NullStringColumn{Table: "authors", Name: "nickname"}
+
+	ast := &query.AST{
+		Kind:      query.SelectQuery,
+		FromTable: query.TableRef{Name: "authors"},
+		SelectCols: []query.SelectExpr{
+			{Expr: query.ColumnExpr{Column: nickCol}},
+		},
+		GroupBy: []query.Column{nickCol},
+	}
+
+	sql, _, err := NewCompiler(SQLite).Compile(ast)
+	if err != nil {
+		t.Fatalf("Compile failed: %v", err)
+	}
+
+	if containsStr(sql, "COLLATE") {
+		t.Errorf("SQLite GROUP BY on nullable string column should NOT include COLLATE: %s", sql)
+	}
+}
+
 func TestSQLite_InsertWithReturning(t *testing.T) {
 	publicID := query.StringColumn{Table: "authors", Name: "public_id"}
 	name := query.StringColumn{Table: "authors", Name: "name"}

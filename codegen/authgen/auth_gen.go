@@ -1006,7 +1006,7 @@ func GenerateAuthQueryDefs(cfg AuthGenConfig) ([]byte, error) {
 
 	// OAuth queries (only when OAuth providers are configured)
 	if len(cfg.OAuthProviders) > 0 {
-		writeOAuthQueryDefs(&buf)
+		writeOAuthQueryDefs(&buf, cfg)
 	}
 
 	// Email queries (only when email is enabled)
@@ -1179,7 +1179,7 @@ func writeEmailQueryDefs(buf *bytes.Buffer) {
 
 // writeOAuthQueryDefs emits the query definitions needed for OAuth:
 // FindOAuthAccount, CreateOAuthAccount, and OAuthCreateAccount.
-func writeOAuthQueryDefs(buf *bytes.Buffer) {
+func writeOAuthQueryDefs(buf *bytes.Buffer, cfg AuthGenConfig) {
 	// FindOAuthAccount: lookup by provider + provider_user_id, JOIN accounts
 	// to get account_id and accounts.public_id. Excludes soft-deleted.
 	buf.WriteString("\t// FindOAuthAccount: lookup OAuth account by provider + provider_user_id\n")
@@ -1238,6 +1238,9 @@ func writeOAuthQueryDefs(buf *bytes.Buffer) {
 	buf.WriteString("\t\t\t\tschema.Accounts.LastName(),\n")
 	buf.WriteString("\t\t\t\tschema.Accounts.Email(),\n")
 	buf.WriteString("\t\t\t\tschema.Accounts.DefaultOrganizationId(),\n")
+	if cfg.EmailEnabled {
+		buf.WriteString("\t\t\t\tschema.Accounts.Verified(),\n")
+	}
 	buf.WriteString("\t\t\t).\n")
 	buf.WriteString("\t\t\tValues(\n")
 	buf.WriteString("\t\t\t\tquery.Param[string](\"publicId\"),\n")
@@ -1245,6 +1248,9 @@ func writeOAuthQueryDefs(buf *bytes.Buffer) {
 	buf.WriteString("\t\t\t\tquery.Param[string](\"lastName\"),\n")
 	buf.WriteString("\t\t\t\tquery.Param[string](\"email\"),\n")
 	buf.WriteString("\t\t\t\tquery.Param[int64](\"defaultOrganizationId\"),\n")
+	if cfg.EmailEnabled {
+		buf.WriteString("\t\t\t\tquery.Literal(true),\n")
+	}
 	buf.WriteString("\t\t\t).\n")
 	buf.WriteString("\t\t\tReturning(\n")
 	buf.WriteString("\t\t\t\tschema.Accounts.Id(),\n")

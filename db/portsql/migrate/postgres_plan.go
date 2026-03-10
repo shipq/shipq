@@ -24,9 +24,12 @@ func postgresType(col *ddl.ColumnDefinition) string {
 		if col.Length != nil {
 			length = *col.Length
 		}
-		return fmt.Sprintf("VARCHAR(%d)", length)
+		// COLLATE "C" ensures binary comparison, matching SQLite (binary default)
+		// and MySQL (COLLATE=utf8mb4_bin). Without this, Postgres uses the database's
+		// locale-aware collation which can produce different GROUP BY / WHERE behavior.
+		return fmt.Sprintf(`VARCHAR(%d) COLLATE "C"`, length)
 	case ddl.TextType:
-		return "TEXT"
+		return `TEXT COLLATE "C"`
 	case ddl.BooleanType:
 		return "BOOLEAN"
 	case ddl.DecimalType:
@@ -270,9 +273,9 @@ func postgresTypeFromString(ddlType string) string {
 	case ddl.BigintType:
 		return "BIGINT"
 	case ddl.StringType:
-		return "VARCHAR(255)"
+		return `VARCHAR(255) COLLATE "C"`
 	case ddl.TextType:
-		return "TEXT"
+		return `TEXT COLLATE "C"`
 	case ddl.BooleanType:
 		return "BOOLEAN"
 	case ddl.DecimalType:

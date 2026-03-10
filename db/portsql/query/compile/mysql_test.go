@@ -210,6 +210,83 @@ func TestMySQL_SelectWithGroupBy(t *testing.T) {
 	}
 }
 
+// Regression: GROUP BY must NOT include COLLATE annotations at the query level.
+// Adding COLLATE to GROUP BY changes the expression identity, causing MySQL with
+// sql_mode=only_full_group_by to reject the query because the SELECT column no
+// longer matches the GROUP BY expression. Cross-database consistency for string
+// comparison is instead handled at table creation time (COLLATE=utf8mb4_bin).
+func TestMySQL_GroupByStringNoCollation(t *testing.T) {
+	nameCol := query.StringColumn{Table: "authors", Name: "name"}
+
+	ast := &query.AST{
+		Kind:      query.SelectQuery,
+		FromTable: query.TableRef{Name: "authors"},
+		SelectCols: []query.SelectExpr{
+			{Expr: query.ColumnExpr{Column: nameCol}},
+		},
+		GroupBy: []query.Column{nameCol},
+	}
+
+	sql, _, err := NewCompiler(MySQL).Compile(ast)
+	if err != nil {
+		t.Fatalf("Compile failed: %v", err)
+	}
+
+	if containsStr(sql, "COLLATE") {
+		t.Errorf("MySQL GROUP BY should NOT include COLLATE (breaks SELECT/GROUP BY matching): %s", sql)
+	}
+	if !containsStr(sql, "GROUP BY `authors`.`name`") {
+		t.Errorf("expected plain GROUP BY clause: %s", sql)
+	}
+}
+
+func TestMySQL_GroupByIntNoCollation(t *testing.T) {
+	idCol := query.Int64Column{Table: "authors", Name: "id"}
+
+	ast := &query.AST{
+		Kind:      query.SelectQuery,
+		FromTable: query.TableRef{Name: "authors"},
+		SelectCols: []query.SelectExpr{
+			{Expr: query.ColumnExpr{Column: idCol}},
+		},
+		GroupBy: []query.Column{idCol},
+	}
+
+	sql, _, err := NewCompiler(MySQL).Compile(ast)
+	if err != nil {
+		t.Fatalf("Compile failed: %v", err)
+	}
+
+	if containsStr(sql, "COLLATE") {
+		t.Errorf("MySQL GROUP BY on non-string column should NOT include COLLATE: %s", sql)
+	}
+}
+
+func TestMySQL_GroupByNullableStringNoCollation(t *testing.T) {
+	nickCol := query.NullStringColumn{Table: "authors", Name: "nickname"}
+
+	ast := &query.AST{
+		Kind:      query.SelectQuery,
+		FromTable: query.TableRef{Name: "authors"},
+		SelectCols: []query.SelectExpr{
+			{Expr: query.ColumnExpr{Column: nickCol}},
+		},
+		GroupBy: []query.Column{nickCol},
+	}
+
+	sql, _, err := NewCompiler(MySQL).Compile(ast)
+	if err != nil {
+		t.Fatalf("Compile failed: %v", err)
+	}
+
+	if containsStr(sql, "COLLATE") {
+		t.Errorf("MySQL GROUP BY on nullable string column should NOT include COLLATE (breaks SELECT/GROUP BY matching): %s", sql)
+	}
+	if !containsStr(sql, "GROUP BY `authors`.`nickname`") {
+		t.Errorf("expected plain GROUP BY clause: %s", sql)
+	}
+}
+
 func TestMySQL_Insert_NoReturning(t *testing.T) {
 	publicID := query.StringColumn{Table: "authors", Name: "public_id"}
 	name := query.StringColumn{Table: "authors", Name: "name"}
@@ -575,7 +652,10 @@ func TestMySQL_StringEscaping(t *testing.T) {
 	}
 }
 
-func TestMySQL_OrderByStringCollation(t *testing.T) {
+// Regression: ORDER BY must NOT include COLLATE annotations at the query level.
+// Collation is now handled at the schema level (COLLATE=utf8mb4_bin on the table),
+// so per-query COLLATE is unnecessary and would be redundant.
+func TestMySQL_OrderByStringNoCollation(t *testing.T) {
 	nameCol := query.StringColumn{Table: "authors", Name: "name"}
 
 	ast := &query.AST{
@@ -594,9 +674,12 @@ func TestMySQL_OrderByStringCollation(t *testing.T) {
 		t.Fatalf("Compile failed: %v", err)
 	}
 
-	// MySQL should add COLLATE utf8mb4_bin for case-sensitive ordering
-	if !containsStr(sql, "COLLATE utf8mb4_bin") {
-		t.Errorf("MySQL ORDER BY on string column should include COLLATE utf8mb4_bin: %s", sql)
+	// Collation is at the table level, so ORDER BY should NOT include COLLATE
+	if containsStr(sql, "COLLATE") {
+		t.Errorf("MySQL ORDER BY should NOT include COLLATE (handled at schema level): %s", sql)
+	}
+	if !containsStr(sql, "ORDER BY `authors`.`name`") {
+		t.Errorf("expected plain ORDER BY clause: %s", sql)
 	}
 }
 

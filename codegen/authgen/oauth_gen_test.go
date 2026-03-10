@@ -719,6 +719,92 @@ func TestGenerateOAuthShared_SignupDisabled_NoTransaction(t *testing.T) {
 	}
 }
 
+func TestGenerateOAuthShared_EmailEnabled_SetsVerifiedTrue(t *testing.T) {
+	cfg := AuthGenConfig{
+		ModulePath:     "example.com/myapp",
+		OAuthProviders: []string{"google"},
+		SignupEnabled:  true,
+		EmailEnabled:   true,
+	}
+
+	code, err := GenerateOAuthShared(cfg)
+	if err != nil {
+		t.Fatalf("GenerateOAuthShared() error = %v", err)
+	}
+
+	codeStr := string(code)
+
+	// The OAuthCreateAccountParams block should include Verified: true
+	if !strings.Contains(codeStr, "Verified:") {
+		t.Error("expected signup-enabled + email-enabled output to contain Verified field in OAuthCreateAccountParams")
+	}
+	if !strings.Contains(codeStr, "Verified:              true") {
+		t.Error("expected Verified field to be set to true")
+	}
+
+	// Verify it's still valid Go
+	_, parseErr := parser.ParseFile(token.NewFileSet(), "oauth_shared.go", code, parser.AllErrors)
+	if parseErr != nil {
+		t.Errorf("generated oauth_shared.go with email enabled is not valid Go: %v\n%s", parseErr, string(code))
+	}
+}
+
+func TestGenerateOAuthShared_EmailDisabled_NoVerifiedField(t *testing.T) {
+	cfg := AuthGenConfig{
+		ModulePath:     "example.com/myapp",
+		OAuthProviders: []string{"google"},
+		SignupEnabled:  true,
+		EmailEnabled:   false,
+	}
+
+	code, err := GenerateOAuthShared(cfg)
+	if err != nil {
+		t.Fatalf("GenerateOAuthShared() error = %v", err)
+	}
+
+	codeStr := string(code)
+
+	// The OAuthCreateAccountParams block should NOT include Verified
+	if strings.Contains(codeStr, "Verified:") {
+		t.Error("expected signup-enabled + email-disabled output NOT to contain Verified field")
+	}
+
+	// Verify it's still valid Go
+	_, parseErr := parser.ParseFile(token.NewFileSet(), "oauth_shared.go", code, parser.AllErrors)
+	if parseErr != nil {
+		t.Errorf("generated oauth_shared.go with email disabled is not valid Go: %v\n%s", parseErr, string(code))
+	}
+}
+
+func TestGenerateOAuthProvider_Google_ChecksVerifiedEmail(t *testing.T) {
+	cfg := AuthGenConfig{
+		ModulePath:     "example.com/myapp",
+		OAuthProviders: []string{"google"},
+		SignupEnabled:  true,
+	}
+
+	code, err := GenerateOAuthProvider(cfg, GoogleProvider)
+	if err != nil {
+		t.Fatalf("GenerateOAuthProvider(google) error = %v", err)
+	}
+
+	codeStr := string(code)
+
+	// The fetchGoogleUser function should check VerifiedEmail, not just parse it
+	if !strings.Contains(codeStr, "!info.VerifiedEmail") {
+		t.Error("expected fetchGoogleUser to check !info.VerifiedEmail")
+	}
+	if !strings.Contains(codeStr, "is not verified") {
+		t.Error("expected fetchGoogleUser to return an error when email is not verified")
+	}
+
+	// Verify it's still valid Go
+	_, parseErr := parser.ParseFile(token.NewFileSet(), "oauth_google.go", code, parser.AllErrors)
+	if parseErr != nil {
+		t.Errorf("generated oauth_google.go is not valid Go: %v\n%s", parseErr, string(code))
+	}
+}
+
 func TestGenerateOAuthProvider_Google_UsesCorrectModulePath(t *testing.T) {
 	cfg := AuthGenConfig{
 		ModulePath:     "github.com/custom/project",
@@ -737,5 +823,154 @@ func TestGenerateOAuthProvider_Google_UsesCorrectModulePath(t *testing.T) {
 	}
 	if !strings.Contains(codeStr, "github.com/custom/project/config") {
 		t.Error("expected google provider to import correct config package")
+	}
+}
+
+func TestGenerateOAuthShared_SignupEnabled_HasUniqueViolationRetry(t *testing.T) {
+	cfg := AuthGenConfig{
+		ModulePath:     "example.com/myapp",
+		OAuthProviders: []string{"google"},
+		SignupEnabled:  true,
+	}
+
+	code, err := GenerateOAuthShared(cfg)
+	if err != nil {
+		t.Fatalf("GenerateOAuthShared() error = %v", err)
+	}
+
+	codeStr := string(code)
+
+	// Should contain the isOAuthUniqueViolation helper
+	if !strings.Contains(codeStr, "func isOAuthUniqueViolation(err error) bool") {
+		t.Error("expected generated code to contain isOAuthUniqueViolation helper")
+	}
+
+	// The signup-enabled branch wraps writes in a transaction.
+	// After CreateOAuthAccount fails, it should check for unique violation
+	// and retry by re-reading FindOAuthAccount.
+	if !strings.Contains(codeStr, "isOAuthUniqueViolation(err)") {
+		t.Error("expected signup-enabled findOrCreateOAuthAccount to check isOAuthUniqueViolation on CreateOAuthAccount error")
+	}
+
+	// After detecting a unique violation in the tx path, should rollback and re-read
+	createIdx := strings.Index(codeStr, "failed to create oauth account link")
+	if createIdx == -1 {
+		t.Fatal("expected 'failed to create oauth account link' error in generated code")
+	}
+
+	// The retry block should call FindOAuthAccount a second time
+	retrySection := codeStr[strings.Index(codeStr, "isOAuthUniqueViolation"):]
+	if !strings.Contains(retrySection, "FindOAuthAccount") {
+		t.Error("expected retry logic to re-read via FindOAuthAccount after unique violation")
+	}
+	if !strings.Contains(retrySection, "oauthAcct2") {
+		t.Error("expected retry logic to use oauthAcct2 variable for re-read result")
+	}
+
+	// Verify it's still valid Go
+	_, parseErr := parser.ParseFile(token.NewFileSet(), "oauth_shared.go", code, parser.AllErrors)
+	if parseErr != nil {
+		t.Errorf("generated oauth_shared.go with retry logic is not valid Go: %v\n%s", parseErr, string(code))
+	}
+}
+
+func TestGenerateOAuthShared_SignupDisabled_HasUniqueViolationRetry(t *testing.T) {
+	cfg := AuthGenConfig{
+		ModulePath:     "example.com/myapp",
+		OAuthProviders: []string{"google"},
+		SignupEnabled:  false,
+	}
+
+	code, err := GenerateOAuthShared(cfg)
+	if err != nil {
+		t.Fatalf("GenerateOAuthShared() error = %v", err)
+	}
+
+	codeStr := string(code)
+
+	// Should contain the isOAuthUniqueViolation helper
+	if !strings.Contains(codeStr, "func isOAuthUniqueViolation(err error) bool") {
+		t.Error("expected generated code to contain isOAuthUniqueViolation helper")
+	}
+
+	// The signup-disabled branch does NOT use a transaction for CreateOAuthAccount,
+	// but should still check for unique violation and retry.
+	if !strings.Contains(codeStr, "isOAuthUniqueViolation(err)") {
+		t.Error("expected signup-disabled findOrCreateOAuthAccount to check isOAuthUniqueViolation on CreateOAuthAccount error")
+	}
+
+	// The retry block should call FindOAuthAccount a second time
+	retrySection := codeStr[strings.Index(codeStr, "isOAuthUniqueViolation"):]
+	if !strings.Contains(retrySection, "FindOAuthAccount") {
+		t.Error("expected retry logic to re-read via FindOAuthAccount after unique violation")
+	}
+
+	// Verify it's still valid Go
+	_, parseErr := parser.ParseFile(token.NewFileSet(), "oauth_shared.go", code, parser.AllErrors)
+	if parseErr != nil {
+		t.Errorf("generated oauth_shared.go (signup disabled) with retry logic is not valid Go: %v\n%s", parseErr, string(code))
+	}
+}
+
+func TestGenerateOAuthShared_IsOAuthUniqueViolation_ChecksCommonPatterns(t *testing.T) {
+	cfg := AuthGenConfig{
+		ModulePath:     "example.com/myapp",
+		OAuthProviders: []string{"google"},
+		SignupEnabled:  true,
+	}
+
+	code, err := GenerateOAuthShared(cfg)
+	if err != nil {
+		t.Fatalf("GenerateOAuthShared() error = %v", err)
+	}
+
+	codeStr := string(code)
+
+	// The helper should match common DB driver error strings for:
+	// - SQLite: "UNIQUE constraint failed" (contains "unique")
+	// - PostgreSQL: "duplicate key value violates unique constraint" (contains "unique" and "duplicate")
+	// - MySQL: "Duplicate entry" (contains "duplicate")
+	if !strings.Contains(codeStr, `strings.Contains(msg, "unique")`) {
+		t.Error("isOAuthUniqueViolation should check for 'unique' substring")
+	}
+	if !strings.Contains(codeStr, `strings.Contains(msg, "duplicate")`) {
+		t.Error("isOAuthUniqueViolation should check for 'duplicate' substring")
+	}
+	if !strings.Contains(codeStr, "strings.ToLower") {
+		t.Error("isOAuthUniqueViolation should do case-insensitive matching")
+	}
+}
+
+func TestGenerateOAuthShared_SignupEnabled_RetryRollsBackTransaction(t *testing.T) {
+	cfg := AuthGenConfig{
+		ModulePath:     "example.com/myapp",
+		OAuthProviders: []string{"google"},
+		SignupEnabled:  true,
+	}
+
+	code, err := GenerateOAuthShared(cfg)
+	if err != nil {
+		t.Fatalf("GenerateOAuthShared() error = %v", err)
+	}
+
+	codeStr := string(code)
+
+	// In the signup-enabled branch, the retry path must rollback the
+	// transaction before re-reading, because the tx is in a failed state.
+	uniqueIdx := strings.Index(codeStr, "isOAuthUniqueViolation(err)")
+	if uniqueIdx == -1 {
+		t.Fatal("expected isOAuthUniqueViolation check in generated code")
+	}
+
+	// Find the section between the unique violation check and the retry FindOAuthAccount
+	retryBlock := codeStr[uniqueIdx:]
+	findIdx := strings.Index(retryBlock, "FindOAuthAccount")
+	if findIdx == -1 {
+		t.Fatal("expected FindOAuthAccount call after unique violation check")
+	}
+
+	beforeRetry := retryBlock[:findIdx]
+	if !strings.Contains(beforeRetry, "Rollback") {
+		t.Error("expected transaction Rollback before retry FindOAuthAccount in signup-enabled branch")
 	}
 }

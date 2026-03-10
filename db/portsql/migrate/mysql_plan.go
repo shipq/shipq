@@ -147,7 +147,7 @@ func generateMySQLCreateTable(table *ddl.Table) string {
 		sb.WriteString(generateMySQLColumnDef(&col, isAutoincrementPK))
 	}
 
-	sb.WriteString(") ENGINE=InnoDB DEFAULT CHARSET=utf8mb4")
+	sb.WriteString(") ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_bin")
 
 	// Generate index statements separately
 	var indexStatements []string

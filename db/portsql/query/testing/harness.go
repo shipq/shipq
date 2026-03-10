@@ -219,10 +219,10 @@ func createTestSchema(t *testing.T, dbs *TestDBs) {
 	pgAuthorsSQL := `
 		CREATE TABLE test_authors (
 			id BIGSERIAL PRIMARY KEY,
-			public_id VARCHAR(255) NOT NULL UNIQUE,
-			name VARCHAR(255) NOT NULL,
-			email VARCHAR(255) NOT NULL UNIQUE,
-			bio TEXT,
+			public_id VARCHAR(255) COLLATE "C" NOT NULL UNIQUE,
+			name VARCHAR(255) COLLATE "C" NOT NULL,
+			email VARCHAR(255) COLLATE "C" NOT NULL UNIQUE,
+			bio TEXT COLLATE "C",
 			active BOOLEAN NOT NULL DEFAULT TRUE,
 			created_at TIMESTAMP NOT NULL DEFAULT NOW(),
 			updated_at TIMESTAMP NOT NULL DEFAULT NOW(),
@@ -241,7 +241,7 @@ func createTestSchema(t *testing.T, dbs *TestDBs) {
 			created_at DATETIME NOT NULL DEFAULT NOW(),
 			updated_at DATETIME NOT NULL DEFAULT NOW(),
 			deleted_at DATETIME
-		)
+		) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_bin
 	`
 
 	sqAuthorsSQL := `
@@ -272,9 +272,9 @@ func createTestSchema(t *testing.T, dbs *TestDBs) {
 	pgBooksSQL := `
 		CREATE TABLE test_books (
 			id BIGSERIAL PRIMARY KEY,
-			public_id VARCHAR(255) NOT NULL UNIQUE,
+			public_id VARCHAR(255) COLLATE "C" NOT NULL UNIQUE,
 			author_id BIGINT NOT NULL REFERENCES test_authors(id),
-			title VARCHAR(255) NOT NULL,
+			title VARCHAR(255) COLLATE "C" NOT NULL,
 			price DECIMAL(10,2),
 			created_at TIMESTAMP NOT NULL DEFAULT NOW()
 		)
@@ -289,7 +289,7 @@ func createTestSchema(t *testing.T, dbs *TestDBs) {
 			price DECIMAL(10,2),
 			created_at DATETIME NOT NULL DEFAULT NOW(),
 			FOREIGN KEY (author_id) REFERENCES test_authors(id)
-		)
+		) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_bin
 	`
 
 	sqBooksSQL := `
