@@ -210,6 +210,76 @@ func TestMySQL_SelectWithGroupBy(t *testing.T) {
 	}
 }
 
+// Regression: GROUP BY on string columns must include COLLATE utf8mb4_bin for MySQL
+// so that grouping uses binary comparison, matching SQLite (binary default) and
+// Postgres (COLLATE "C"). Without this, MySQL uses its default utf8mb4 collation
+// which is case-insensitive and can group strings differently than the other databases.
+func TestMySQL_GroupByStringCollation(t *testing.T) {
+	nameCol := query.StringColumn{Table: "authors", Name: "name"}
+
+	ast := &query.AST{
+		Kind:      query.SelectQuery,
+		FromTable: query.TableRef{Name: "authors"},
+		SelectCols: []query.SelectExpr{
+			{Expr: query.ColumnExpr{Column: nameCol}},
+		},
+		GroupBy: []query.Column{nameCol},
+	}
+
+	sql, _, err := NewCompiler(MySQL).Compile(ast)
+	if err != nil {
+		t.Fatalf("Compile failed: %v", err)
+	}
+
+	if !containsStr(sql, "GROUP BY `authors`.`name` COLLATE utf8mb4_bin") {
+		t.Errorf("MySQL GROUP BY on string column should include COLLATE utf8mb4_bin: %s", sql)
+	}
+}
+
+func TestMySQL_GroupByIntNoCollation(t *testing.T) {
+	idCol := query.Int64Column{Table: "authors", Name: "id"}
+
+	ast := &query.AST{
+		Kind:      query.SelectQuery,
+		FromTable: query.TableRef{Name: "authors"},
+		SelectCols: []query.SelectExpr{
+			{Expr: query.ColumnExpr{Column: idCol}},
+		},
+		GroupBy: []query.Column{idCol},
+	}
+
+	sql, _, err := NewCompiler(MySQL).Compile(ast)
+	if err != nil {
+		t.Fatalf("Compile failed: %v", err)
+	}
+
+	if containsStr(sql, "COLLATE") {
+		t.Errorf("MySQL GROUP BY on non-string column should NOT include COLLATE: %s", sql)
+	}
+}
+
+func TestMySQL_GroupByNullableStringCollation(t *testing.T) {
+	nickCol := query.NullStringColumn{Table: "authors", Name: "nickname"}
+
+	ast := &query.AST{
+		Kind:      query.SelectQuery,
+		FromTable: query.TableRef{Name: "authors"},
+		SelectCols: []query.SelectExpr{
+			{Expr: query.ColumnExpr{Column: nickCol}},
+		},
+		GroupBy: []query.Column{nickCol},
+	}
+
+	sql, _, err := NewCompiler(MySQL).Compile(ast)
+	if err != nil {
+		t.Fatalf("Compile failed: %v", err)
+	}
+
+	if !containsStr(sql, "GROUP BY `authors`.`nickname` COLLATE utf8mb4_bin") {
+		t.Errorf("MySQL GROUP BY on nullable string column should include COLLATE utf8mb4_bin: %s", sql)
+	}
+}
+
 func TestMySQL_Insert_NoReturning(t *testing.T) {
 	publicID := query.StringColumn{Table: "authors", Name: "public_id"}
 	name := query.StringColumn{Table: "authors", Name: "name"}

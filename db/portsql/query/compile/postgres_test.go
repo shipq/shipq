@@ -278,6 +278,76 @@ func TestPostgres_SelectWithGroupBy(t *testing.T) {
 	}
 }
 
+// Regression: GROUP BY on string columns must include COLLATE "C" for Postgres
+// so that grouping uses binary comparison, matching SQLite (binary default) and
+// MySQL (COLLATE utf8mb4_bin). Without this, Postgres uses UTF-8 collation which
+// can group strings differently than the other databases.
+func TestPostgres_GroupByStringCollation(t *testing.T) {
+	countryCol := query.StringColumn{Table: "authors", Name: "country"}
+
+	ast := &query.AST{
+		Kind:      query.SelectQuery,
+		FromTable: query.TableRef{Name: "authors"},
+		SelectCols: []query.SelectExpr{
+			{Expr: query.ColumnExpr{Column: countryCol}},
+		},
+		GroupBy: []query.Column{countryCol},
+	}
+
+	sql, _, err := NewCompiler(Postgres).Compile(ast)
+	if err != nil {
+		t.Fatalf("Compile failed: %v", err)
+	}
+
+	if !containsStr(sql, `GROUP BY "authors"."country" COLLATE "C"`) {
+		t.Errorf("Postgres GROUP BY on string column should include COLLATE \"C\": %s", sql)
+	}
+}
+
+func TestPostgres_GroupByIntNoCollation(t *testing.T) {
+	idCol := query.Int64Column{Table: "authors", Name: "id"}
+
+	ast := &query.AST{
+		Kind:      query.SelectQuery,
+		FromTable: query.TableRef{Name: "authors"},
+		SelectCols: []query.SelectExpr{
+			{Expr: query.ColumnExpr{Column: idCol}},
+		},
+		GroupBy: []query.Column{idCol},
+	}
+
+	sql, _, err := NewCompiler(Postgres).Compile(ast)
+	if err != nil {
+		t.Fatalf("Compile failed: %v", err)
+	}
+
+	if containsStr(sql, "COLLATE") {
+		t.Errorf("Postgres GROUP BY on non-string column should NOT include COLLATE: %s", sql)
+	}
+}
+
+func TestPostgres_GroupByNullableStringCollation(t *testing.T) {
+	nickCol := query.NullStringColumn{Table: "authors", Name: "nickname"}
+
+	ast := &query.AST{
+		Kind:      query.SelectQuery,
+		FromTable: query.TableRef{Name: "authors"},
+		SelectCols: []query.SelectExpr{
+			{Expr: query.ColumnExpr{Column: nickCol}},
+		},
+		GroupBy: []query.Column{nickCol},
+	}
+
+	sql, _, err := NewCompiler(Postgres).Compile(ast)
+	if err != nil {
+		t.Fatalf("Compile failed: %v", err)
+	}
+
+	if !containsStr(sql, `GROUP BY "authors"."nickname" COLLATE "C"`) {
+		t.Errorf("Postgres GROUP BY on nullable string column should include COLLATE \"C\": %s", sql)
+	}
+}
+
 func TestPostgres_SelectWithAlias(t *testing.T) {
 	nameCol := query.StringColumn{Table: "authors", Name: "name"}
 
