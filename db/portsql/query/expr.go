@@ -50,6 +50,8 @@ const (
 	OpOr   BinaryOp = "OR"
 	OpLike BinaryOp = "LIKE"
 	OpIn   BinaryOp = "IN"
+	OpAdd  BinaryOp = "+"
+	OpSub  BinaryOp = "-"
 )
 
 // UnaryExpr represents a unary operation (op expr).

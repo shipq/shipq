@@ -1038,3 +1038,73 @@ func TestMySQL_CTE(t *testing.T) {
 		t.Errorf("SQL should contain AS (SELECT: %s", sql)
 	}
 }
+
+func TestMySQL_UpdateWithArithmetic(t *testing.T) {
+	score := query.Int64Column{Table: "posts", Name: "score"}
+	id := query.Int64Column{Table: "posts", Name: "id"}
+
+	ast := &query.AST{
+		Kind:      query.UpdateQuery,
+		FromTable: query.TableRef{Name: "posts"},
+		SetClauses: []query.SetClause{
+			{Column: score, Value: query.BinaryExpr{
+				Left:  query.ColumnExpr{Column: score},
+				Op:    query.OpAdd,
+				Right: query.ParamExpr{Name: "delta", GoType: "int"},
+			}},
+		},
+		Where: query.BinaryExpr{
+			Left:  query.ColumnExpr{Column: id},
+			Op:    query.OpEq,
+			Right: query.ParamExpr{Name: "id", GoType: "int64"},
+		},
+	}
+
+	sql, params, err := NewCompiler(MySQL).Compile(ast)
+	if err != nil {
+		t.Fatalf("Compile failed: %v", err)
+	}
+
+	expected := "UPDATE `posts` SET `score` = (`posts`.`score` + ?) WHERE (`posts`.`id` = ?)"
+	if sql != expected {
+		t.Errorf("expected SQL:\n%s\ngot:\n%s", expected, sql)
+	}
+	if len(params) != 2 || params[0] != "delta" || params[1] != "id" {
+		t.Errorf("expected params [delta, id], got %v", params)
+	}
+}
+
+func TestMySQL_UpdateWithArithmeticSub(t *testing.T) {
+	score := query.Int64Column{Table: "posts", Name: "score"}
+	id := query.Int64Column{Table: "posts", Name: "id"}
+
+	ast := &query.AST{
+		Kind:      query.UpdateQuery,
+		FromTable: query.TableRef{Name: "posts"},
+		SetClauses: []query.SetClause{
+			{Column: score, Value: query.BinaryExpr{
+				Left:  query.ColumnExpr{Column: score},
+				Op:    query.OpSub,
+				Right: query.ParamExpr{Name: "delta", GoType: "int"},
+			}},
+		},
+		Where: query.BinaryExpr{
+			Left:  query.ColumnExpr{Column: id},
+			Op:    query.OpEq,
+			Right: query.ParamExpr{Name: "id", GoType: "int64"},
+		},
+	}
+
+	sql, params, err := NewCompiler(MySQL).Compile(ast)
+	if err != nil {
+		t.Fatalf("Compile failed: %v", err)
+	}
+
+	expected := "UPDATE `posts` SET `score` = (`posts`.`score` - ?) WHERE (`posts`.`id` = ?)"
+	if sql != expected {
+		t.Errorf("expected SQL:\n%s\ngot:\n%s", expected, sql)
+	}
+	if len(params) != 2 || params[0] != "delta" || params[1] != "id" {
+		t.Errorf("expected params [delta, id], got %v", params)
+	}
+}
