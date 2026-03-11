@@ -110,7 +110,7 @@ export async function uploadFile(
     );
 
     // Step 3: Complete the upload
-    return await completeUpload(uploadData.file_id, undefined, undefined, signal);
+    return await completeUpload(uploadData.file_id, undefined, signal);
   }
 
   if (uploadData.method === "MULTIPART" && uploadData.parts && uploadData.upload_id) {
@@ -140,7 +140,7 @@ export async function uploadFile(
     }
 
     // Step 3: Complete multipart upload
-    return await completeUpload(uploadData.file_id, uploadData.upload_id, completedParts, signal);
+    return await completeUpload(uploadData.file_id, completedParts, signal);
   }
 
   throw new Error("Unexpected upload response");
@@ -221,15 +221,13 @@ function xhrPut(
 
 async function completeUpload(
   fileId: string,
-  uploadId?: string,
   parts?: Array<{ part_number: number; etag: string }>,
   signal?: AbortSignal
 ): Promise<UploadResult> {
-  const body: Record<string, unknown> = { file_id: fileId };
-  if (uploadId) body.upload_id = uploadId;
+  const body: Record<string, unknown> = {};
   if (parts) body.parts = parts;
 
-  const resp = await fetch(`${_baseUrl}/files/complete`, {
+  const resp = await fetch(`${_baseUrl}/files/${encodeURIComponent(fileId)}/complete`, {
     method: "POST",
     credentials: _credentials,
     headers: { "Content-Type": "application/json" },

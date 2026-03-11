@@ -30,7 +30,7 @@ func GenerateResetPasswordHandler(cfg AuthGenConfig) ([]byte, error) {
 	// Request struct
 	buf.WriteString(`// ResetPasswordRequest is the request body for POST /auth/reset-password.
 type ResetPasswordRequest struct {
-	Token    string ` + "`json:\"token\"`" + `
+	Token    string ` + "`query:\"token\"`" + `
 	Password string ` + "`json:\"password\"`" + `
 }
 
@@ -58,7 +58,7 @@ func ResetPassword(ctx context.Context, req *ResetPasswordRequest) (*struct{}, e
 		TokenHash: tokenHash,
 	})
 	if err != nil {
-		return nil, httperror.Wrap(500, "internal error", err)
+		return nil, httperror.Wrap(500, "internal server error", err)
 	}
 	if token == nil {
 		return nil, httperror.BadRequest("invalid or expired token")
@@ -67,7 +67,7 @@ func ResetPassword(ctx context.Context, req *ResetPasswordRequest) (*struct{}, e
 	// Hash the new password
 	passwordHash, err := crypto.HashPassword(req.Password)
 	if err != nil {
-		return nil, httperror.Wrap(500, "failed to hash password", err)
+		return nil, httperror.Wrap(500, "internal server error", err)
 	}
 
 	// Update the account's password
@@ -76,7 +76,7 @@ func ResetPassword(ctx context.Context, req *ResetPasswordRequest) (*struct{}, e
 		PasswordHash: passwordHash,
 	})
 	if err != nil {
-		return nil, httperror.Wrap(500, "failed to update password", err)
+		return nil, httperror.Wrap(500, "internal server error", err)
 	}
 
 	// Mark this token as used
@@ -84,7 +84,7 @@ func ResetPassword(ctx context.Context, req *ResetPasswordRequest) (*struct{}, e
 		PublicId: token.PublicId,
 	})
 	if err != nil {
-		return nil, httperror.Wrap(500, "internal error", err)
+		return nil, httperror.Wrap(500, "internal server error", err)
 	}
 
 	// Invalidate all other tokens for the account

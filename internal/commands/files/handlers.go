@@ -114,7 +114,7 @@ func UploadURL(ctx context.Context, req *UploadURLRequest) (*UploadURLResponse, 
 
 	s3Client, err := getS3Client()
 	if err != nil {
-		return nil, httperror.New(500, "failed to initialize storage: "+err.Error())
+		return nil, httperror.Wrap(500, "internal server error", err)
 	}
 
 	multipartThresholdMB, _ := strconv.ParseInt(config.Settings.MULTIPART_THRESHOLD_MB, 10, 64)
@@ -127,7 +127,7 @@ func UploadURL(ctx context.Context, req *UploadURLRequest) (*UploadURLResponse, 
 		// Single presigned PUT
 		uploadURL, err := s3Client.GenerateUploadURL(fileKey, req.ContentType, req.SizeBytes)
 		if err != nil {
-			return nil, httperror.New(500, "failed to generate upload URL: "+err.Error())
+			return nil, httperror.Wrap(500, "internal server error", err)
 		}
 
 		_, err = runner.FilesCreateManagedFile(ctx, queries.FilesCreateManagedFileParams{
@@ -142,7 +142,7 @@ func UploadURL(ctx context.Context, req *UploadURLRequest) (*UploadURLResponse, 
 			AuthorAccountId: accountID,
 		})
 		if err != nil {
-			return nil, httperror.New(500, "failed to create file record: "+err.Error())
+			return nil, httperror.Wrap(500, "internal server error", err)
 		}
 
 		return &UploadURLResponse{
@@ -155,7 +155,7 @@ func UploadURL(ctx context.Context, req *UploadURLRequest) (*UploadURLResponse, 
 	// Multipart upload
 	uploadID, err := s3Client.InitiateMultipartUpload(fileKey, req.ContentType)
 	if err != nil {
-		return nil, httperror.New(500, "failed to initiate multipart upload: "+err.Error())
+		return nil, httperror.Wrap(500, "internal server error", err)
 	}
 
 	// Calculate parts (each part is at most multipartThreshold bytes)
@@ -165,7 +165,7 @@ func UploadURL(ctx context.Context, req *UploadURLRequest) (*UploadURLResponse, 
 		partURL, err := s3Client.GeneratePartUploadURL(fileKey, uploadID, i)
 		if err != nil {
 			_ = s3Client.AbortMultipartUpload(fileKey, uploadID)
-			return nil, httperror.New(500, "failed to generate part upload URL: "+err.Error())
+			return nil, httperror.Wrap(500, "internal server error", err)
 		}
 		parts = append(parts, UploadURLPartResponse{
 			PartNumber: i,
@@ -186,7 +186,7 @@ func UploadURL(ctx context.Context, req *UploadURLRequest) (*UploadURLResponse, 
 	})
 	if err != nil {
 		_ = s3Client.AbortMultipartUpload(fileKey, uploadID)
-		return nil, httperror.New(500, "failed to create file record: "+err.Error())
+		return nil, httperror.Wrap(500, "internal server error", err)
 	}
 
 	return &UploadURLResponse{
@@ -222,9 +222,8 @@ type CompletedPart struct {
 
 // CompleteRequest is the request body for completing a file upload.
 type CompleteRequest struct {
-	FileID   string          ` + "`json:\"file_id\"`" + `
-	UploadID string          ` + "`json:\"upload_id,omitempty\"`" + `
-	Parts    []CompletedPart ` + "`json:\"parts,omitempty\"`" + `
+	Id    string          ` + "`path:\"id\"`" + `
+	Parts []CompletedPart ` + "`json:\"parts,omitempty\"`" + `
 }
 
 // CompleteResponse is the response after completing an upload.
@@ -235,21 +234,21 @@ type CompleteResponse struct {
 	SizeBytes   int64  ` + "`json:\"size_bytes\"`" + `
 }
 
-// Complete handles POST /files/complete
+// Complete handles POST /files/:id/complete
 func Complete(ctx context.Context, req *CompleteRequest) (*CompleteResponse, error) {
 	accountID, ok := httputil.SessionAccountIDFromContext(ctx)
 	if !ok {
 		return nil, httperror.New(401, "unauthorized")
 	}
 
-	if req.FileID == "" {
-		return nil, httperror.New(400, "file_id is required")
+	if req.Id == "" {
+		return nil, httperror.New(400, "file id is required")
 	}
 
 	runner := queries.RunnerFromContext(ctx)
 
 	file, err := runner.FilesFindByPublicID(ctx, queries.FilesFindByPublicIDParams{
-		PublicId: req.FileID,
+		PublicId: req.Id,
 	})
 	if err != nil {
 		return nil, httperror.New(404, "file not found")
@@ -265,13 +264,13 @@ func Complete(ctx context.Context, req *CompleteRequest) (*CompleteResponse, err
 
 	// Complete multipart upload if applicable
 	if file.S3UploadId != nil && *file.S3UploadId != "" {
-		if req.UploadID == "" || len(req.Parts) == 0 {
-			return nil, httperror.New(400, "upload_id and parts are required for multipart completion")
+		if len(req.Parts) == 0 {
+			return nil, httperror.New(400, "parts are required for multipart completion")
 		}
 
 		s3Client, err := getS3Client()
 		if err != nil {
-			return nil, httperror.New(500, "failed to initialize storage: "+err.Error())
+			return nil, httperror.Wrap(500, "internal server error", err)
 		}
 
 		s3Parts := make([]filestoragePart, len(req.Parts))
@@ -279,18 +278,18 @@ func Complete(ctx context.Context, req *CompleteRequest) (*CompleteResponse, err
 			s3Parts[i] = filestoragePart{PartNumber: p.PartNumber, ETag: p.ETag}
 		}
 
-		if err := completeMultipart(s3Client, file.FileKey, req.UploadID, s3Parts); err != nil {
-			return nil, httperror.New(500, "failed to complete multipart upload: "+err.Error())
+		if err := completeMultipart(s3Client, file.FileKey, *file.S3UploadId, s3Parts); err != nil {
+			return nil, httperror.Wrap(500, "internal server error", err)
 		}
 	}
 
 	// Update status to "uploaded"
 	_, err = runner.FilesUpdateStatus(ctx, queries.FilesUpdateStatusParams{
-		PublicId: req.FileID,
+		PublicId: req.Id,
 		Status:   "uploaded",
 	})
 	if err != nil {
-		return nil, httperror.New(500, "failed to update file status: "+err.Error())
+		return nil, httperror.Wrap(500, "internal server error", err)
 	}
 
 	return &CompleteResponse{
@@ -357,12 +356,12 @@ func Download(ctx context.Context, req *DownloadRequest) (*DownloadResponse, err
 
 	s3Client, err := getS3Client()
 	if err != nil {
-		return nil, httperror.New(500, "failed to initialize storage: "+err.Error())
+		return nil, httperror.Wrap(500, "internal server error", err)
 	}
 
 	downloadURL, err := s3Client.GenerateDownloadURL(file.FileKey, file.OriginalName)
 	if err != nil {
-		return nil, httperror.New(500, "failed to generate download URL: "+err.Error())
+		return nil, httperror.Wrap(500, "internal server error", err)
 	}
 
 	return &DownloadResponse{
@@ -479,7 +478,7 @@ func ListFiles(ctx context.Context, req *ListFilesRequest) (*ListFilesResponse, 
 		OrganizationId: orgID,
 	})
 	if err != nil {
-		return nil, httperror.New(500, "failed to list files: "+err.Error())
+		return nil, httperror.Wrap(500, "internal server error", err)
 	}
 
 	items := make([]FileListItem, 0, len(rows))
@@ -575,7 +574,7 @@ func DeleteFile(ctx context.Context, req *DeleteFileRequest) (*DeleteFileRespons
 		PublicId: req.Id,
 	})
 	if err != nil {
-		return nil, httperror.New(500, "failed to delete file: "+err.Error())
+		return nil, httperror.Wrap(500, "internal server error", err)
 	}
 
 	return &DeleteFileResponse{Success: true}, nil
@@ -658,7 +657,7 @@ func UpdateVisibility(ctx context.Context, req *UpdateVisibilityRequest) (*Updat
 		Visibility: req.Visibility,
 	})
 	if err != nil {
-		return nil, httperror.New(500, "failed to update visibility: "+err.Error())
+		return nil, httperror.Wrap(500, "internal server error", err)
 	}
 
 	return &UpdateVisibilityResponse{
@@ -690,7 +689,7 @@ func generateAccessHandlers(modulePath string) []byte {
 	buf.WriteString(`// GrantAccessRequest is the request for granting file access.
 type GrantAccessRequest struct {
 	Id        string ` + "`path:\"id\"`" + `
-	AccountID string ` + "`json:\"account_id\"`" + `
+	AccountId string ` + "`path:\"account_id\"`" + `
 	Role      string ` + "`json:\"role\"`" + `
 }
 
@@ -709,7 +708,7 @@ func GrantAccess(ctx context.Context, req *GrantAccessRequest) (*GrantAccessResp
 	if req.Id == "" {
 		return nil, httperror.New(400, "file id is required")
 	}
-	if req.AccountID == "" {
+	if req.AccountId == "" {
 		return nil, httperror.New(400, "account_id is required")
 	}
 	if req.Role != "viewer" && req.Role != "manager" {
@@ -744,7 +743,7 @@ func GrantAccess(ctx context.Context, req *GrantAccessRequest) (*GrantAccessResp
 
 	// Find the target account by public ID
 	targetAccount, err := runner.FilesFindAccountByPublicID(ctx, queries.FilesFindAccountByPublicIDParams{
-		PublicId: req.AccountID,
+		PublicId: req.AccountId,
 	})
 	if err != nil {
 		return nil, httperror.New(404, "target account not found")
@@ -757,7 +756,7 @@ func GrantAccess(ctx context.Context, req *GrantAccessRequest) (*GrantAccessResp
 		Role:          req.Role,
 	})
 	if err != nil {
-		return nil, httperror.New(500, "failed to grant access: "+err.Error())
+		return nil, httperror.Wrap(500, "internal server error", err)
 	}
 
 	return &GrantAccessResponse{Success: true}, nil
@@ -823,7 +822,7 @@ func RevokeAccess(ctx context.Context, req *RevokeAccessRequest) (*RevokeAccessR
 		AccountId:     targetAccount.Id,
 	})
 	if err != nil {
-		return nil, httperror.New(500, "failed to revoke access: "+err.Error())
+		return nil, httperror.Wrap(500, "internal server error", err)
 	}
 
 	return &RevokeAccessResponse{Success: true}, nil
@@ -886,7 +885,7 @@ func ListAccess(ctx context.Context, req *ListAccessRequest) (*ListAccessRespons
 		ManagedFileId: file.Id,
 	})
 	if err != nil {
-		return nil, httperror.New(500, "failed to list access: "+err.Error())
+		return nil, httperror.Wrap(500, "internal server error", err)
 	}
 
 	access := make([]AccessListItem, 0, len(rows))
@@ -1014,12 +1013,12 @@ func generateFileRegister(modulePath string) []byte {
 	buf.WriteString(`// Register registers all file upload handlers with the app.
 func Register(app *handler.App) {
 	app.Post("/files/upload-url", UploadURL).Auth()
-	app.Post("/files/complete", Complete).Auth()
+	app.Post("/files/:id/complete", Complete).Auth()
 	app.Get("/files/:id/download", Download).OptionalAuth()
 	app.Get("/files", ListFiles).Auth()
 	app.Delete("/files/:id", DeleteFile).Auth()
 	app.Patch("/files/:id/visibility", UpdateVisibility).Auth()
-	app.Post("/files/:id/access", GrantAccess).Auth()
+	app.Post("/files/:id/access/:account_id", GrantAccess).Auth()
 	app.Delete("/files/:id/access/:account_id", RevokeAccess).Auth()
 	app.Get("/files/:id/access", ListAccess).Auth()
 }
