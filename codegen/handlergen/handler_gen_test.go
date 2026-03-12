@@ -1577,12 +1577,56 @@ func TestGenerateListHandler_AuthorEmbed(t *testing.T) {
 		t.Error("expected Author *AuthorEmbed field in item struct")
 	}
 
-	// Mapping code should populate Author from flat fields
+	// Mapping code should populate Author from flat fields (but NOT AuthorEmail when ExposeEmail is false)
+	if !strings.Contains(code, "item.AuthorId") {
+		t.Error("expected mapping from item.AuthorId")
+	}
+	if strings.Contains(code, "item.AuthorEmail") {
+		t.Error("should NOT have mapping from item.AuthorEmail when ExposeEmail is false")
+	}
+	if !strings.Contains(code, "item.AuthorFirstName") {
+		t.Error("expected mapping from item.AuthorFirstName")
+	}
+	if !strings.Contains(code, "item.AuthorLastName") {
+		t.Error("expected mapping from item.AuthorLastName")
+	}
+}
+
+func TestGenerateListHandler_AuthorEmbed_ExposeEmail(t *testing.T) {
+	table := ddl.Table{
+		Name: "posts",
+		Columns: []ddl.ColumnDefinition{
+			{Name: "id", Type: ddl.BigintType, PrimaryKey: true},
+			{Name: "public_id", Type: ddl.StringType},
+			{Name: "title", Type: ddl.StringType},
+			{Name: "author_account_id", Type: ddl.BigintType, References: "accounts"},
+			{Name: "created_at", Type: ddl.TimestampType},
+			{Name: "updated_at", Type: ddl.TimestampType},
+		},
+	}
+
+	cfg := HandlerGenConfig{
+		ModulePath:  "myapp",
+		TableName:   "posts",
+		Table:       table,
+		Schema:      map[string]ddl.Table{"posts": table},
+		RequireAuth: true,
+		ExposeEmail: true,
+	}
+
+	result, err := GenerateListHandler(cfg, nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	code := string(result)
+
+	// Mapping code should populate Author from flat fields including AuthorEmail
 	if !strings.Contains(code, "item.AuthorId") {
 		t.Error("expected mapping from item.AuthorId")
 	}
 	if !strings.Contains(code, "item.AuthorEmail") {
-		t.Error("expected mapping from item.AuthorEmail")
+		t.Error("expected mapping from item.AuthorEmail when ExposeEmail is true")
 	}
 	if !strings.Contains(code, "item.AuthorFirstName") {
 		t.Error("expected mapping from item.AuthorFirstName")
@@ -1639,12 +1683,56 @@ func TestGenerateGetOneHandler_AuthorEmbed(t *testing.T) {
 		t.Error("expected Author *AuthorEmbed field in response struct")
 	}
 
-	// Mapping code should populate Author from flat result fields
+	// Mapping code should populate Author from flat result fields (but NOT AuthorEmail when ExposeEmail is false)
+	if !strings.Contains(code, "result.AuthorId") {
+		t.Error("expected mapping from result.AuthorId")
+	}
+	if strings.Contains(code, "result.AuthorEmail") {
+		t.Error("should NOT have mapping from result.AuthorEmail when ExposeEmail is false")
+	}
+	if !strings.Contains(code, "result.AuthorFirstName") {
+		t.Error("expected mapping from result.AuthorFirstName")
+	}
+	if !strings.Contains(code, "result.AuthorLastName") {
+		t.Error("expected mapping from result.AuthorLastName")
+	}
+}
+
+func TestGenerateGetOneHandler_AuthorEmbed_ExposeEmail(t *testing.T) {
+	table := ddl.Table{
+		Name: "posts",
+		Columns: []ddl.ColumnDefinition{
+			{Name: "id", Type: ddl.BigintType, PrimaryKey: true},
+			{Name: "public_id", Type: ddl.StringType},
+			{Name: "title", Type: ddl.StringType},
+			{Name: "author_account_id", Type: ddl.BigintType, References: "accounts"},
+			{Name: "created_at", Type: ddl.TimestampType},
+			{Name: "updated_at", Type: ddl.TimestampType},
+		},
+	}
+
+	cfg := HandlerGenConfig{
+		ModulePath:  "myapp",
+		TableName:   "posts",
+		Table:       table,
+		Schema:      map[string]ddl.Table{"posts": table},
+		RequireAuth: true,
+		ExposeEmail: true,
+	}
+
+	result, err := GenerateGetOneHandler(cfg, nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	code := string(result)
+
+	// Mapping code should populate Author from flat result fields including AuthorEmail
 	if !strings.Contains(code, "result.AuthorId") {
 		t.Error("expected mapping from result.AuthorId")
 	}
 	if !strings.Contains(code, "result.AuthorEmail") {
-		t.Error("expected mapping from result.AuthorEmail")
+		t.Error("expected mapping from result.AuthorEmail when ExposeEmail is true")
 	}
 	if !strings.Contains(code, "result.AuthorFirstName") {
 		t.Error("expected mapping from result.AuthorFirstName")
@@ -1687,12 +1775,12 @@ func TestGenerateTypesFile_AuthorEmbed(t *testing.T) {
 		t.Error("expected AuthorEmbed struct definition in types.go")
 	}
 
-	// AuthorEmbed should have Id, Email, FirstName, LastName
+	// AuthorEmbed should have Id, FirstName, LastName but NOT Email (ExposeEmail defaults to false)
 	if !strings.Contains(code, `Id        string`) {
 		t.Error("AuthorEmbed missing Id field")
 	}
-	if !strings.Contains(code, `Email     string`) {
-		t.Error("AuthorEmbed missing Email field")
+	if strings.Contains(code, `Email     string`) {
+		t.Error("AuthorEmbed should NOT have Email field when ExposeEmail is false")
 	}
 	if !strings.Contains(code, `FirstName string`) {
 		t.Error("AuthorEmbed missing FirstName field")
@@ -1704,6 +1792,55 @@ func TestGenerateTypesFile_AuthorEmbed(t *testing.T) {
 	// Should have correct package declaration
 	if !strings.Contains(code, "package posts") {
 		t.Error("expected package posts declaration")
+	}
+}
+
+func TestGenerateTypesFile_AuthorEmbed_ExposeEmail(t *testing.T) {
+	table := ddl.Table{
+		Name: "posts",
+		Columns: []ddl.ColumnDefinition{
+			{Name: "id", Type: ddl.BigintType, PrimaryKey: true},
+			{Name: "public_id", Type: ddl.StringType},
+			{Name: "title", Type: ddl.StringType},
+			{Name: "author_account_id", Type: ddl.BigintType, References: "accounts"},
+			{Name: "created_at", Type: ddl.TimestampType},
+			{Name: "updated_at", Type: ddl.TimestampType},
+		},
+	}
+
+	cfg := HandlerGenConfig{
+		ModulePath:  "myapp",
+		TableName:   "posts",
+		Table:       table,
+		Schema:      map[string]ddl.Table{"posts": table},
+		RequireAuth: true,
+		ExposeEmail: true,
+	}
+
+	result, err := GenerateTypesFile(cfg)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	code := string(result)
+
+	// Should contain AuthorEmbed struct
+	if !strings.Contains(code, "type AuthorEmbed struct") {
+		t.Error("expected AuthorEmbed struct definition in types.go")
+	}
+
+	// AuthorEmbed should have Id, Email, FirstName, LastName when ExposeEmail is true
+	if !strings.Contains(code, `Id        string`) {
+		t.Error("AuthorEmbed missing Id field")
+	}
+	if !strings.Contains(code, `Email     string`) {
+		t.Error("AuthorEmbed missing Email field when ExposeEmail is true")
+	}
+	if !strings.Contains(code, `FirstName string`) {
+		t.Error("AuthorEmbed missing FirstName field")
+	}
+	if !strings.Contains(code, `LastName  string`) {
+		t.Error("AuthorEmbed missing LastName field")
 	}
 }
 
