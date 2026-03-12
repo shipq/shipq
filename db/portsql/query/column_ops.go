@@ -54,6 +54,14 @@ func (c Int32Column) Desc() OrderByExpr {
 	return OrderByExpr{Expr: ColumnExpr{c}, Desc: true}
 }
 
+func (c Int32Column) Add(other any) Expr {
+	return BinaryExpr{Left: ColumnExpr{c}, Op: OpAdd, Right: toExpr(other)}
+}
+
+func (c Int32Column) Sub(other any) Expr {
+	return BinaryExpr{Left: ColumnExpr{c}, Op: OpSub, Right: toExpr(other)}
+}
+
 // --- NullInt32Column operations ---
 
 func (c NullInt32Column) Eq(other any) Expr {
@@ -102,6 +110,14 @@ func (c NullInt32Column) Asc() OrderByExpr {
 
 func (c NullInt32Column) Desc() OrderByExpr {
 	return OrderByExpr{Expr: ColumnExpr{c}, Desc: true}
+}
+
+func (c NullInt32Column) Add(other any) Expr {
+	return BinaryExpr{Left: ColumnExpr{c}, Op: OpAdd, Right: toExpr(other)}
+}
+
+func (c NullInt32Column) Sub(other any) Expr {
+	return BinaryExpr{Left: ColumnExpr{c}, Op: OpSub, Right: toExpr(other)}
 }
 
 // --- Int64Column operations ---
@@ -154,6 +170,14 @@ func (c Int64Column) Desc() OrderByExpr {
 	return OrderByExpr{Expr: ColumnExpr{c}, Desc: true}
 }
 
+func (c Int64Column) Add(other any) Expr {
+	return BinaryExpr{Left: ColumnExpr{c}, Op: OpAdd, Right: toExpr(other)}
+}
+
+func (c Int64Column) Sub(other any) Expr {
+	return BinaryExpr{Left: ColumnExpr{c}, Op: OpSub, Right: toExpr(other)}
+}
+
 // --- NullInt64Column operations ---
 
 func (c NullInt64Column) Eq(other any) Expr {
@@ -202,6 +226,14 @@ func (c NullInt64Column) Asc() OrderByExpr {
 
 func (c NullInt64Column) Desc() OrderByExpr {
 	return OrderByExpr{Expr: ColumnExpr{c}, Desc: true}
+}
+
+func (c NullInt64Column) Add(other any) Expr {
+	return BinaryExpr{Left: ColumnExpr{c}, Op: OpAdd, Right: toExpr(other)}
+}
+
+func (c NullInt64Column) Sub(other any) Expr {
+	return BinaryExpr{Left: ColumnExpr{c}, Op: OpSub, Right: toExpr(other)}
 }
 
 // --- Float64Column operations ---
@@ -254,6 +286,14 @@ func (c Float64Column) Desc() OrderByExpr {
 	return OrderByExpr{Expr: ColumnExpr{c}, Desc: true}
 }
 
+func (c Float64Column) Add(other any) Expr {
+	return BinaryExpr{Left: ColumnExpr{c}, Op: OpAdd, Right: toExpr(other)}
+}
+
+func (c Float64Column) Sub(other any) Expr {
+	return BinaryExpr{Left: ColumnExpr{c}, Op: OpSub, Right: toExpr(other)}
+}
+
 // --- NullFloat64Column operations ---
 
 func (c NullFloat64Column) Eq(other any) Expr {
@@ -302,6 +342,14 @@ func (c NullFloat64Column) Asc() OrderByExpr {
 
 func (c NullFloat64Column) Desc() OrderByExpr {
 	return OrderByExpr{Expr: ColumnExpr{c}, Desc: true}
+}
+
+func (c NullFloat64Column) Add(other any) Expr {
+	return BinaryExpr{Left: ColumnExpr{c}, Op: OpAdd, Right: toExpr(other)}
+}
+
+func (c NullFloat64Column) Sub(other any) Expr {
+	return BinaryExpr{Left: ColumnExpr{c}, Op: OpSub, Right: toExpr(other)}
 }
 
 // --- DecimalColumn operations ---
@@ -354,6 +402,14 @@ func (c DecimalColumn) Desc() OrderByExpr {
 	return OrderByExpr{Expr: ColumnExpr{c}, Desc: true}
 }
 
+func (c DecimalColumn) Add(other any) Expr {
+	return BinaryExpr{Left: ColumnExpr{c}, Op: OpAdd, Right: toExpr(other)}
+}
+
+func (c DecimalColumn) Sub(other any) Expr {
+	return BinaryExpr{Left: ColumnExpr{c}, Op: OpSub, Right: toExpr(other)}
+}
+
 // --- NullDecimalColumn operations ---
 
 func (c NullDecimalColumn) Eq(other any) Expr {
@@ -402,6 +458,14 @@ func (c NullDecimalColumn) Asc() OrderByExpr {
 
 func (c NullDecimalColumn) Desc() OrderByExpr {
 	return OrderByExpr{Expr: ColumnExpr{c}, Desc: true}
+}
+
+func (c NullDecimalColumn) Add(other any) Expr {
+	return BinaryExpr{Left: ColumnExpr{c}, Op: OpAdd, Right: toExpr(other)}
+}
+
+func (c NullDecimalColumn) Sub(other any) Expr {
+	return BinaryExpr{Left: ColumnExpr{c}, Op: OpSub, Right: toExpr(other)}
 }
 
 // --- BoolColumn operations ---

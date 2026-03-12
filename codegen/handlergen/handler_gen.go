@@ -230,6 +230,13 @@ func GenerateHandlerFiles(cfg HandlerGenConfig) (map[string][]byte, error) {
 		files["types.go"] = content
 	}
 
+	// Always generate helpers.go with classifyDBError.
+	helpersContent, err := GenerateHelpersFile(cfg)
+	if err != nil {
+		return nil, fmt.Errorf("failed to generate helpers.go: %w", err)
+	}
+	files["helpers.go"] = helpersContent
+
 	// Generate each handler file.
 	// NOTE: get_one uses nil relations because the query runner does not yet
 	// support WithRelations methods. Once those are implemented, pass
@@ -256,6 +263,91 @@ func GenerateHandlerFiles(cfg HandlerGenConfig) (map[string][]byte, error) {
 	}
 
 	return files, nil
+}
+
+// GenerateHelpersFile generates api/<table>/helpers.go containing the
+// classifyDBError helper which maps database errors to appropriate HTTP
+// status codes.
+func GenerateHelpersFile(cfg HandlerGenConfig) ([]byte, error) {
+	var buf bytes.Buffer
+	pkgName := cfg.TableName
+
+	buf.WriteString(generatedFileHeader)
+	buf.WriteString("package " + pkgName + "\n\n")
+
+	buf.WriteString("import (\n")
+	buf.WriteString("\t\"database/sql\"\n")
+	buf.WriteString("\t\"errors\"\n")
+	buf.WriteString("\t\"strings\"\n\n")
+	buf.WriteString("\t\"" + cfg.ModulePath + "/shipq/lib/httperror\"\n")
+	buf.WriteString(")\n\n")
+
+	buf.WriteString(`// classifyDBError maps database errors to appropriate HTTP status codes.
+// It inspects the error for well-known constraint violation patterns and
+// returns a client-safe httperror.Error.
+func classifyDBError(err error, fallbackMsg string) *httperror.Error {
+	if err == nil {
+		return nil
+	}
+	if errors.Is(err, sql.ErrNoRows) {
+		return httperror.NotFound("not found")
+	}
+	if isUniqueViolation(err) {
+		return httperror.Conflict("resource already exists")
+	}
+	if isForeignKeyViolation(err) {
+		return httperror.UnprocessableEntity("referenced resource not found")
+	}
+	// True internal error — use a generic message for the client
+	return httperror.Wrap(500, "internal server error", err)
+}
+
+// isUniqueViolation returns true if the error represents a unique constraint violation.
+// Works across SQLite, PostgreSQL, and MySQL.
+func isUniqueViolation(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := strings.ToLower(err.Error())
+	// SQLite: "UNIQUE constraint failed: ..."
+	if strings.Contains(msg, "unique constraint failed") {
+		return true
+	}
+	// PostgreSQL: SQLSTATE 23505
+	if strings.Contains(msg, "23505") || strings.Contains(msg, "unique_violation") {
+		return true
+	}
+	// MySQL: Error 1062 "Duplicate entry"
+	if strings.Contains(msg, "duplicate entry") || strings.Contains(msg, "1062") {
+		return true
+	}
+	return false
+}
+
+// isForeignKeyViolation returns true if the error represents a foreign key constraint violation.
+// Works across SQLite, PostgreSQL, and MySQL.
+func isForeignKeyViolation(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := strings.ToLower(err.Error())
+	// SQLite: "FOREIGN KEY constraint failed"
+	if strings.Contains(msg, "foreign key constraint failed") {
+		return true
+	}
+	// PostgreSQL: SQLSTATE 23503
+	if strings.Contains(msg, "23503") || strings.Contains(msg, "foreign_key_violation") {
+		return true
+	}
+	// MySQL: Error 1452 "Cannot add or update a child row: a foreign key constraint fails"
+	if strings.Contains(msg, "foreign key constraint fails") || strings.Contains(msg, "1452") {
+		return true
+	}
+	return false
+}
+`)
+
+	return formatSource(buf.Bytes())
 }
 
 // GenerateTypesFile generates api/<table>/types.go containing shared type
@@ -411,7 +503,7 @@ func GenerateCreateHandler(cfg HandlerGenConfig, _ []RelationshipInfo) ([]byte, 
 	}
 	buf.WriteString("\t})\n")
 	buf.WriteString("\tif err != nil {\n")
-	buf.WriteString("\t\treturn nil, httperror.Wrap(500, \"failed to create " + toSingular(cfg.TableName) + "\", err)\n")
+	buf.WriteString("\t\treturn nil, classifyDBError(err, \"create " + toSingular(cfg.TableName) + "\")\n")
 	buf.WriteString("\t}\n\n")
 
 	// Re-fetch the created record via GET to get resolved FK references and author
@@ -426,7 +518,7 @@ func GenerateCreateHandler(cfg HandlerGenConfig, _ []RelationshipInfo) ([]byte, 
 	}
 	buf.WriteString("\t})\n")
 	buf.WriteString("\tif err != nil {\n")
-	buf.WriteString("\t\treturn nil, httperror.Wrap(500, \"failed to fetch created " + toSingular(cfg.TableName) + "\", err)\n")
+	buf.WriteString("\t\treturn nil, classifyDBError(err, \"fetch created " + toSingular(cfg.TableName) + "\")\n")
 	buf.WriteString("\t}\n\n")
 
 	// Build response from re-fetched result
@@ -603,7 +695,7 @@ func GenerateGetOneHandler(cfg HandlerGenConfig, relations []RelationshipInfo) (
 	}
 	buf.WriteString("\t})\n")
 	buf.WriteString("\tif err != nil {\n")
-	buf.WriteString("\t\treturn nil, httperror.Wrap(500, \"failed to fetch " + toSingular(cfg.TableName) + "\", err)\n")
+	buf.WriteString("\t\treturn nil, classifyDBError(err, \"fetch " + toSingular(cfg.TableName) + "\")\n")
 	buf.WriteString("\t}\n")
 	buf.WriteString("\tif result == nil {\n")
 	buf.WriteString("\t\treturn nil, httperror.NotFoundf(\"" + toSingular(cfg.TableName) + " %q not found\", req.ID)\n")
@@ -820,7 +912,7 @@ func GenerateListHandler(cfg HandlerGenConfig, _ []RelationshipInfo) ([]byte, er
 	buf.WriteString("\t\tCursor: cursor,\n")
 	buf.WriteString("\t})\n")
 	buf.WriteString("\tif err != nil {\n")
-	buf.WriteString("\t\treturn nil, httperror.Wrap(500, \"failed to list " + cfg.TableName + "\", err)\n")
+	buf.WriteString("\t\treturn nil, classifyDBError(err, \"list " + cfg.TableName + "\")\n")
 	buf.WriteString("\t}\n\n")
 
 	// Map items
@@ -981,7 +1073,7 @@ func GenerateUpdateHandler(cfg HandlerGenConfig, _ []RelationshipInfo) ([]byte, 
 	}
 	buf.WriteString("\t})\n")
 	buf.WriteString("\tif err != nil {\n")
-	buf.WriteString("\t\treturn nil, httperror.Wrap(500, \"failed to look up " + toSingular(cfg.TableName) + "\", err)\n")
+	buf.WriteString("\t\treturn nil, classifyDBError(err, \"look up " + toSingular(cfg.TableName) + "\")\n")
 	buf.WriteString("\t}\n")
 	buf.WriteString("\tif existing == nil {\n")
 	buf.WriteString("\t\treturn nil, httperror.NotFoundf(\"" + toSingular(cfg.TableName) + " %q not found\", req.ID)\n")
@@ -1017,7 +1109,7 @@ func GenerateUpdateHandler(cfg HandlerGenConfig, _ []RelationshipInfo) ([]byte, 
 	}
 	buf.WriteString("\t})\n")
 	buf.WriteString("\tif err != nil {\n")
-	buf.WriteString("\t\treturn nil, httperror.Wrap(500, \"failed to update " + toSingular(cfg.TableName) + "\", err)\n")
+	buf.WriteString("\t\treturn nil, classifyDBError(err, \"update " + toSingular(cfg.TableName) + "\")\n")
 	buf.WriteString("\t}\n\n")
 
 	// Re-fetch the updated record
@@ -1028,7 +1120,7 @@ func GenerateUpdateHandler(cfg HandlerGenConfig, _ []RelationshipInfo) ([]byte, 
 	}
 	buf.WriteString("\t})\n")
 	buf.WriteString("\tif err != nil {\n")
-	buf.WriteString("\t\treturn nil, httperror.Wrap(500, \"failed to fetch updated " + toSingular(cfg.TableName) + "\", err)\n")
+	buf.WriteString("\t\treturn nil, classifyDBError(err, \"fetch updated " + toSingular(cfg.TableName) + "\")\n")
 	buf.WriteString("\t}\n")
 	buf.WriteString("\tif result == nil {\n")
 	buf.WriteString("\t\treturn nil, httperror.NotFoundf(\"" + toSingular(cfg.TableName) + " %q not found\", req.ID)\n")
@@ -1140,7 +1232,7 @@ func GenerateSoftDeleteHandler(cfg HandlerGenConfig, _ []RelationshipInfo) ([]by
 	}
 	buf.WriteString("\t})\n")
 	buf.WriteString("\tif err != nil {\n")
-	buf.WriteString("\t\treturn nil, httperror.Wrap(500, \"failed to delete " + toSingular(cfg.TableName) + "\", err)\n")
+	buf.WriteString("\t\treturn nil, classifyDBError(err, \"delete " + toSingular(cfg.TableName) + "\")\n")
 	buf.WriteString("\t}\n\n")
 
 	buf.WriteString("\treturn &SoftDelete" + res + "Response{\n")
@@ -1299,7 +1391,7 @@ func GenerateAdminListHandler(cfg HandlerGenConfig, _ []RelationshipInfo) ([]byt
 	buf.WriteString("\t\tCursor: cursor,\n")
 	buf.WriteString("\t})\n")
 	buf.WriteString("\tif err != nil {\n")
-	buf.WriteString("\t\treturn nil, httperror.Wrap(500, \"failed to admin-list " + cfg.TableName + "\", err)\n")
+	buf.WriteString("\t\treturn nil, classifyDBError(err, \"admin-list " + cfg.TableName + "\")\n")
 	buf.WriteString("\t}\n\n")
 
 	// Map items
@@ -1396,7 +1488,7 @@ func GenerateUndeleteHandler(cfg HandlerGenConfig, _ []RelationshipInfo) ([]byte
 	}
 	buf.WriteString("\t})\n")
 	buf.WriteString("\tif err != nil {\n")
-	buf.WriteString("\t\treturn nil, httperror.Wrap(500, \"failed to restore " + toSingular(cfg.TableName) + "\", err)\n")
+	buf.WriteString("\t\treturn nil, classifyDBError(err, \"restore " + toSingular(cfg.TableName) + "\")\n")
 	buf.WriteString("\t}\n\n")
 
 	buf.WriteString("\treturn &Undelete" + res + "Response{\n")

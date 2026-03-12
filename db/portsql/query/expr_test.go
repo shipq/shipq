@@ -449,3 +449,290 @@ func TestToExpr_WithLiteral(t *testing.T) {
 		t.Errorf("expected value = 42, got %v", litExpr.Value)
 	}
 }
+
+func TestInt32Column_Add(t *testing.T) {
+	col := Int32Column{Table: "items", Name: "quantity"}
+	expr := col.Add(Param[int]("delta"))
+
+	bin, ok := expr.(BinaryExpr)
+	if !ok {
+		t.Fatalf("expected BinaryExpr, got %T", expr)
+	}
+	if bin.Op != OpAdd {
+		t.Errorf("expected OpAdd, got %q", bin.Op)
+	}
+	left, ok := bin.Left.(ColumnExpr)
+	if !ok {
+		t.Fatalf("expected left to be ColumnExpr, got %T", bin.Left)
+	}
+	if left.Column.ColumnName() != "quantity" {
+		t.Errorf("expected column name %q, got %q", "quantity", left.Column.ColumnName())
+	}
+	right, ok := bin.Right.(ParamExpr)
+	if !ok {
+		t.Fatalf("expected right to be ParamExpr, got %T", bin.Right)
+	}
+	if right.Name != "delta" {
+		t.Errorf("expected param name %q, got %q", "delta", right.Name)
+	}
+}
+
+func TestInt32Column_Sub(t *testing.T) {
+	col := Int32Column{Table: "items", Name: "quantity"}
+	expr := col.Sub(Param[int]("delta"))
+
+	bin, ok := expr.(BinaryExpr)
+	if !ok {
+		t.Fatalf("expected BinaryExpr, got %T", expr)
+	}
+	if bin.Op != OpSub {
+		t.Errorf("expected OpSub, got %q", bin.Op)
+	}
+}
+
+func TestNullInt32Column_Add(t *testing.T) {
+	col := NullInt32Column{Table: "items", Name: "quantity"}
+	expr := col.Add(Param[int]("delta"))
+
+	bin, ok := expr.(BinaryExpr)
+	if !ok {
+		t.Fatalf("expected BinaryExpr, got %T", expr)
+	}
+	if bin.Op != OpAdd {
+		t.Errorf("expected OpAdd, got %q", bin.Op)
+	}
+}
+
+func TestNullInt32Column_Sub(t *testing.T) {
+	col := NullInt32Column{Table: "items", Name: "quantity"}
+	expr := col.Sub(Param[int]("delta"))
+
+	bin, ok := expr.(BinaryExpr)
+	if !ok {
+		t.Fatalf("expected BinaryExpr, got %T", expr)
+	}
+	if bin.Op != OpSub {
+		t.Errorf("expected OpSub, got %q", bin.Op)
+	}
+}
+
+func TestInt64Column_Add(t *testing.T) {
+	col := Int64Column{Table: "posts", Name: "score"}
+	expr := col.Add(Param[int]("delta"))
+
+	bin, ok := expr.(BinaryExpr)
+	if !ok {
+		t.Fatalf("expected BinaryExpr, got %T", expr)
+	}
+	if bin.Op != OpAdd {
+		t.Errorf("expected OpAdd, got %q", bin.Op)
+	}
+	left, ok := bin.Left.(ColumnExpr)
+	if !ok {
+		t.Fatalf("expected left to be ColumnExpr, got %T", bin.Left)
+	}
+	if left.Column.ColumnName() != "score" {
+		t.Errorf("expected column name %q, got %q", "score", left.Column.ColumnName())
+	}
+	right, ok := bin.Right.(ParamExpr)
+	if !ok {
+		t.Fatalf("expected right to be ParamExpr, got %T", bin.Right)
+	}
+	if right.Name != "delta" {
+		t.Errorf("expected param name %q, got %q", "delta", right.Name)
+	}
+}
+
+func TestInt64Column_Sub(t *testing.T) {
+	col := Int64Column{Table: "posts", Name: "score"}
+	expr := col.Sub(Param[int]("delta"))
+
+	bin, ok := expr.(BinaryExpr)
+	if !ok {
+		t.Fatalf("expected BinaryExpr, got %T", expr)
+	}
+	if bin.Op != OpSub {
+		t.Errorf("expected OpSub, got %q", bin.Op)
+	}
+}
+
+func TestNullInt64Column_Add(t *testing.T) {
+	col := NullInt64Column{Table: "posts", Name: "score"}
+	expr := col.Add(Param[int]("delta"))
+
+	bin, ok := expr.(BinaryExpr)
+	if !ok {
+		t.Fatalf("expected BinaryExpr, got %T", expr)
+	}
+	if bin.Op != OpAdd {
+		t.Errorf("expected OpAdd, got %q", bin.Op)
+	}
+}
+
+func TestNullInt64Column_Sub(t *testing.T) {
+	col := NullInt64Column{Table: "posts", Name: "score"}
+	expr := col.Sub(Param[int]("delta"))
+
+	bin, ok := expr.(BinaryExpr)
+	if !ok {
+		t.Fatalf("expected BinaryExpr, got %T", expr)
+	}
+	if bin.Op != OpSub {
+		t.Errorf("expected OpSub, got %q", bin.Op)
+	}
+}
+
+func TestFloat64Column_Add(t *testing.T) {
+	col := Float64Column{Table: "accounts", Name: "balance"}
+	expr := col.Add(Param[float64]("amount"))
+
+	bin, ok := expr.(BinaryExpr)
+	if !ok {
+		t.Fatalf("expected BinaryExpr, got %T", expr)
+	}
+	if bin.Op != OpAdd {
+		t.Errorf("expected OpAdd, got %q", bin.Op)
+	}
+}
+
+func TestFloat64Column_Sub(t *testing.T) {
+	col := Float64Column{Table: "accounts", Name: "balance"}
+	expr := col.Sub(Param[float64]("amount"))
+
+	bin, ok := expr.(BinaryExpr)
+	if !ok {
+		t.Fatalf("expected BinaryExpr, got %T", expr)
+	}
+	if bin.Op != OpSub {
+		t.Errorf("expected OpSub, got %q", bin.Op)
+	}
+}
+
+func TestNullFloat64Column_Add(t *testing.T) {
+	col := NullFloat64Column{Table: "accounts", Name: "balance"}
+	expr := col.Add(Param[float64]("amount"))
+
+	bin, ok := expr.(BinaryExpr)
+	if !ok {
+		t.Fatalf("expected BinaryExpr, got %T", expr)
+	}
+	if bin.Op != OpAdd {
+		t.Errorf("expected OpAdd, got %q", bin.Op)
+	}
+}
+
+func TestNullFloat64Column_Sub(t *testing.T) {
+	col := NullFloat64Column{Table: "accounts", Name: "balance"}
+	expr := col.Sub(Param[float64]("amount"))
+
+	bin, ok := expr.(BinaryExpr)
+	if !ok {
+		t.Fatalf("expected BinaryExpr, got %T", expr)
+	}
+	if bin.Op != OpSub {
+		t.Errorf("expected OpSub, got %q", bin.Op)
+	}
+}
+
+func TestDecimalColumn_Add(t *testing.T) {
+	col := DecimalColumn{Table: "invoices", Name: "total"}
+	expr := col.Add(Param[string]("amount"))
+
+	bin, ok := expr.(BinaryExpr)
+	if !ok {
+		t.Fatalf("expected BinaryExpr, got %T", expr)
+	}
+	if bin.Op != OpAdd {
+		t.Errorf("expected OpAdd, got %q", bin.Op)
+	}
+}
+
+func TestDecimalColumn_Sub(t *testing.T) {
+	col := DecimalColumn{Table: "invoices", Name: "total"}
+	expr := col.Sub(Param[string]("amount"))
+
+	bin, ok := expr.(BinaryExpr)
+	if !ok {
+		t.Fatalf("expected BinaryExpr, got %T", expr)
+	}
+	if bin.Op != OpSub {
+		t.Errorf("expected OpSub, got %q", bin.Op)
+	}
+}
+
+func TestNullDecimalColumn_Add(t *testing.T) {
+	col := NullDecimalColumn{Table: "invoices", Name: "total"}
+	expr := col.Add(Param[string]("amount"))
+
+	bin, ok := expr.(BinaryExpr)
+	if !ok {
+		t.Fatalf("expected BinaryExpr, got %T", expr)
+	}
+	if bin.Op != OpAdd {
+		t.Errorf("expected OpAdd, got %q", bin.Op)
+	}
+}
+
+func TestNullDecimalColumn_Sub(t *testing.T) {
+	col := NullDecimalColumn{Table: "invoices", Name: "total"}
+	expr := col.Sub(Param[string]("amount"))
+
+	bin, ok := expr.(BinaryExpr)
+	if !ok {
+		t.Fatalf("expected BinaryExpr, got %T", expr)
+	}
+	if bin.Op != OpSub {
+		t.Errorf("expected OpSub, got %q", bin.Op)
+	}
+}
+
+func TestAdd_WithColumnOperand(t *testing.T) {
+	score := Int64Column{Table: "posts", Name: "score"}
+	bonus := Int64Column{Table: "posts", Name: "bonus"}
+	expr := score.Add(bonus)
+
+	bin, ok := expr.(BinaryExpr)
+	if !ok {
+		t.Fatalf("expected BinaryExpr, got %T", expr)
+	}
+	if bin.Op != OpAdd {
+		t.Errorf("expected OpAdd, got %q", bin.Op)
+	}
+
+	left, ok := bin.Left.(ColumnExpr)
+	if !ok {
+		t.Fatalf("expected left to be ColumnExpr, got %T", bin.Left)
+	}
+	if left.Column.ColumnName() != "score" {
+		t.Errorf("expected left column %q, got %q", "score", left.Column.ColumnName())
+	}
+
+	right, ok := bin.Right.(ColumnExpr)
+	if !ok {
+		t.Fatalf("expected right to be ColumnExpr, got %T", bin.Right)
+	}
+	if right.Column.ColumnName() != "bonus" {
+		t.Errorf("expected right column %q, got %q", "bonus", right.Column.ColumnName())
+	}
+}
+
+func TestSub_WithLiteralOperand(t *testing.T) {
+	col := Int64Column{Table: "posts", Name: "score"}
+	expr := col.Sub(Literal(1))
+
+	bin, ok := expr.(BinaryExpr)
+	if !ok {
+		t.Fatalf("expected BinaryExpr, got %T", expr)
+	}
+	if bin.Op != OpSub {
+		t.Errorf("expected OpSub, got %q", bin.Op)
+	}
+
+	right, ok := bin.Right.(LiteralExpr)
+	if !ok {
+		t.Fatalf("expected right to be LiteralExpr, got %T", bin.Right)
+	}
+	if right.Value != 1 {
+		t.Errorf("expected literal value 1, got %v", right.Value)
+	}
+}

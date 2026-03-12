@@ -71,7 +71,7 @@ func TestGenerateResetPasswordHandler_ContainsRequestFields(t *testing.T) {
 	expected := []string{
 		"Token ",
 		"Password ",
-		`json:"token"`,
+		`query:"token"`,
 		`json:"password"`,
 	}
 

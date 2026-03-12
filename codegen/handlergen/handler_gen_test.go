@@ -775,6 +775,7 @@ func TestGenerateHandlerFiles(t *testing.T) {
 		"update.go",
 		"soft_delete.go",
 		"register.go",
+		"helpers.go",
 	}
 
 	if len(files) != len(expectedFiles) {

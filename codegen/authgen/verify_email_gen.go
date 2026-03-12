@@ -26,15 +26,15 @@ func GenerateVerifyEmailHandler(cfg AuthGenConfig) ([]byte, error) {
 	buf.WriteString(")\n\n")
 
 	// Request struct
-	buf.WriteString(`// VerifyEmailRequest is the request body for POST /auth/verify-email.
+	buf.WriteString(`// VerifyEmailRequest is the request for GET /auth/verify-email.
 type VerifyEmailRequest struct {
-	Token string ` + "`json:\"token\"`" + `
+	Token string ` + "`query:\"token\"`" + `
 }
 
 `)
 
 	// Handler function
-	buf.WriteString(`// VerifyEmail handles POST /auth/verify-email.
+	buf.WriteString(`// VerifyEmail handles GET /auth/verify-email.
 // It validates the token and marks the account as verified.
 func VerifyEmail(ctx context.Context, req *VerifyEmailRequest) (*struct{}, error) {
 	runner := queries.RunnerFromContext(ctx)
@@ -51,7 +51,7 @@ func VerifyEmail(ctx context.Context, req *VerifyEmailRequest) (*struct{}, error
 		TokenHash: tokenHash,
 	})
 	if err != nil {
-		return nil, httperror.Wrap(500, "internal error", err)
+		return nil, httperror.Wrap(500, "internal server error", err)
 	}
 	if token == nil {
 		return nil, httperror.BadRequest("invalid or expired verification token")
@@ -62,7 +62,7 @@ func VerifyEmail(ctx context.Context, req *VerifyEmailRequest) (*struct{}, error
 		PublicId: token.AccountPublicId,
 	})
 	if err != nil {
-		return nil, httperror.Wrap(500, "failed to verify account", err)
+		return nil, httperror.Wrap(500, "internal server error", err)
 	}
 
 	// Mark token as used
@@ -70,7 +70,7 @@ func VerifyEmail(ctx context.Context, req *VerifyEmailRequest) (*struct{}, error
 		PublicId: token.PublicId,
 	})
 	if err != nil {
-		return nil, httperror.Wrap(500, "internal error", err)
+		return nil, httperror.Wrap(500, "internal server error", err)
 	}
 
 	return &struct{}{}, nil
@@ -129,7 +129,7 @@ func ResendVerification(ctx context.Context, req *ResendVerificationRequest) (*s
 		Email: req.Email,
 	})
 	if err != nil {
-		return nil, httperror.Wrap(500, "internal error", err)
+		return nil, httperror.Wrap(500, "internal server error", err)
 	}
 	if account == nil {
 		// Return success anyway to prevent email enumeration
@@ -144,7 +144,7 @@ func ResendVerification(ctx context.Context, req *ResendVerificationRequest) (*s
 	// Generate a new verification token
 	rawToken, err := generateSecureToken(32)
 	if err != nil {
-		return nil, httperror.Wrap(500, "internal error", err)
+		return nil, httperror.Wrap(500, "internal server error", err)
 	}
 	tokenHash := HashToken(rawToken)
 
@@ -156,7 +156,7 @@ func ResendVerification(ctx context.Context, req *ResendVerificationRequest) (*s
 		ExpiresAt:  time.Now().UTC().Add(24 * time.Hour).Format("2006-01-02 15:04:05"),
 	})
 	if err != nil {
-		return nil, httperror.Wrap(500, "internal error", err)
+		return nil, httperror.Wrap(500, "internal server error", err)
 	}
 
 	// Build verification link

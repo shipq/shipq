@@ -95,7 +95,7 @@ func Login(ctx context.Context, req *LoginRequest) (*LoginResponse, error) {
 		Email: req.Email,
 	})
 	if err != nil {
-		return nil, httperror.Wrap(500, "failed to lookup account", err)
+		return nil, httperror.Wrap(500, "internal server error", err)
 	}
 	if account == nil {
 		return nil, httperror.Unauthorized("invalid email or password")
@@ -134,7 +134,7 @@ func Login(ctx context.Context, req *LoginRequest) (*LoginResponse, error) {
 		ExpiresAt: time.Now().UTC().Add(14 * 24 * time.Hour).Format("2006-01-02 15:04:05"),
 	})
 	if err != nil {
-		return nil, httperror.Wrap(500, "failed to create session", err)
+		return nil, httperror.Wrap(500, "internal server error", err)
 	}
 
 	// Set session cookie
@@ -216,7 +216,7 @@ func Logout(ctx context.Context, req *LogoutRequest) (*LogoutResponse, error) {
 	if _, err := runner.SoftDeleteSessionByPublicID(ctx, queries.SoftDeleteSessionByPublicIDParams{
 		PublicId: session.PublicId,
 	}); err != nil {
-		return nil, httperror.Wrap(500, "failed to logout", err)
+		return nil, httperror.Wrap(500, "internal server error", err)
 	}
 
 	// Clear the session cookie
@@ -326,7 +326,7 @@ func Me(ctx context.Context, req *MeRequest) (*MeResponse, error) {
 		Id: session.AccountId,
 	})
 	if err != nil {
-		return nil, httperror.Wrap(500, "failed to get account", err)
+		return nil, httperror.Wrap(500, "internal server error", err)
 	}
 	if account == nil {
 		return nil, httperror.Unauthorized("account not found")
@@ -436,7 +436,7 @@ func Signup(ctx context.Context, req *SignupRequest) (*SignupResponse, error) {
 		Email: req.Email,
 	})
 	if err != nil {
-		return nil, httperror.Wrap(500, "failed to check email", err)
+		return nil, httperror.Wrap(500, "internal server error", err)
 	}
 	if existing != nil {
 		return nil, httperror.Conflict("email already taken")
@@ -445,13 +445,13 @@ func Signup(ctx context.Context, req *SignupRequest) (*SignupResponse, error) {
 	// Hash password (CPU work — outside transaction)
 	passwordHash, err := crypto.HashPassword(req.Password)
 	if err != nil {
-		return nil, httperror.Wrap(500, "failed to hash password", err)
+		return nil, httperror.Wrap(500, "internal server error", err)
 	}
 
 	// Start transaction for all write operations
 	txRunner, err := runner.BeginTx(ctx)
 	if err != nil {
-		return nil, httperror.Wrap(500, "failed to start transaction", err)
+		return nil, httperror.Wrap(500, "internal server error", err)
 	}
 	defer txRunner.Rollback() // no-op after commit
 
@@ -463,7 +463,7 @@ func Signup(ctx context.Context, req *SignupRequest) (*SignupResponse, error) {
 		Description: "",
 	})
 	if err != nil {
-		return nil, httperror.Wrap(500, "failed to create organization", err)
+		return nil, httperror.Wrap(500, "internal server error", err)
 	}
 
 	// Create account linked to organization
@@ -476,7 +476,7 @@ func Signup(ctx context.Context, req *SignupRequest) (*SignupResponse, error) {
 		DefaultOrganizationId: org.Id,
 	})
 	if err != nil {
-		return nil, httperror.Wrap(500, "failed to create account", err)
+		return nil, httperror.Wrap(500, "internal server error", err)
 	}
 
 	// Create organization_users link
@@ -486,7 +486,7 @@ func Signup(ctx context.Context, req *SignupRequest) (*SignupResponse, error) {
 		AccountId:      account.Id,
 	})
 	if err != nil {
-		return nil, httperror.Wrap(500, "failed to link account to organization", err)
+		return nil, httperror.Wrap(500, "internal server error", err)
 	}
 
 	// Create session
@@ -496,7 +496,7 @@ func Signup(ctx context.Context, req *SignupRequest) (*SignupResponse, error) {
 		ExpiresAt: time.Now().UTC().Add(14 * 24 * time.Hour).Format("2006-01-02 15:04:05"),
 	})
 	if err != nil {
-		return nil, httperror.Wrap(500, "failed to create session", err)
+		return nil, httperror.Wrap(500, "internal server error", err)
 	}
 `)
 
@@ -542,7 +542,7 @@ func Signup(ctx context.Context, req *SignupRequest) (*SignupResponse, error) {
 
 	buf.WriteString(`
 	if err := txRunner.Commit(); err != nil {
-		return nil, httperror.Wrap(500, "failed to commit", err)
+		return nil, httperror.Wrap(500, "internal server error", err)
 	}
 
 	// Set session cookie only after successful commit
@@ -589,7 +589,7 @@ func Register(app *handler.App) {
 	if cfg.EmailEnabled {
 		buf.WriteString("\tapp.Post(\"/forgot-password\", ForgotPassword)\n")
 		buf.WriteString("\tapp.Post(\"/reset-password\", ResetPassword)\n")
-		buf.WriteString("\tapp.Post(\"/verify-email\", VerifyEmail)\n")
+		buf.WriteString("\tapp.Get(\"/verify-email\", VerifyEmail)\n")
 		buf.WriteString("\tapp.Post(\"/resend-verification\", ResendVerification)\n")
 	}
 
@@ -655,7 +655,7 @@ func Register(app *handler.App) {
 	if cfg.EmailEnabled {
 		buf.WriteString("\tapp.Post(\"/forgot-password\", ForgotPassword)\n")
 		buf.WriteString("\tapp.Post(\"/reset-password\", ResetPassword)\n")
-		buf.WriteString("\tapp.Post(\"/verify-email\", VerifyEmail)\n")
+		buf.WriteString("\tapp.Get(\"/verify-email\", VerifyEmail)\n")
 		buf.WriteString("\tapp.Post(\"/resend-verification\", ResendVerification)\n")
 	}
 

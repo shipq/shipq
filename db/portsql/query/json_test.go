@@ -189,6 +189,74 @@ func TestColumnJSONMapping(t *testing.T) {
 	}
 }
 
+func TestJSON_ArithmeticAddRoundTrip(t *testing.T) {
+	original := BinaryExpr{
+		Left:  ColumnExpr{Column: Int64Column{Table: "posts", Name: "score"}},
+		Op:    OpAdd,
+		Right: ParamExpr{Name: "delta", GoType: "int"},
+	}
+
+	j, err := exprToJSON(original)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	restored, err := j.FromJSON()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	bin, ok := restored.(BinaryExpr)
+	if !ok {
+		t.Fatalf("expected BinaryExpr after round-trip, got %T", restored)
+	}
+	if bin.Op != OpAdd {
+		t.Errorf("expected OpAdd after round-trip, got %q", bin.Op)
+	}
+
+	left, ok := bin.Left.(ColumnExpr)
+	if !ok {
+		t.Fatalf("expected left to be ColumnExpr, got %T", bin.Left)
+	}
+	if left.Column.ColumnName() != "score" {
+		t.Errorf("expected column name %q, got %q", "score", left.Column.ColumnName())
+	}
+
+	right, ok := bin.Right.(ParamExpr)
+	if !ok {
+		t.Fatalf("expected right to be ParamExpr, got %T", bin.Right)
+	}
+	if right.Name != "delta" {
+		t.Errorf("expected param name %q, got %q", "delta", right.Name)
+	}
+}
+
+func TestJSON_ArithmeticSubRoundTrip(t *testing.T) {
+	original := BinaryExpr{
+		Left:  ColumnExpr{Column: Int64Column{Table: "posts", Name: "score"}},
+		Op:    OpSub,
+		Right: ParamExpr{Name: "delta", GoType: "int"},
+	}
+
+	j, err := exprToJSON(original)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	restored, err := j.FromJSON()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	bin, ok := restored.(BinaryExpr)
+	if !ok {
+		t.Fatalf("expected BinaryExpr after round-trip, got %T", restored)
+	}
+	if bin.Op != OpSub {
+		t.Errorf("expected OpSub after round-trip, got %q", bin.Op)
+	}
+}
+
 func TestExpressionTypes(t *testing.T) {
 	tests := []struct {
 		name string
@@ -201,6 +269,16 @@ func TestExpressionTypes(t *testing.T) {
 			Left:  ColumnExpr{Column: Int64Column{Table: "t", Name: "id"}},
 			Op:    OpEq,
 			Right: LiteralExpr{Value: 1},
+		}},
+		{"BinaryAdd", BinaryExpr{
+			Left:  ColumnExpr{Column: Int64Column{Table: "t", Name: "score"}},
+			Op:    OpAdd,
+			Right: ParamExpr{Name: "delta", GoType: "int"},
+		}},
+		{"BinarySub", BinaryExpr{
+			Left:  ColumnExpr{Column: Int64Column{Table: "t", Name: "score"}},
+			Op:    OpSub,
+			Right: ParamExpr{Name: "delta", GoType: "int"},
 		}},
 		{"UnaryIsNull", UnaryExpr{
 			Op:   OpIsNull,

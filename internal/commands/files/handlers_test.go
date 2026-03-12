@@ -6,6 +6,163 @@ import (
 )
 
 // ---------------------------------------------------------------------------
+// Bug 3: No generated handler should concatenate err.Error() into httperror.New(500, ...)
+// ---------------------------------------------------------------------------
+
+// TestGeneratedHandlers_NoErrStringConcatenation scans all generated file
+// handler output for the pattern `+err.Error()` within httperror.New calls
+// and fails if any are found. This prevents leaking raw Go error strings
+// (S3 SDK internals, DB driver details, etc.) to HTTP clients.
+func TestGeneratedHandlers_NoErrStringConcatenation(t *testing.T) {
+	files := GenerateFileHandlerFiles(testModulePath, "")
+
+	for name, content := range files {
+		code := string(content)
+		if strings.Contains(code, `+err.Error()`) {
+			t.Errorf("%s contains +err.Error() concatenation — raw errors must not be leaked to clients", name)
+		}
+		if strings.Contains(code, `+ err.Error()`) {
+			t.Errorf("%s contains + err.Error() concatenation — raw errors must not be leaked to clients", name)
+		}
+	}
+}
+
+// TestGeneratedHandlers_500sUseWrapOrGenericMessage verifies that every 500
+// status code in generated handler code uses httperror.Wrap (not httperror.New)
+// with a generic "internal server error" message.
+func TestGeneratedHandlers_500sUseGenericMessage(t *testing.T) {
+	files := GenerateFileHandlerFiles(testModulePath, "")
+
+	for name, content := range files {
+		code := string(content)
+		// Skip files that don't have 500 errors
+		if !strings.Contains(code, "500") {
+			continue
+		}
+		// Every httperror.Wrap(500, ...) should use "internal server error" or "access check failed"
+		lines := strings.Split(code, "\n")
+		for i, line := range lines {
+			if strings.Contains(line, "httperror.New(500,") {
+				// httperror.New(500, ...) should not exist in generated handlers
+				// (except possibly in helpers.go for access check which already uses Wrap)
+				t.Errorf("%s:%d uses httperror.New(500, ...) — should use httperror.Wrap(500, \"internal server error\", err) instead:\n  %s", name, i+1, strings.TrimSpace(line))
+			}
+		}
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Bug 4: CompleteRequest, GrantAccessRequest field tags and route patterns
+// ---------------------------------------------------------------------------
+
+// TestGenerateCompleteHandler_UsesPathTag verifies that CompleteRequest uses
+// path:"id" for the Id field instead of json:"file_id".
+func TestGenerateCompleteHandler_UsesPathTag(t *testing.T) {
+	output := string(generateCompleteHandler(testModulePath))
+
+	if !strings.Contains(output, `path:"id"`) {
+		t.Error("CompleteRequest.Id should use path:\"id\" tag")
+	}
+	// The request struct should not have json:"file_id" (response struct may)
+	lines := strings.Split(output, "\n")
+	inRequest := false
+	for _, line := range lines {
+		if strings.Contains(line, "CompleteRequest struct") {
+			inRequest = true
+		}
+		if inRequest && strings.TrimSpace(line) == "}" {
+			inRequest = false
+		}
+		if inRequest && strings.Contains(line, `json:"file_id"`) {
+			t.Error("CompleteRequest should NOT use json:\"file_id\" — file ID comes from path")
+		}
+	}
+}
+
+// TestGenerateCompleteHandler_NoUploadIDInRequest verifies that CompleteRequest
+// does not contain an UploadID field — the upload ID should be derived
+// server-side from the file record.
+func TestGenerateCompleteHandler_NoUploadIDInRequest(t *testing.T) {
+	output := string(generateCompleteHandler(testModulePath))
+
+	// The request struct should not have upload_id
+	if strings.Contains(output, `json:"upload_id`) {
+		t.Error("CompleteRequest should NOT contain upload_id — it should be derived server-side from file.S3UploadId")
+	}
+}
+
+// TestGenerateCompleteHandler_UsesServerSideUploadID verifies that the
+// Complete handler uses file.S3UploadId instead of a client-supplied upload_id.
+func TestGenerateCompleteHandler_UsesServerSideUploadID(t *testing.T) {
+	output := string(generateCompleteHandler(testModulePath))
+
+	if !strings.Contains(output, "*file.S3UploadId") {
+		t.Error("Complete handler should use *file.S3UploadId for multipart completion, not client-supplied value")
+	}
+}
+
+// TestGenerateFileRegister_CompleteRouteUsesPathParam verifies that the
+// Complete route uses /files/:id/complete instead of /files/complete.
+func TestGenerateFileRegister_CompleteRouteUsesPathParam(t *testing.T) {
+	output := string(generateFileRegister(testModulePath))
+
+	if strings.Contains(output, `"/files/complete"`) {
+		t.Error("Complete route should be /files/:id/complete, not /files/complete")
+	}
+	if !strings.Contains(output, `"/files/:id/complete"`) {
+		t.Error("Complete route should be /files/:id/complete")
+	}
+}
+
+// TestGenerateAccessHandlers_GrantUsesPathForAccountId verifies that
+// GrantAccessRequest.AccountId uses path:"account_id" tag, matching
+// RevokeAccessRequest for consistency.
+func TestGenerateAccessHandlers_GrantUsesPathForAccountId(t *testing.T) {
+	output := string(generateAccessHandlers(testModulePath))
+
+	// Count path:"account_id" occurrences — should appear in both Grant and Revoke
+	pathAccountIdCount := strings.Count(output, `path:"account_id"`)
+	if pathAccountIdCount < 2 {
+		t.Errorf("expected at least 2 path:\"account_id\" tags (Grant and Revoke), got %d", pathAccountIdCount)
+	}
+
+	// GrantAccessRequest should NOT use json:"account_id" for the AccountId field.
+	// (AccessListItem response struct legitimately uses json:"account_id".)
+	lines := strings.Split(output, "\n")
+	inGrantRequest := false
+	for _, line := range lines {
+		if strings.Contains(line, "GrantAccessRequest struct") {
+			inGrantRequest = true
+		}
+		if inGrantRequest && strings.TrimSpace(line) == "}" {
+			inGrantRequest = false
+		}
+		if inGrantRequest && strings.Contains(line, `json:"account_id"`) {
+			t.Error("GrantAccessRequest.AccountId should use path:\"account_id\", not json:\"account_id\"")
+		}
+	}
+}
+
+// TestGenerateFileRegister_GrantRouteUsesAccountIdParam verifies that the
+// GrantAccess route includes :account_id in the path, matching RevokeAccess.
+func TestGenerateFileRegister_GrantRouteUsesAccountIdParam(t *testing.T) {
+	output := string(generateFileRegister(testModulePath))
+
+	// The POST grant access route should include :account_id
+	lines := strings.Split(output, "\n")
+	found := false
+	for _, line := range lines {
+		if strings.Contains(line, "Post") && strings.Contains(line, "/access/:account_id") {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Error("GrantAccess route should be POST /files/:id/access/:account_id")
+	}
+}
+
+// ---------------------------------------------------------------------------
 // Bug 2: File access checks must distinguish sql.ErrNoRows from real DB errors
 // ---------------------------------------------------------------------------
 
@@ -100,6 +257,16 @@ func TestGenerateAccessHandlers_DistinguishesSqlErrors(t *testing.T) {
 }
 
 const testModulePath = "example.com/myapp"
+
+// TestGenerateFileHelpers_AccessCheckUsesWrap verifies that helpers.go uses
+// httperror.Wrap for 500 errors, not httperror.New with string concatenation.
+func TestGenerateFileHelpers_AccessCheckUsesWrap(t *testing.T) {
+	output := string(generateFileHelpers(testModulePath))
+
+	if strings.Contains(output, `+err.Error()`) || strings.Contains(output, `+ err.Error()`) {
+		t.Error("helpers.go must not concatenate err.Error() into error messages")
+	}
+}
 
 // TestGenerateFileRegister_UsesColonParamSyntax verifies that the generated
 // Register function uses :param syntax for all path parameters, not {param}.

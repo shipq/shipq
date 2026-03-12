@@ -69,7 +69,7 @@ func TestGenerateVerifyEmailHandler_ContainsRequestFields(t *testing.T) {
 	expected := []string{
 		"type VerifyEmailRequest struct",
 		"Token string",
-		`json:"token"`,
+		`query:"token"`,
 	}
 
 	for _, s := range expected {

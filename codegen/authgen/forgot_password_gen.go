@@ -57,7 +57,7 @@ func ForgotPassword(ctx context.Context, req *ForgotPasswordRequest) (*struct{},
 		Email: req.Email,
 	})
 	if err != nil {
-		return nil, httperror.Wrap(500, "internal error", err)
+		return nil, httperror.Wrap(500, "internal server error", err)
 	}
 	if account == nil {
 		// Return success anyway to prevent email enumeration
@@ -67,7 +67,7 @@ func ForgotPassword(ctx context.Context, req *ForgotPasswordRequest) (*struct{},
 	// Generate a crypto-random token
 	rawToken, err := generateSecureToken(32)
 	if err != nil {
-		return nil, httperror.Wrap(500, "internal error", err)
+		return nil, httperror.Wrap(500, "internal server error", err)
 	}
 	tokenHash := HashToken(rawToken)
 
@@ -84,7 +84,7 @@ func ForgotPassword(ctx context.Context, req *ForgotPasswordRequest) (*struct{},
 		ExpiresAt:  time.Now().UTC().Add(1 * time.Hour).Format("2006-01-02 15:04:05"),
 	})
 	if err != nil {
-		return nil, httperror.Wrap(500, "internal error", err)
+		return nil, httperror.Wrap(500, "internal server error", err)
 	}
 
 	// Build reset link
