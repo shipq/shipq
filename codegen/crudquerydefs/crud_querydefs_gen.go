@@ -21,6 +21,7 @@ type Config struct {
 	Table       ddl.Table
 	ScopeColumn string
 	Schema      map[string]ddl.Table // all tables (for FK resolution)
+	ExposeEmail bool
 }
 
 // GenerateCRUDQueryDefs generates a Go source file containing query.MustDefine*
@@ -100,20 +101,21 @@ func fkSubquery(refTable, paramName string) string {
 // joinDescriptor describes a single JOIN to emit, with optional alias metadata
 // for cases where the same table is joined more than once.
 type joinDescriptor struct {
-	col      ddl.ColumnDefinition // FK column definition (zero value for author join)
-	refTable string               // e.g., "accounts"
-	refVar   string               // e.g., "Accounts" (PascalCase schema variable)
-	alias    string               // e.g., "account" or "author" (only used when needsAs)
-	needsAs  bool                 // true when the referenced table appears more than once
-	joinType string               // "Join" or "LeftJoin"
-	isAuthor bool                 // true for the hardcoded author join
-	colName  string               // FK column name, e.g., "account_id"
+	col         ddl.ColumnDefinition // FK column definition (zero value for author join)
+	refTable    string               // e.g., "accounts"
+	refVar      string               // e.g., "Accounts" (PascalCase schema variable)
+	alias       string               // e.g., "account" or "author" (only used when needsAs)
+	needsAs     bool                 // true when the referenced table appears more than once
+	joinType    string               // "Join" or "LeftJoin"
+	isAuthor    bool                 // true for the hardcoded author join
+	exposeEmail bool                 // true when author email should be included
+	colName     string               // FK column name, e.g., "account_id"
 }
 
 // buildJoinPlan builds a slice of joinDescriptors from FK columns and the optional
 // author join. When the same referenced table appears more than once, each descriptor
 // gets needsAs=true and a deterministic alias derived from the FK column name.
-func buildJoinPlan(fkCols []ddl.ColumnDefinition, fkRefTables []string, hasAuthorJoin bool) []joinDescriptor {
+func buildJoinPlan(fkCols []ddl.ColumnDefinition, fkRefTables []string, hasAuthorJoin bool, exposeEmail bool) []joinDescriptor {
 	// Build raw descriptors
 	var plan []joinDescriptor
 	for i, col := range fkCols {
@@ -131,11 +133,12 @@ func buildJoinPlan(fkCols []ddl.ColumnDefinition, fkRefTables []string, hasAutho
 	}
 	if hasAuthorJoin && !authorJoinCollidesWithFK(fkCols) {
 		plan = append(plan, joinDescriptor{
-			refTable: "accounts",
-			refVar:   "Accounts",
-			joinType: "LeftJoin",
-			isAuthor: true,
-			colName:  "author_account_id",
+			refTable:    "accounts",
+			refVar:      "Accounts",
+			joinType:    "LeftJoin",
+			isAuthor:    true,
+			exposeEmail: exposeEmail,
+			colName:     "author_account_id",
 		})
 	}
 
@@ -199,12 +202,16 @@ func emitSelectAs(buf *strings.Builder, j joinDescriptor) {
 	if j.isAuthor {
 		if j.needsAs {
 			buf.WriteString(fmt.Sprintf("\t\t\tSelectAs(schema.%s.PublicId().WithTable(%q), \"author_id\").\n", j.refVar, j.alias))
-			buf.WriteString(fmt.Sprintf("\t\t\tSelectAs(schema.%s.Email().WithTable(%q), \"author_email\").\n", j.refVar, j.alias))
+			if j.exposeEmail {
+				buf.WriteString(fmt.Sprintf("\t\t\tSelectAs(schema.%s.Email().WithTable(%q), \"author_email\").\n", j.refVar, j.alias))
+			}
 			buf.WriteString(fmt.Sprintf("\t\t\tSelectAs(schema.%s.FirstName().WithTable(%q), \"author_first_name\").\n", j.refVar, j.alias))
 			buf.WriteString(fmt.Sprintf("\t\t\tSelectAs(schema.%s.LastName().WithTable(%q), \"author_last_name\").\n", j.refVar, j.alias))
 		} else {
 			buf.WriteString(fmt.Sprintf("\t\t\tSelectAs(schema.%s.PublicId(), \"author_id\").\n", j.refVar))
-			buf.WriteString(fmt.Sprintf("\t\t\tSelectAs(schema.%s.Email(), \"author_email\").\n", j.refVar))
+			if j.exposeEmail {
+				buf.WriteString(fmt.Sprintf("\t\t\tSelectAs(schema.%s.Email(), \"author_email\").\n", j.refVar))
+			}
 			buf.WriteString(fmt.Sprintf("\t\t\tSelectAs(schema.%s.FirstName(), \"author_first_name\").\n", j.refVar))
 			buf.WriteString(fmt.Sprintf("\t\t\tSelectAs(schema.%s.LastName(), \"author_last_name\").\n", j.refVar))
 		}
@@ -249,7 +256,7 @@ func writeGetQuery(buf *strings.Builder, cfg Config, analysis codegen.TableAnaly
 	}
 
 	// Build a join plan with alias tracking for duplicate tables
-	joinPlan := buildJoinPlan(fkCols, fkRefTables, analysis.HasAuthorAccountID)
+	joinPlan := buildJoinPlan(fkCols, fkRefTables, analysis.HasAuthorAccountID, cfg.ExposeEmail)
 
 	buf.WriteString(fmt.Sprintf("\tquery.MustDefineOne(%q,\n", queryName))
 	buf.WriteString(fmt.Sprintf("\t\tquery.From(schema.%s).\n", schemaVar))
@@ -329,7 +336,7 @@ func writeListQuery(buf *strings.Builder, cfg Config, analysis codegen.TableAnal
 	}
 
 	// Build a join plan with alias tracking for duplicate tables
-	joinPlan := buildJoinPlan(fkCols, fkRefTables, analysis.HasAuthorAccountID)
+	joinPlan := buildJoinPlan(fkCols, fkRefTables, analysis.HasAuthorAccountID, cfg.ExposeEmail)
 
 	if supportsCursor {
 		buf.WriteString(fmt.Sprintf("\tquery.MustDefinePaginated(%q,\n", queryName))

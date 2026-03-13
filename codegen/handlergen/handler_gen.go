@@ -24,6 +24,7 @@ type HandlerGenConfig struct {
 	Schema      map[string]ddl.Table // Full schema for relationship detection
 	ScopeColumn string               // e.g., "organization_id" (empty if unscoped)
 	RequireAuth bool                 // true if handlers should require authentication
+	ExposeEmail bool                 // true if author email should be included in responses
 }
 
 // RelationshipInfo describes a relationship to embed in GET responses.
@@ -361,7 +362,9 @@ func GenerateTypesFile(cfg HandlerGenConfig) ([]byte, error) {
 	buf.WriteString("// AuthorEmbed contains the resolved author identity.\n")
 	buf.WriteString("type AuthorEmbed struct {\n")
 	buf.WriteString("\tId        string `json:\"id\"`\n")
-	buf.WriteString("\tEmail     string `json:\"email\"`\n")
+	if cfg.ExposeEmail {
+		buf.WriteString("\tEmail     string `json:\"email\"`\n")
+	}
 	buf.WriteString("\tFirstName string `json:\"first_name\"`\n")
 	buf.WriteString("\tLastName  string `json:\"last_name\"`\n")
 	buf.WriteString("}\n")
@@ -545,7 +548,9 @@ func GenerateCreateHandler(cfg HandlerGenConfig, _ []RelationshipInfo) ([]byte, 
 		buf.WriteString("\n\tif result.AuthorId != nil && *result.AuthorId != \"\" {\n")
 		buf.WriteString("\t\tresp.Author = &AuthorEmbed{\n")
 		buf.WriteString("\t\t\tId:        *result.AuthorId,\n")
-		buf.WriteString("\t\t\tEmail:     *result.AuthorEmail,\n")
+		if cfg.ExposeEmail {
+			buf.WriteString("\t\t\tEmail:     *result.AuthorEmail,\n")
+		}
 		buf.WriteString("\t\t\tFirstName: *result.AuthorFirstName,\n")
 		buf.WriteString("\t\t\tLastName:  *result.AuthorLastName,\n")
 		buf.WriteString("\t\t}\n")
@@ -784,7 +789,9 @@ func GenerateGetOneHandler(cfg HandlerGenConfig, relations []RelationshipInfo) (
 		buf.WriteString("\n\tif result.AuthorId != nil && *result.AuthorId != \"\" {\n")
 		buf.WriteString("\t\tresp.Author = &AuthorEmbed{\n")
 		buf.WriteString("\t\t\tId:        *result.AuthorId,\n")
-		buf.WriteString("\t\t\tEmail:     *result.AuthorEmail,\n")
+		if cfg.ExposeEmail {
+			buf.WriteString("\t\t\tEmail:     *result.AuthorEmail,\n")
+		}
 		buf.WriteString("\t\t\tFirstName: *result.AuthorFirstName,\n")
 		buf.WriteString("\t\t\tLastName:  *result.AuthorLastName,\n")
 		buf.WriteString("\t\t}\n")
@@ -936,7 +943,9 @@ func GenerateListHandler(cfg HandlerGenConfig, _ []RelationshipInfo) ([]byte, er
 		buf.WriteString("\t\tif item.AuthorId != nil && *item.AuthorId != \"\" {\n")
 		buf.WriteString("\t\t\titems[i].Author = &AuthorEmbed{\n")
 		buf.WriteString("\t\t\t\tId:        *item.AuthorId,\n")
-		buf.WriteString("\t\t\t\tEmail:     *item.AuthorEmail,\n")
+		if cfg.ExposeEmail {
+			buf.WriteString("\t\t\t\tEmail:     *item.AuthorEmail,\n")
+		}
 		buf.WriteString("\t\t\t\tFirstName: *item.AuthorFirstName,\n")
 		buf.WriteString("\t\t\t\tLastName:  *item.AuthorLastName,\n")
 		buf.WriteString("\t\t\t}\n")
@@ -1144,7 +1153,9 @@ func GenerateUpdateHandler(cfg HandlerGenConfig, _ []RelationshipInfo) ([]byte, 
 		buf.WriteString("\n\tif result.AuthorId != nil && *result.AuthorId != \"\" {\n")
 		buf.WriteString("\t\tresp.Author = &AuthorEmbed{\n")
 		buf.WriteString("\t\t\tId:        *result.AuthorId,\n")
-		buf.WriteString("\t\t\tEmail:     *result.AuthorEmail,\n")
+		if cfg.ExposeEmail {
+			buf.WriteString("\t\t\tEmail:     *result.AuthorEmail,\n")
+		}
 		buf.WriteString("\t\t\tFirstName: *result.AuthorFirstName,\n")
 		buf.WriteString("\t\t\tLastName:  *result.AuthorLastName,\n")
 		buf.WriteString("\t\t}\n")

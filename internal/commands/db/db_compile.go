@@ -3,6 +3,7 @@ package db
 import (
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/shipq/shipq/cli"
 	"github.com/shipq/shipq/codegen"
@@ -16,6 +17,7 @@ import (
 	"github.com/shipq/shipq/db/portsql/codegen/queryrunner"
 	"github.com/shipq/shipq/db/portsql/ddl"
 	"github.com/shipq/shipq/db/portsql/query"
+	"github.com/shipq/shipq/inifile"
 	shipqdag "github.com/shipq/shipq/internal/dag"
 	"github.com/shipq/shipq/project"
 )
@@ -38,6 +40,13 @@ func DBCompileCmd() {
 	cfg, err := dbpkg.LoadDBPackageConfig(roots.GoModRoot, roots.ShipqRoot)
 	if err != nil {
 		cli.FatalErr("failed to load project config", err)
+	}
+
+	// Read expose_email setting from shipq.ini
+	exposeEmail := false
+	shipqIniPath := filepath.Join(roots.ShipqRoot, project.ShipqIniFile)
+	if ini, iniErr := inifile.ParseFile(shipqIniPath); iniErr == nil {
+		exposeEmail = strings.ToLower(ini.Get("auth", "expose_email")) == "true"
 	}
 
 	cli.Infof("Compiling queries for %s dialect...", cfg.Dialect)
@@ -96,6 +105,7 @@ func DBCompileCmd() {
 				Table:       table,
 				ScopeColumn: scopeColumn,
 				Schema:      plan.Schema.Tables,
+				ExposeEmail: exposeEmail,
 			}
 			code, err := crudquerydefs.GenerateCRUDQueryDefs(qdCfg)
 			if err != nil {

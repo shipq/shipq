@@ -625,8 +625,8 @@ func TestGenerateCRUDQueryDefs_GetQuery_AuthorJoin(t *testing.T) {
 	if !strings.Contains(codeStr, `SelectAs(schema.Accounts.PublicId(), "author_id")`) {
 		t.Error("GET query missing SelectAs for author_id")
 	}
-	if !strings.Contains(codeStr, `SelectAs(schema.Accounts.Email(), "author_email")`) {
-		t.Error("GET query missing SelectAs for author_email")
+	if strings.Contains(codeStr, `SelectAs(schema.Accounts.Email(), "author_email")`) {
+		t.Error("GET query must NOT contain SelectAs for author_email when ExposeEmail is false")
 	}
 	if !strings.Contains(codeStr, `SelectAs(schema.Accounts.FirstName(), "author_first_name")`) {
 		t.Error("GET query missing SelectAs for author_first_name")
@@ -684,8 +684,103 @@ func TestGenerateCRUDQueryDefs_ListQuery_AuthorJoin(t *testing.T) {
 	if !strings.Contains(listSection, `SelectAs(schema.Accounts.PublicId(), "author_id")`) {
 		t.Error("LIST query missing SelectAs for author_id")
 	}
+	if strings.Contains(listSection, `SelectAs(schema.Accounts.Email(), "author_email")`) {
+		t.Error("LIST query must NOT contain SelectAs for author_email when ExposeEmail is false")
+	}
+	if !strings.Contains(listSection, `SelectAs(schema.Accounts.FirstName(), "author_first_name")`) {
+		t.Error("LIST query missing SelectAs for author_first_name")
+	}
+	if !strings.Contains(listSection, `SelectAs(schema.Accounts.LastName(), "author_last_name")`) {
+		t.Error("LIST query missing SelectAs for author_last_name")
+	}
+}
+
+func TestGenerateCRUDQueryDefs_GetQuery_AuthorJoin_ExposeEmail(t *testing.T) {
+	cfg := Config{
+		ModulePath:  "example.com/myapp",
+		TableName:   "posts",
+		Table:       postsTable(),
+		ScopeColumn: "organization_id",
+		Schema:      allTables(),
+		ExposeEmail: true,
+	}
+
+	code, err := GenerateCRUDQueryDefs(cfg)
+	if err != nil {
+		t.Fatalf("error: %v", err)
+	}
+	codeStr := string(code)
+
+	// Must LEFT JOIN accounts for author_account_id
+	if !strings.Contains(codeStr, "LeftJoin(schema.Accounts).On(schema.Accounts.Id().Eq(schema.Posts.AuthorAccountId()))") {
+		t.Error("GET query missing LeftJoin on Accounts for author_account_id")
+	}
+
+	// Must have SelectAs for all author fields including email
+	if !strings.Contains(codeStr, `SelectAs(schema.Accounts.PublicId(), "author_id")`) {
+		t.Error("GET query missing SelectAs for author_id")
+	}
+	if !strings.Contains(codeStr, `SelectAs(schema.Accounts.Email(), "author_email")`) {
+		t.Error("GET query missing SelectAs for author_email when ExposeEmail is true")
+	}
+	if !strings.Contains(codeStr, `SelectAs(schema.Accounts.FirstName(), "author_first_name")`) {
+		t.Error("GET query missing SelectAs for author_first_name")
+	}
+	if !strings.Contains(codeStr, `SelectAs(schema.Accounts.LastName(), "author_last_name")`) {
+		t.Error("GET query missing SelectAs for author_last_name")
+	}
+
+	// Must NOT contain raw author_account_id in Select() block.
+	getIdx := strings.Index(codeStr, `"GetPostByPublicID"`)
+	if getIdx == -1 {
+		t.Fatal("missing GetPostByPublicID query in generated code")
+	}
+	getSection := codeStr[getIdx:]
+	selectIdx := strings.Index(getSection, "Select(")
+	if selectIdx == -1 {
+		t.Fatal("GET query missing Select() call")
+	}
+	selectEnd := strings.Index(getSection[selectIdx:], ").")
+	if selectEnd == -1 {
+		t.Fatal("GET query Select() block not properly closed")
+	}
+	selectBlock := getSection[selectIdx : selectIdx+selectEnd]
+	if strings.Contains(selectBlock, "schema.Posts.AuthorAccountId()") {
+		t.Error("GET query must NOT select raw schema.Posts.AuthorAccountId() in Select()")
+	}
+}
+
+func TestGenerateCRUDQueryDefs_ListQuery_AuthorJoin_ExposeEmail(t *testing.T) {
+	cfg := Config{
+		ModulePath:  "example.com/myapp",
+		TableName:   "posts",
+		Table:       postsTable(),
+		ScopeColumn: "organization_id",
+		Schema:      allTables(),
+		ExposeEmail: true,
+	}
+
+	code, err := GenerateCRUDQueryDefs(cfg)
+	if err != nil {
+		t.Fatalf("error: %v", err)
+	}
+	codeStr := string(code)
+
+	// The LIST section (after MustDefinePaginated) should also have the author join
+	listIdx := strings.Index(codeStr, "MustDefinePaginated")
+	if listIdx == -1 {
+		t.Fatal("missing MustDefinePaginated in generated code")
+	}
+	listSection := codeStr[listIdx:]
+
+	if !strings.Contains(listSection, "LeftJoin(schema.Accounts).On(schema.Accounts.Id().Eq(schema.Posts.AuthorAccountId()))") {
+		t.Error("LIST query missing LeftJoin on Accounts for author_account_id")
+	}
+	if !strings.Contains(listSection, `SelectAs(schema.Accounts.PublicId(), "author_id")`) {
+		t.Error("LIST query missing SelectAs for author_id")
+	}
 	if !strings.Contains(listSection, `SelectAs(schema.Accounts.Email(), "author_email")`) {
-		t.Error("LIST query missing SelectAs for author_email")
+		t.Error("LIST query missing SelectAs for author_email when ExposeEmail is true")
 	}
 	if !strings.Contains(listSection, `SelectAs(schema.Accounts.FirstName(), "author_first_name")`) {
 		t.Error("LIST query missing SelectAs for author_first_name")
@@ -1024,6 +1119,7 @@ func TestGenerateCRUDQueryDefs_GetQuery_DuplicateTableAlias(t *testing.T) {
 		Table:       messagesTable(),
 		ScopeColumn: "organization_id",
 		Schema:      allTablesWithMessages(),
+		ExposeEmail: true,
 	}
 
 	code, err := GenerateCRUDQueryDefs(cfg)

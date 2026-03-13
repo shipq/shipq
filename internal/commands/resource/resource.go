@@ -16,6 +16,7 @@ import (
 	"github.com/shipq/shipq/inifile"
 	"github.com/shipq/shipq/internal/commands/db"
 	"github.com/shipq/shipq/internal/commands/migrate/up"
+	"github.com/shipq/shipq/internal/commands/shared"
 	shipqdag "github.com/shipq/shipq/internal/dag"
 	"github.com/shipq/shipq/project"
 	"github.com/shipq/shipq/registry"
@@ -104,6 +105,12 @@ func generateResource(tableName, operation string, isPublic bool) error {
 		}
 	}
 
+	// Read expose_email setting from shipq.ini
+	exposeEmail := false
+	if ini, iniErr := inifile.ParseFile(shipqIniPath); iniErr == nil {
+		exposeEmail = shared.IsExposeEmailEnabled(ini)
+	}
+
 	// Load schema
 	schemaPath := filepath.Join(roots.ShipqRoot, "shipq", "db", "migrate", "schema.json")
 	schemaData, err := os.ReadFile(schemaPath)
@@ -152,6 +159,7 @@ func generateResource(tableName, operation string, isPublic bool) error {
 		Table:       table,
 		ScopeColumn: scopeColumn,
 		Schema:      plan.Schema.Tables,
+		ExposeEmail: exposeEmail,
 	}
 	querydefsBytes, err := crudquerydefs.GenerateCRUDQueryDefs(querydefsCfg)
 	if err != nil {
@@ -187,6 +195,7 @@ func generateResource(tableName, operation string, isPublic bool) error {
 		Schema:      plan.Schema.Tables,
 		ScopeColumn: scopeColumn,
 		RequireAuth: requireAuth,
+		ExposeEmail: exposeEmail,
 	}
 
 	// Create api/<table> directory

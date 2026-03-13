@@ -31,6 +31,12 @@ func IsOAuthGitHubEnabled(ini *inifile.File) bool {
 	return strings.ToLower(ini.Get("auth", "oauth_github")) == "true"
 }
 
+// IsExposeEmailEnabled returns true if expose_email is set to "true" in [auth].
+// When true, the AuthorEmbed struct in CRUD responses includes the author's email address.
+func IsExposeEmailEnabled(ini *inifile.File) bool {
+	return strings.ToLower(ini.Get("auth", "expose_email")) == "true"
+}
+
 // IsFeatureEnabled returns true if the given section exists in the ini file.
 // This is used to detect whether [files], [workers], [email], or [auth]
 // features are configured.

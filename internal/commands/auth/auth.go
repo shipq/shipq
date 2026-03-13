@@ -101,6 +101,7 @@ func AuthCmd() {
 		os.Exit(1)
 	}
 	ini.Set("auth", "protect_by_default", "true")
+	ini.Set("auth", "expose_email", "false")
 
 	// Generate and store a dev cookie_secret if one doesn't already exist.
 	// This value is baked into the generated config as a compile-time dev default,
@@ -119,6 +120,7 @@ func AuthCmd() {
 		os.Exit(1)
 	}
 	fmt.Println("  Set [auth] protect_by_default = true")
+	fmt.Println("  Set [auth] expose_email = false")
 	fmt.Println("  Set [auth] cookie_secret (dev default)")
 
 	// STEP 1: Generate config package FIRST

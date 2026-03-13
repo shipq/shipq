@@ -11,6 +11,8 @@ import (
 	"github.com/shipq/shipq/codegen/handlergen"
 	dbcodegen "github.com/shipq/shipq/db/portsql/codegen"
 	"github.com/shipq/shipq/db/portsql/migrate"
+	"github.com/shipq/shipq/inifile"
+	"github.com/shipq/shipq/internal/commands/shared"
 	shipqdag "github.com/shipq/shipq/internal/dag"
 	"github.com/shipq/shipq/project"
 	"github.com/shipq/shipq/registry"
@@ -97,6 +99,13 @@ func HandlerGenerateCmd(args []string) {
 		scopeColumn = opts.ScopeColumn
 	}
 
+	// Read expose_email setting from shipq.ini
+	exposeEmail := false
+	shipqIniPath := filepath.Join(roots.ShipqRoot, project.ShipqIniFile)
+	if ini, iniErr := inifile.ParseFile(shipqIniPath); iniErr == nil {
+		exposeEmail = shared.IsExposeEmailEnabled(ini)
+	}
+
 	// Generate CRUD querydefs (DSL code the user can inspect and customise)
 	querydefsDir := filepath.Join(roots.ShipqRoot, "querydefs", tableName)
 	if err := codegen.EnsureDir(querydefsDir); err != nil {
@@ -110,6 +119,7 @@ func HandlerGenerateCmd(args []string) {
 		Table:       table,
 		ScopeColumn: scopeColumn,
 		Schema:      plan.Schema.Tables,
+		ExposeEmail: exposeEmail,
 	}
 	querydefsBytes, err := crudquerydefs.GenerateCRUDQueryDefs(querydefsCfg)
 	if err != nil {
@@ -131,6 +141,7 @@ func HandlerGenerateCmd(args []string) {
 		Table:       table,
 		Schema:      plan.Schema.Tables,
 		ScopeColumn: scopeColumn,
+		ExposeEmail: exposeEmail,
 	}
 
 	files, err := handlergen.GenerateHandlerFiles(cfg)
