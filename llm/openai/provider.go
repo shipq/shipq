@@ -226,10 +226,13 @@ func (p *Provider) buildRequest(req *llm.ProviderRequest, stream bool) chatReque
 	cr := chatRequest{
 		Model:       p.model,
 		Messages:    p.convertMessages(req),
-		Tools:       p.convertTools(req.Tools, req.WebSearch),
+		Tools:       p.convertTools(req.Tools),
 		MaxTokens:   req.MaxTokens,
 		Temperature: req.Temperature,
 		Stream:      stream,
+	}
+	if req.WebSearch != nil {
+		cr.WebSearchOptions = &webSearchOptions{}
 	}
 	if len(cr.Tools) > 0 {
 		cr.ToolChoice = "auto"
@@ -311,10 +314,8 @@ func (p *Provider) convertTextMessage(m llm.ProviderMessage) chatMessage {
 }
 
 // convertTools translates ToolDefs to the OpenAI tool definition format.
-// When WebSearch is configured a synthetic "web_search" function tool is prepended
-// (OpenAI Chat Completions has no built-in search; we expose it as a function).
-func (p *Provider) convertTools(tools []llm.ToolDef, ws *llm.WebSearchConfig) []toolDef {
-	if len(tools) == 0 && ws == nil {
+func (p *Provider) convertTools(tools []llm.ToolDef) []toolDef {
+	if len(tools) == 0 {
 		return nil
 	}
 	out := make([]toolDef, 0, len(tools))

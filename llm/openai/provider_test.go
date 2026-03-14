@@ -792,6 +792,61 @@ func TestStrictModeFalse(t *testing.T) {
 	}
 }
 
+func TestSendRequestWebSearchOptions(t *testing.T) {
+	t.Run("web_search_options present when WebSearch is set", func(t *testing.T) {
+		var captured []byte
+		p, _ := newTestProvider(t, func(w http.ResponseWriter, r *http.Request) {
+			captured = mustReadBody(t, r)
+			json.NewEncoder(w).Encode(textResponse("Search result."))
+		})
+
+		req := &llm.ProviderRequest{
+			Messages:  []llm.ProviderMessage{{Role: llm.RoleUser, Text: "Latest Go version?"}},
+			WebSearch: &llm.WebSearchConfig{},
+		}
+		if _, err := p.Send(context.Background(), req); err != nil {
+			t.Fatalf("Send: %v", err)
+		}
+
+		var body map[string]any
+		if err := json.Unmarshal(captured, &body); err != nil {
+			t.Fatalf("unmarshal request body: %v", err)
+		}
+
+		wso, ok := body["web_search_options"]
+		if !ok {
+			t.Fatal("expected web_search_options key in request body, but it was absent")
+		}
+		if _, isObj := wso.(map[string]any); !isObj {
+			t.Fatalf("web_search_options should be a JSON object, got %T: %v", wso, wso)
+		}
+	})
+
+	t.Run("web_search_options absent when WebSearch is nil", func(t *testing.T) {
+		var captured []byte
+		p, _ := newTestProvider(t, func(w http.ResponseWriter, r *http.Request) {
+			captured = mustReadBody(t, r)
+			json.NewEncoder(w).Encode(textResponse("No search."))
+		})
+
+		req := &llm.ProviderRequest{
+			Messages: []llm.ProviderMessage{{Role: llm.RoleUser, Text: "Hello"}},
+		}
+		if _, err := p.Send(context.Background(), req); err != nil {
+			t.Fatalf("Send: %v", err)
+		}
+
+		var body map[string]any
+		if err := json.Unmarshal(captured, &body); err != nil {
+			t.Fatalf("unmarshal request body: %v", err)
+		}
+
+		if _, ok := body["web_search_options"]; ok {
+			t.Fatal("web_search_options should NOT be present when WebSearch is nil")
+		}
+	})
+}
+
 // ── fixture helpers ───────────────────────────────────────────────────────────
 
 // textResponse builds a minimal non-streaming OpenAI response body.
