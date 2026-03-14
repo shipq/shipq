@@ -6,15 +6,20 @@ import "encoding/json"
 
 // chatRequest is the JSON body sent to /v1/chat/completions.
 type chatRequest struct {
-	Model       string         `json:"model"`
-	Messages    []chatMessage  `json:"messages"`
-	Tools       []toolDef      `json:"tools,omitempty"`
-	ToolChoice  any            `json:"tool_choice,omitempty"`
-	MaxTokens   int            `json:"max_tokens,omitempty"`
-	Temperature *float64       `json:"temperature,omitempty"`
-	Stream      bool           `json:"stream,omitempty"`
-	StreamOpts  *streamOptions `json:"stream_options,omitempty"`
+	Model            string            `json:"model"`
+	Messages         []chatMessage     `json:"messages"`
+	Tools            []toolDef         `json:"tools,omitempty"`
+	ToolChoice       any               `json:"tool_choice,omitempty"`
+	MaxTokens        int               `json:"max_tokens,omitempty"`
+	Temperature      *float64          `json:"temperature,omitempty"`
+	Stream           bool              `json:"stream,omitempty"`
+	StreamOpts       *streamOptions    `json:"stream_options,omitempty"`
+	WebSearchOptions *webSearchOptions `json:"web_search_options,omitempty"`
 }
+
+// webSearchOptions enables web search in the OpenAI Chat Completions API.
+// When present (even empty), the model will search the web before responding.
+type webSearchOptions struct{}
 
 type streamOptions struct {
 	IncludeUsage bool `json:"include_usage"`
