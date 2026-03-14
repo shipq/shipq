@@ -2,6 +2,8 @@ package queryrunner
 
 import (
 	"go/format"
+	"go/parser"
+	"go/token"
 	"regexp"
 	"strings"
 	"testing"
@@ -1018,8 +1020,54 @@ func generateRandomInsertQuery(g *proptest.Generator, tableName string, table dd
 			FromTable:  query.SerializedTableRef{Name: tableName},
 			SelectCols: selectCols,
 			InsertCols: insertCols,
-			InsertVals: insertVals,
+			InsertRows: [][]query.SerializedExpr{insertVals},
 			Returning:  returningCols,
+			Params:     params,
+		},
+	}
+}
+
+// generateRandomBulkInsertQuery creates a random bulk insert query for property testing.
+// Unlike generateRandomInsertQuery, this uses ReturnBulkExec and has no RETURNING.
+func generateRandomBulkInsertQuery(g *proptest.Generator, tableName string, table ddl.Table) query.SerializedQuery {
+	queryName := "BulkInsert" + strings.Title(tableName) //nolint:staticcheck
+
+	var insertCols []query.SerializedColumn
+	var insertVals []query.SerializedExpr
+	var params []query.SerializedParamInfo
+
+	for _, col := range table.Columns {
+		// Skip auto-generated columns
+		if col.Name == "id" || col.Name == "created_at" || col.Name == "updated_at" || col.Name == "deleted_at" || col.Name == "public_id" {
+			continue
+		}
+		goType := ddlTypeToGoType(col.Type)
+		insertCols = append(insertCols, query.SerializedColumn{
+			Table:  tableName,
+			Name:   col.Name,
+			GoType: goType,
+		})
+		insertVals = append(insertVals, query.SerializedExpr{
+			Type: "param",
+			Param: &query.SerializedParam{
+				Name:   col.Name,
+				GoType: goType,
+			},
+		})
+		params = append(params, query.SerializedParamInfo{
+			Name:   col.Name,
+			GoType: goType,
+		})
+	}
+
+	return query.SerializedQuery{
+		Name:       queryName,
+		ReturnType: query.ReturnBulkExec,
+		AST: &query.SerializedAST{
+			Kind:       "insert",
+			FromTable:  query.SerializedTableRef{Name: tableName},
+			InsertCols: insertCols,
+			InsertRows: [][]query.SerializedExpr{insertVals},
 			Params:     params,
 		},
 	}
@@ -1087,6 +1135,100 @@ func TestProperty_GeneratedRunnerAlwaysFormats(t *testing.T) {
 
 			if _, err := format.Source(code); err != nil {
 				t.Logf("[%s] generated code does not format for table %q: %v", dialect, tableName, err)
+				return false
+			}
+		}
+		return true
+	})
+}
+
+// Property: Generated bulk insert runner code always formats for all dialects.
+func TestProperty_BulkInsertGeneratedRunnerAlwaysFormats(t *testing.T) {
+	allDialects := []string{dburl.DialectPostgres, dburl.DialectMySQL, dburl.DialectSQLite}
+
+	proptest.Check(t, "bulk insert runner always formats as valid Go", proptest.Config{NumTrials: 30}, func(g *proptest.Generator) bool {
+		tableName, table := generateRandomTable(g)
+		bulkQuery := generateRandomBulkInsertQuery(g, tableName, table)
+
+		for _, dialect := range allDialects {
+			cfg := UnifiedRunnerConfig{
+				ModulePath:  "example.com/myapp",
+				Dialect:     dialect,
+				UserQueries: []query.SerializedQuery{bulkQuery},
+			}
+
+			code, err := GenerateUnifiedRunner(cfg)
+			if err != nil {
+				t.Logf("[%s] GenerateUnifiedRunner failed for bulk table %q: %v", dialect, tableName, err)
+				return false
+			}
+
+			if _, err := format.Source(code); err != nil {
+				t.Logf("[%s] bulk insert generated code does not format for table %q: %v\ncode:\n%s", dialect, tableName, err, string(code))
+				return false
+			}
+
+			codeStr := string(code)
+
+			// Bulk method should use ExecContext, not QueryRowContext
+			methodName := bulkQuery.Name
+			if !strings.Contains(codeStr, "func (r *QueryRunner) "+methodName+"(") {
+				t.Logf("[%s] cannot find bulk method %s in generated code", dialect, methodName)
+				return false
+			}
+
+			// Should use driver.RowsAffected for empty params
+			if !strings.Contains(codeStr, "driver.RowsAffected(0)") {
+				t.Logf("[%s] bulk method missing driver.RowsAffected(0) no-op", dialect)
+				return false
+			}
+
+			// Should use ExecContext
+			if !strings.Contains(codeStr, "r.db.ExecContext(ctx, sb.String(), args...)") {
+				t.Logf("[%s] bulk method missing ExecContext call", dialect)
+				return false
+			}
+		}
+		return true
+	})
+}
+
+// Property: Bulk insert mixed with regular insert always formats for all dialects.
+func TestProperty_BulkInsertMixedWithRegularAlwaysFormats(t *testing.T) {
+	allDialects := []string{dburl.DialectPostgres, dburl.DialectMySQL, dburl.DialectSQLite}
+
+	proptest.Check(t, "mixed bulk+regular runner always formats", proptest.Config{NumTrials: 20}, func(g *proptest.Generator) bool {
+		tableName, table := generateRandomTable(g)
+		insertQuery := generateRandomInsertQuery(g, tableName, table)
+		bulkQuery := generateRandomBulkInsertQuery(g, tableName, table)
+
+		for _, dialect := range allDialects {
+			cfg := UnifiedRunnerConfig{
+				ModulePath:  "example.com/myapp",
+				Dialect:     dialect,
+				UserQueries: []query.SerializedQuery{insertQuery, bulkQuery},
+			}
+
+			code, err := GenerateUnifiedRunner(cfg)
+			if err != nil {
+				t.Logf("[%s] GenerateUnifiedRunner failed for mixed table %q: %v", dialect, tableName, err)
+				return false
+			}
+
+			if _, err := format.Source(code); err != nil {
+				t.Logf("[%s] mixed generated code does not format for table %q: %v", dialect, tableName, err)
+				return false
+			}
+
+			codeStr := string(code)
+
+			// Both methods should be present
+			if !strings.Contains(codeStr, "func (r *QueryRunner) "+insertQuery.Name+"(") {
+				t.Logf("[%s] cannot find regular insert method %s", dialect, insertQuery.Name)
+				return false
+			}
+			if !strings.Contains(codeStr, "func (r *QueryRunner) "+bulkQuery.Name+"(") {
+				t.Logf("[%s] cannot find bulk insert method %s", dialect, bulkQuery.Name)
 				return false
 			}
 		}
@@ -1491,6 +1633,288 @@ func TestGenerateUnifiedRunner_Postgres_NullableJSONColumn_ReturnMany(t *testing
 // TestGenerateUnifiedRunner_Postgres_NonNullableJSONColumn_RemainsRawMessage
 // ensures that a non-nullable JSON column still uses plain json.RawMessage
 // (not a pointer), since it can never be NULL.
+// =============================================================================
+// Bulk Insert Codegen Tests
+// =============================================================================
+
+func makeBulkInsertQuery(name string) query.SerializedQuery {
+	return query.SerializedQuery{
+		Name:       name,
+		ReturnType: query.ReturnBulkExec,
+		AST: &query.SerializedAST{
+			Kind: "insert",
+			FromTable: query.SerializedTableRef{
+				Name: "authors",
+			},
+			InsertCols: []query.SerializedColumn{
+				{Table: "authors", Name: "name", GoType: "string"},
+				{Table: "authors", Name: "email", GoType: "string"},
+			},
+			InsertRows: [][]query.SerializedExpr{
+				{
+					{Type: "param", Param: &query.SerializedParam{Name: "name", GoType: "string"}},
+					{Type: "param", Param: &query.SerializedParam{Name: "email", GoType: "string"}},
+				},
+			},
+			Params: []query.SerializedParamInfo{
+				{Name: "name", GoType: "string"},
+				{Name: "email", GoType: "string"},
+			},
+		},
+	}
+}
+
+func TestGenerateUnifiedRunner_BulkInsert_Postgres(t *testing.T) {
+	cfg := UnifiedRunnerConfig{
+		ModulePath:  "example.com/myapp",
+		Dialect:     dburl.DialectPostgres,
+		UserQueries: []query.SerializedQuery{makeBulkInsertQuery("BulkInsertAuthors")},
+	}
+
+	code, err := GenerateUnifiedRunner(cfg)
+	if err != nil {
+		t.Fatalf("GenerateUnifiedRunner failed: %v", err)
+	}
+
+	codeStr := string(code)
+
+	// Should have bulk prefix/suffix/paramsPerRow fields (go/format may add alignment spaces)
+	if !strings.Contains(codeStr, "bulkInsertAuthorsBulkPrefix") || !strings.Contains(codeStr, "string") {
+		t.Error("expected bulkInsertAuthorsBulkPrefix field in struct")
+	}
+	if !strings.Contains(codeStr, "bulkInsertAuthorsBulkSuffix") {
+		t.Error("expected bulkInsertAuthorsBulkSuffix field in struct")
+	}
+	if !strings.Contains(codeStr, "bulkInsertAuthorsBulkParamsPerRow") {
+		t.Error("expected bulkInsertAuthorsBulkParamsPerRow field in struct")
+	}
+
+	// Should have the method accepting a slice of params
+	if !strings.Contains(codeStr, "func (r *QueryRunner) BulkInsertAuthors(ctx context.Context, params []queries.BulkInsertAuthorsParams) (sql.Result, error)") {
+		t.Error("expected BulkInsertAuthors method with []Params signature")
+	}
+
+	// Should handle empty params with driver.RowsAffected(0)
+	if !strings.Contains(codeStr, "driver.RowsAffected(0)") {
+		t.Error("expected driver.RowsAffected(0) for empty params")
+	}
+
+	// Postgres should use $N renumbering
+	if !strings.Contains(codeStr, `fmt.Fprintf(&sb, "$%d", base+j+1)`) {
+		t.Error("expected Postgres $N placeholder renumbering in generated code")
+	}
+
+	// Should NOT contain static ? placeholders
+	if strings.Contains(codeStr, `sb.WriteString("?")`) {
+		t.Error("Postgres should NOT use ? placeholders")
+	}
+
+	// Should append args from params struct
+	if !strings.Contains(codeStr, "args = append(args, p.Name)") {
+		t.Error("expected args append for Name param")
+	}
+	if !strings.Contains(codeStr, "args = append(args, p.Email)") {
+		t.Error("expected args append for Email param")
+	}
+}
+
+func TestGenerateUnifiedRunner_BulkInsert_MySQL(t *testing.T) {
+	cfg := UnifiedRunnerConfig{
+		ModulePath:  "example.com/myapp",
+		Dialect:     dburl.DialectMySQL,
+		UserQueries: []query.SerializedQuery{makeBulkInsertQuery("BulkInsertAuthors")},
+	}
+
+	code, err := GenerateUnifiedRunner(cfg)
+	if err != nil {
+		t.Fatalf("GenerateUnifiedRunner failed: %v", err)
+	}
+
+	codeStr := string(code)
+
+	// Should have the method
+	if !strings.Contains(codeStr, "func (r *QueryRunner) BulkInsertAuthors(ctx context.Context, params []queries.BulkInsertAuthorsParams) (sql.Result, error)") {
+		t.Error("expected BulkInsertAuthors method with []Params signature")
+	}
+
+	// MySQL should use ? placeholders
+	if !strings.Contains(codeStr, `sb.WriteString("?")`) {
+		t.Error("expected MySQL ? placeholder in generated code")
+	}
+
+	// Should NOT contain Postgres $N placeholders
+	if strings.Contains(codeStr, `fmt.Fprintf(&sb, "$%d"`) {
+		t.Error("MySQL should NOT use $N placeholders")
+	}
+}
+
+func TestGenerateUnifiedRunner_BulkInsert_SQLite(t *testing.T) {
+	cfg := UnifiedRunnerConfig{
+		ModulePath:  "example.com/myapp",
+		Dialect:     dburl.DialectSQLite,
+		UserQueries: []query.SerializedQuery{makeBulkInsertQuery("BulkInsertAuthors")},
+	}
+
+	code, err := GenerateUnifiedRunner(cfg)
+	if err != nil {
+		t.Fatalf("GenerateUnifiedRunner failed: %v", err)
+	}
+
+	codeStr := string(code)
+
+	// Should have the method
+	if !strings.Contains(codeStr, "func (r *QueryRunner) BulkInsertAuthors(ctx context.Context, params []queries.BulkInsertAuthorsParams) (sql.Result, error)") {
+		t.Error("expected BulkInsertAuthors method with []Params signature")
+	}
+
+	// SQLite should use ? placeholders
+	if !strings.Contains(codeStr, `sb.WriteString("?")`) {
+		t.Error("expected SQLite ? placeholder in generated code")
+	}
+}
+
+func TestGenerateSharedTypes_BulkInsert(t *testing.T) {
+	cfg := UnifiedRunnerConfig{
+		ModulePath:  "example.com/myapp",
+		Dialect:     dburl.DialectPostgres,
+		UserQueries: []query.SerializedQuery{makeBulkInsertQuery("BulkInsertAuthors")},
+	}
+
+	code, err := GenerateSharedTypes(cfg)
+	if err != nil {
+		t.Fatalf("GenerateSharedTypes failed: %v", err)
+	}
+
+	codeStr := string(code)
+
+	// Should have params struct
+	if !strings.Contains(codeStr, "type BulkInsertAuthorsParams struct") {
+		t.Error("expected BulkInsertAuthorsParams struct")
+	}
+
+	// Params struct should have Name and Email fields
+	if !strings.Contains(codeStr, "Name  string") && !strings.Contains(codeStr, "Name string") {
+		t.Error("expected Name string field in BulkInsertAuthorsParams")
+	}
+	if !strings.Contains(codeStr, "Email  string") && !strings.Contains(codeStr, "Email string") {
+		t.Error("expected Email string field in BulkInsertAuthorsParams")
+	}
+
+	// Should NOT have a result struct (bulk exec doesn't return rows)
+	if strings.Contains(codeStr, "BulkInsertAuthorsResult") {
+		t.Error("bulk exec should NOT have a result struct")
+	}
+
+	// Should have the bulk insert comment
+	if !strings.Contains(codeStr, "Each element represents one row in the bulk insert") {
+		t.Error("expected bulk insert doc comment")
+	}
+}
+
+func TestGenerateUnifiedRunner_BulkInsert_WithTxCopiesFields(t *testing.T) {
+	cfg := UnifiedRunnerConfig{
+		ModulePath:  "example.com/myapp",
+		Dialect:     dburl.DialectPostgres,
+		UserQueries: []query.SerializedQuery{makeBulkInsertQuery("BulkInsertAuthors")},
+	}
+
+	code, err := GenerateUnifiedRunner(cfg)
+	if err != nil {
+		t.Fatalf("GenerateUnifiedRunner failed: %v", err)
+	}
+
+	codeStr := string(code)
+
+	// WithTx should copy bulk fields (go/format may adjust spacing)
+	if !strings.Contains(codeStr, "bulkInsertAuthorsBulkPrefix:") {
+		t.Error("WithTx should copy bulkInsertAuthorsBulkPrefix")
+	}
+	if !strings.Contains(codeStr, "bulkInsertAuthorsBulkSuffix:") {
+		t.Error("WithTx should copy bulkInsertAuthorsBulkSuffix")
+	}
+	if !strings.Contains(codeStr, "bulkInsertAuthorsBulkParamsPerRow:") {
+		t.Error("WithTx should copy bulkInsertAuthorsBulkParamsPerRow")
+	}
+}
+
+func TestGenerateUnifiedRunner_BulkInsert_FormatValidation(t *testing.T) {
+	// Verify generated code formats correctly for all dialects
+	dialects := []string{dburl.DialectPostgres, dburl.DialectMySQL, dburl.DialectSQLite}
+	for _, dialect := range dialects {
+		t.Run(dialect, func(t *testing.T) {
+			cfg := UnifiedRunnerConfig{
+				ModulePath:  "example.com/myapp",
+				Dialect:     dialect,
+				UserQueries: []query.SerializedQuery{makeBulkInsertQuery("BulkInsertAuthors")},
+			}
+
+			code, err := GenerateUnifiedRunner(cfg)
+			if err != nil {
+				t.Fatalf("GenerateUnifiedRunner failed for %s: %v", dialect, err)
+			}
+
+			// If go/format succeeded, code won't be nil
+			if len(code) == 0 {
+				t.Errorf("generated code is empty for %s", dialect)
+			}
+		})
+	}
+}
+
+func TestGenerateUnifiedRunner_BulkInsert_MixedWithRegularQueries(t *testing.T) {
+	cfg := UnifiedRunnerConfig{
+		ModulePath: "example.com/myapp",
+		Dialect:    dburl.DialectPostgres,
+		UserQueries: []query.SerializedQuery{
+			makeBulkInsertQuery("BulkInsertAuthors"),
+			{
+				Name:       "GetUserByEmail",
+				ReturnType: query.ReturnOne,
+				AST: &query.SerializedAST{
+					Kind:      "select",
+					FromTable: query.SerializedTableRef{Name: "users"},
+					SelectCols: []query.SerializedSelectExpr{
+						{Expr: query.SerializedExpr{Type: "column", Column: &query.SerializedColumn{Table: "users", Name: "id", GoType: "int64"}}},
+					},
+					Where: &query.SerializedExpr{
+						Type: "binary",
+						Binary: &query.SerializedBinary{
+							Left:  query.SerializedExpr{Type: "column", Column: &query.SerializedColumn{Table: "users", Name: "email", GoType: "string"}},
+							Op:    "=",
+							Right: query.SerializedExpr{Type: "param", Param: &query.SerializedParam{Name: "email", GoType: "string"}},
+						},
+					},
+					Params: []query.SerializedParamInfo{{Name: "email", GoType: "string"}},
+				},
+			},
+		},
+	}
+
+	code, err := GenerateUnifiedRunner(cfg)
+	if err != nil {
+		t.Fatalf("GenerateUnifiedRunner failed: %v", err)
+	}
+
+	codeStr := string(code)
+
+	// Both methods should exist
+	if !strings.Contains(codeStr, "func (r *QueryRunner) BulkInsertAuthors(") {
+		t.Error("expected BulkInsertAuthors method")
+	}
+	if !strings.Contains(codeStr, "func (r *QueryRunner) GetUserByEmail(") {
+		t.Error("expected GetUserByEmail method")
+	}
+
+	// Regular query should use SQL field, not bulk fields (go/format may add alignment spaces)
+	if !strings.Contains(codeStr, "getUserByEmailSQL") {
+		t.Error("expected getUserByEmailSQL field for regular query")
+	}
+	// Bulk query should use bulk fields, not SQL field
+	if strings.Contains(codeStr, "bulkInsertAuthorsSQL string") {
+		t.Error("bulk query should NOT have a plain SQL field")
+	}
+}
+
 func TestGenerateUnifiedRunner_Postgres_NonNullableJSONColumn_RemainsRawMessage(t *testing.T) {
 	// Build a query with an explicitly non-nullable JSON column
 	// (GoType "json.RawMessage", no pointer).
@@ -1547,5 +1971,445 @@ func TestGenerateUnifiedRunner_Postgres_NonNullableJSONColumn_RemainsRawMessage(
 	}
 	if strings.Contains(types, "*json.RawMessage") {
 		t.Errorf("non-nullable JSON column should NOT use *json.RawMessage:\n%s", types)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// INSERT ... SELECT tests
+// ---------------------------------------------------------------------------
+
+func makeInsertSelectQuery() query.SerializedQuery {
+	return query.SerializedQuery{
+		Name:       "InsertFromSource",
+		ReturnType: query.ReturnExec,
+		AST: &query.SerializedAST{
+			Kind:      "insert",
+			FromTable: query.SerializedTableRef{Name: "target"},
+			InsertCols: []query.SerializedColumn{
+				{Table: "target", Name: "name", GoType: "string"},
+				{Table: "target", Name: "email", GoType: "string"},
+			},
+			InsertSource: &query.SerializedAST{
+				Kind:      "select",
+				FromTable: query.SerializedTableRef{Name: "source"},
+				SelectCols: []query.SerializedSelectExpr{
+					{Expr: query.SerializedExpr{
+						Type:   "column",
+						Column: &query.SerializedColumn{Table: "source", Name: "name", GoType: "string"},
+					}},
+					{Expr: query.SerializedExpr{
+						Type:   "column",
+						Column: &query.SerializedColumn{Table: "source", Name: "email", GoType: "string"},
+					}},
+				},
+				Where: &query.SerializedExpr{
+					Type: "binary",
+					Binary: &query.SerializedBinary{
+						Left: query.SerializedExpr{
+							Type:   "column",
+							Column: &query.SerializedColumn{Table: "source", Name: "status", GoType: "string"},
+						},
+						Op: "=",
+						Right: query.SerializedExpr{
+							Type:  "param",
+							Param: &query.SerializedParam{Name: "status", GoType: "string"},
+						},
+					},
+				},
+			},
+			Params: []query.SerializedParamInfo{
+				{Name: "status", GoType: "string"},
+			},
+		},
+	}
+}
+
+func TestGenerateUnifiedRunner_InsertSelect_Postgres(t *testing.T) {
+	cfg := UnifiedRunnerConfig{
+		ModulePath:  "example.com/myapp",
+		Dialect:     dburl.DialectPostgres,
+		UserQueries: []query.SerializedQuery{makeInsertSelectQuery()},
+	}
+
+	code, err := GenerateUnifiedRunner(cfg)
+	if err != nil {
+		t.Fatalf("GenerateUnifiedRunner failed: %v", err)
+	}
+
+	codeStr := string(code)
+
+	if !strings.Contains(codeStr, "INSERT INTO") {
+		t.Error("expected generated code to contain INSERT INTO")
+	}
+	if !strings.Contains(codeStr, "SELECT") {
+		t.Error("expected generated code to contain SELECT")
+	}
+	if !strings.Contains(codeStr, "$1") {
+		t.Error("expected Postgres $1 placeholder in generated code")
+	}
+
+	// Verify it's valid Go
+	_, parseErr := parser.ParseFile(token.NewFileSet(), "runner.go", code, parser.AllErrors)
+	if parseErr != nil {
+		t.Fatalf("generated code is not valid Go: %v", parseErr)
+	}
+}
+
+func TestGenerateUnifiedRunner_InsertSelect_MySQL(t *testing.T) {
+	cfg := UnifiedRunnerConfig{
+		ModulePath:  "example.com/myapp",
+		Dialect:     dburl.DialectMySQL,
+		UserQueries: []query.SerializedQuery{makeInsertSelectQuery()},
+	}
+
+	code, err := GenerateUnifiedRunner(cfg)
+	if err != nil {
+		t.Fatalf("GenerateUnifiedRunner failed: %v", err)
+	}
+
+	codeStr := string(code)
+
+	if !strings.Contains(codeStr, "INSERT INTO") {
+		t.Error("expected generated code to contain INSERT INTO")
+	}
+	if !strings.Contains(codeStr, "SELECT") {
+		t.Error("expected generated code to contain SELECT")
+	}
+	if !strings.Contains(codeStr, "?") {
+		t.Error("expected MySQL ? placeholder in generated code")
+	}
+	// MySQL uses backtick quoting
+	if !strings.Contains(codeStr, "`") {
+		t.Error("expected backtick quoting in MySQL generated code")
+	}
+
+	// Verify it's valid Go
+	_, parseErr := parser.ParseFile(token.NewFileSet(), "runner.go", code, parser.AllErrors)
+	if parseErr != nil {
+		t.Fatalf("generated code is not valid Go: %v", parseErr)
+	}
+}
+
+func TestGenerateUnifiedRunner_InsertSelect_SQLite(t *testing.T) {
+	cfg := UnifiedRunnerConfig{
+		ModulePath:  "example.com/myapp",
+		Dialect:     dburl.DialectSQLite,
+		UserQueries: []query.SerializedQuery{makeInsertSelectQuery()},
+	}
+
+	code, err := GenerateUnifiedRunner(cfg)
+	if err != nil {
+		t.Fatalf("GenerateUnifiedRunner failed: %v", err)
+	}
+
+	codeStr := string(code)
+
+	if !strings.Contains(codeStr, "INSERT INTO") {
+		t.Error("expected generated code to contain INSERT INTO")
+	}
+	if !strings.Contains(codeStr, "SELECT") {
+		t.Error("expected generated code to contain SELECT")
+	}
+	if !strings.Contains(codeStr, "?") {
+		t.Error("expected SQLite ? placeholder in generated code")
+	}
+
+	// Verify it's valid Go
+	_, parseErr := parser.ParseFile(token.NewFileSet(), "runner.go", code, parser.AllErrors)
+	if parseErr != nil {
+		t.Fatalf("generated code is not valid Go: %v", parseErr)
+	}
+}
+
+func TestGenerateUnifiedRunner_InsertSelect_WithReturning_Postgres(t *testing.T) {
+	q := makeInsertSelectQuery()
+	q.Name = "InsertFromSourceReturning"
+	q.ReturnType = query.ReturnOne
+	q.AST.Returning = []query.SerializedColumn{
+		{Table: "target", Name: "id", GoType: "int64"},
+	}
+
+	cfg := UnifiedRunnerConfig{
+		ModulePath:  "example.com/myapp",
+		Dialect:     dburl.DialectPostgres,
+		UserQueries: []query.SerializedQuery{q},
+	}
+
+	code, err := GenerateUnifiedRunner(cfg)
+	if err != nil {
+		t.Fatalf("GenerateUnifiedRunner failed: %v", err)
+	}
+
+	codeStr := string(code)
+
+	if !strings.Contains(codeStr, "RETURNING") {
+		t.Error("expected generated code to contain RETURNING")
+	}
+	if !strings.Contains(codeStr, "INSERT INTO") {
+		t.Error("expected generated code to contain INSERT INTO")
+	}
+	if !strings.Contains(codeStr, "SELECT") {
+		t.Error("expected generated code to contain SELECT")
+	}
+
+	// Verify it's valid Go
+	_, parseErr := parser.ParseFile(token.NewFileSet(), "runner.go", code, parser.AllErrors)
+	if parseErr != nil {
+		t.Fatalf("generated code is not valid Go: %v", parseErr)
+	}
+}
+
+func TestGenerateUnifiedRunner_InsertSelect_WithCTE_Postgres(t *testing.T) {
+	q := query.SerializedQuery{
+		Name:       "InsertFromCTE",
+		ReturnType: query.ReturnExec,
+		AST: &query.SerializedAST{
+			Kind:      "insert",
+			FromTable: query.SerializedTableRef{Name: "target"},
+			CTEs: []query.SerializedCTE{
+				{
+					Name: "filtered",
+					Query: &query.SerializedAST{
+						Kind:      "select",
+						FromTable: query.SerializedTableRef{Name: "users"},
+						SelectCols: []query.SerializedSelectExpr{
+							{Expr: query.SerializedExpr{
+								Type:   "column",
+								Column: &query.SerializedColumn{Table: "users", Name: "name", GoType: "string"},
+							}},
+							{Expr: query.SerializedExpr{
+								Type:   "column",
+								Column: &query.SerializedColumn{Table: "users", Name: "email", GoType: "string"},
+							}},
+						},
+						Where: &query.SerializedExpr{
+							Type: "binary",
+							Binary: &query.SerializedBinary{
+								Left: query.SerializedExpr{
+									Type:   "column",
+									Column: &query.SerializedColumn{Table: "users", Name: "active", GoType: "bool"},
+								},
+								Op: "=",
+								Right: query.SerializedExpr{
+									Type:  "param",
+									Param: &query.SerializedParam{Name: "active", GoType: "bool"},
+								},
+							},
+						},
+					},
+				},
+			},
+			InsertCols: []query.SerializedColumn{
+				{Table: "target", Name: "name", GoType: "string"},
+				{Table: "target", Name: "email", GoType: "string"},
+			},
+			InsertSource: &query.SerializedAST{
+				Kind:      "select",
+				FromTable: query.SerializedTableRef{Name: "filtered"},
+				SelectCols: []query.SerializedSelectExpr{
+					{Expr: query.SerializedExpr{
+						Type:   "column",
+						Column: &query.SerializedColumn{Table: "filtered", Name: "name", GoType: "string"},
+					}},
+					{Expr: query.SerializedExpr{
+						Type:   "column",
+						Column: &query.SerializedColumn{Table: "filtered", Name: "email", GoType: "string"},
+					}},
+				},
+			},
+			Params: []query.SerializedParamInfo{
+				{Name: "active", GoType: "bool"},
+			},
+		},
+	}
+
+	cfg := UnifiedRunnerConfig{
+		ModulePath:  "example.com/myapp",
+		Dialect:     dburl.DialectPostgres,
+		UserQueries: []query.SerializedQuery{q},
+	}
+
+	code, err := GenerateUnifiedRunner(cfg)
+	if err != nil {
+		t.Fatalf("GenerateUnifiedRunner failed: %v", err)
+	}
+
+	codeStr := string(code)
+
+	if !strings.Contains(codeStr, "WITH") {
+		t.Error("expected generated code to contain WITH (CTE)")
+	}
+	if !strings.Contains(codeStr, "INSERT INTO") {
+		t.Error("expected generated code to contain INSERT INTO")
+	}
+	if !strings.Contains(codeStr, "SELECT") {
+		t.Error("expected generated code to contain SELECT")
+	}
+
+	// Verify it's valid Go
+	_, parseErr := parser.ParseFile(token.NewFileSet(), "runner.go", code, parser.AllErrors)
+	if parseErr != nil {
+		t.Fatalf("generated code is not valid Go: %v", parseErr)
+	}
+}
+
+func TestGenerateUnifiedRunner_InsertSelect_NoParams(t *testing.T) {
+	q := query.SerializedQuery{
+		Name:       "InsertAllFromSource",
+		ReturnType: query.ReturnExec,
+		AST: &query.SerializedAST{
+			Kind:      "insert",
+			FromTable: query.SerializedTableRef{Name: "target"},
+			InsertCols: []query.SerializedColumn{
+				{Table: "target", Name: "name", GoType: "string"},
+				{Table: "target", Name: "email", GoType: "string"},
+			},
+			InsertSource: &query.SerializedAST{
+				Kind:      "select",
+				FromTable: query.SerializedTableRef{Name: "source"},
+				SelectCols: []query.SerializedSelectExpr{
+					{Expr: query.SerializedExpr{
+						Type:   "column",
+						Column: &query.SerializedColumn{Table: "source", Name: "name", GoType: "string"},
+					}},
+					{Expr: query.SerializedExpr{
+						Type:   "column",
+						Column: &query.SerializedColumn{Table: "source", Name: "email", GoType: "string"},
+					}},
+				},
+			},
+			Params: []query.SerializedParamInfo{},
+		},
+	}
+
+	cfg := UnifiedRunnerConfig{
+		ModulePath:  "example.com/myapp",
+		Dialect:     dburl.DialectPostgres,
+		UserQueries: []query.SerializedQuery{q},
+	}
+
+	code, err := GenerateUnifiedRunner(cfg)
+	if err != nil {
+		t.Fatalf("GenerateUnifiedRunner failed: %v", err)
+	}
+
+	if len(code) == 0 {
+		t.Error("expected non-empty generated code")
+	}
+
+	// Verify it's valid Go
+	_, parseErr := parser.ParseFile(token.NewFileSet(), "runner.go", code, parser.AllErrors)
+	if parseErr != nil {
+		t.Fatalf("generated code is not valid Go: %v", parseErr)
+	}
+}
+
+func TestGenerateUnifiedRunner_InsertSelect_BulkExec_Rejected(t *testing.T) {
+	q := makeInsertSelectQuery()
+	q.Name = "InsertSelectBulk"
+	q.ReturnType = query.ReturnBulkExec
+
+	cfg := UnifiedRunnerConfig{
+		ModulePath:  "example.com/myapp",
+		Dialect:     dburl.DialectPostgres,
+		UserQueries: []query.SerializedQuery{q},
+	}
+
+	_, err := GenerateUnifiedRunner(cfg)
+	if err == nil {
+		t.Fatal("expected error for INSERT ... SELECT with ReturnBulkExec, got nil")
+	}
+	if !strings.Contains(err.Error(), "ReturnBulkExec") {
+		t.Errorf("expected error to mention ReturnBulkExec, got: %v", err)
+	}
+}
+
+func TestGenerateUnifiedRunner_InsertSelect_MySQL_Returning_Rejected(t *testing.T) {
+	q := makeInsertSelectQuery()
+	q.Name = "InsertSelectReturningMySQL"
+	q.ReturnType = query.ReturnOne
+	q.AST.Returning = []query.SerializedColumn{
+		{Table: "target", Name: "id", GoType: "int64"},
+	}
+
+	cfg := UnifiedRunnerConfig{
+		ModulePath:  "example.com/myapp",
+		Dialect:     dburl.DialectMySQL,
+		UserQueries: []query.SerializedQuery{q},
+	}
+
+	_, err := GenerateUnifiedRunner(cfg)
+	if err == nil {
+		t.Fatal("expected error for INSERT ... SELECT ... RETURNING on MySQL, got nil")
+	}
+	if !strings.Contains(err.Error(), "not supported on MySQL") {
+		t.Errorf("expected error to mention 'not supported on MySQL', got: %v", err)
+	}
+}
+
+func TestGenerateSharedTypes_InsertSelect(t *testing.T) {
+	cfg := UnifiedRunnerConfig{
+		ModulePath:  "example.com/myapp",
+		Dialect:     dburl.DialectPostgres,
+		UserQueries: []query.SerializedQuery{makeInsertSelectQuery()},
+	}
+
+	code, err := GenerateSharedTypes(cfg)
+	if err != nil {
+		t.Fatalf("GenerateSharedTypes failed: %v", err)
+	}
+
+	codeStr := string(code)
+
+	// Should have params struct
+	if !strings.Contains(codeStr, "type InsertFromSourceParams struct") {
+		t.Error("expected InsertFromSourceParams struct in generated types")
+	}
+
+	// Params struct should have the Status field from the source WHERE clause
+	if !strings.Contains(codeStr, "Status") {
+		t.Error("expected Status field in InsertFromSourceParams")
+	}
+	if !strings.Contains(codeStr, "string") {
+		t.Error("expected string type for Status param")
+	}
+
+	// Should NOT have a result struct (exec doesn't return rows)
+	if strings.Contains(codeStr, "InsertFromSourceResult") {
+		t.Error("exec query should NOT have a result struct")
+	}
+
+	// Verify it's valid Go
+	_, parseErr := parser.ParseFile(token.NewFileSet(), "types.go", code, parser.AllErrors)
+	if parseErr != nil {
+		t.Fatalf("generated types code is not valid Go: %v", parseErr)
+	}
+}
+
+func TestGenerateUnifiedRunner_InsertSelect_FormatValidation(t *testing.T) {
+	dialects := []string{dburl.DialectPostgres, dburl.DialectMySQL, dburl.DialectSQLite}
+	for _, dialect := range dialects {
+		t.Run(dialect, func(t *testing.T) {
+			cfg := UnifiedRunnerConfig{
+				ModulePath:  "example.com/myapp",
+				Dialect:     dialect,
+				UserQueries: []query.SerializedQuery{makeInsertSelectQuery()},
+			}
+
+			code, err := GenerateUnifiedRunner(cfg)
+			if err != nil {
+				t.Fatalf("GenerateUnifiedRunner failed for %s: %v", dialect, err)
+			}
+
+			if len(code) == 0 {
+				t.Errorf("generated code is empty for %s", dialect)
+			}
+
+			// Verify go/parser accepts the output
+			_, parseErr := parser.ParseFile(token.NewFileSet(), "runner.go", code, parser.AllErrors)
+			if parseErr != nil {
+				t.Fatalf("generated code for %s is not valid Go: %v", dialect, parseErr)
+			}
+		})
 	}
 }

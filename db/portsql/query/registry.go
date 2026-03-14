@@ -15,6 +15,9 @@ const (
 	ReturnMany QueryReturnType = "many"
 	// ReturnExec indicates a query executes without returning rows (sql.Result).
 	ReturnExec QueryReturnType = "exec"
+	// ReturnBulkExec indicates a bulk insert/update that executes without
+	// returning rows. The generated method accepts a slice of param structs.
+	ReturnBulkExec QueryReturnType = "bulk_exec"
 	// ReturnPaginated indicates a query returns cursor-paginated results.
 	// The runner generates cursor types, encode/decode helpers, and a method
 	// that handles LIMIT+1, cursor WHERE injection, and NextCursor computation.
@@ -199,6 +202,41 @@ func MustDefinePaginatedDesc(name string, ast *AST, cursorCols ...Column) *AST {
 		exprs[i] = OrderByExpr{Expr: ColumnExpr{Column: col}, Desc: true}
 	}
 	return MustDefinePaginated(name, ast, exprs...)
+}
+
+// MustDefineBulkExec registers a bulk insert query.
+// The generated method accepts []Params and executes a multi-row INSERT.
+//
+// MustDefineBulkExec panics if:
+//   - name is empty
+//   - ast is nil
+//   - a query with the same name is already registered
+//
+// The AST should contain a single "template" row in InsertRows. At code
+// generation time, this template is used to derive the per-row parameter
+// shape. At runtime the generated method accepts a []Params slice and
+// builds the multi-row INSERT dynamically.
+//
+//	func init() {
+//	    query.MustDefineBulkExec("BulkInsertAuthors",
+//	        query.InsertInto(schema.Authors).
+//	            Columns(schema.Authors.Name(), schema.Authors.Email()).
+//	            AddRow(query.Param[string]("name"), query.Param[string]("email")).
+//	            Build(),
+//	    )
+//	}
+//
+// The generated method will accept a []BulkInsertAuthorsParams slice and
+// build the multi-row INSERT at runtime.
+func MustDefineBulkExec(name string, ast *AST) *AST {
+	return mustDefineQuery(name, ast, ReturnBulkExec)
+}
+
+// TryDefineBulkExec registers a bulk insert query.
+// Unlike MustDefineBulkExec, this returns an error instead of panicking.
+// Use this in tools or tests where you want to handle registration errors gracefully.
+func TryDefineBulkExec(name string, ast *AST) (*AST, error) {
+	return tryDefineQuery(name, ast, ReturnBulkExec)
 }
 
 // =============================================================================

@@ -23,9 +23,9 @@ type ASTJson struct {
 	Limit      *ExprJson         `json:"limit,omitempty"`
 	Offset     *ExprJson         `json:"offset,omitempty"`
 
-	InsertCols []ColumnJson `json:"insert_cols,omitempty"`
-	InsertVals []*ExprJson  `json:"insert_vals,omitempty"`
-	Returning  []ColumnJson `json:"returning,omitempty"`
+	InsertCols []ColumnJson  `json:"insert_cols,omitempty"`
+	InsertRows [][]*ExprJson `json:"insert_rows,omitempty"`
+	Returning  []ColumnJson  `json:"returning,omitempty"`
 
 	SetClauses []SetClauseJson `json:"set_clauses,omitempty"`
 
@@ -227,13 +227,17 @@ func (ast *AST) ToJSON() (*ASTJson, error) {
 		j.InsertCols = append(j.InsertCols, columnToJSON(col))
 	}
 
-	// Convert INSERT values
-	for _, val := range ast.InsertVals {
-		valJson, err := exprToJSON(val)
-		if err != nil {
-			return nil, err
+	// Convert INSERT values (all rows)
+	for _, row := range ast.InsertRows {
+		var rowJson []*ExprJson
+		for _, val := range row {
+			valJson, err := exprToJSON(val)
+			if err != nil {
+				return nil, err
+			}
+			rowJson = append(rowJson, valJson)
 		}
-		j.InsertVals = append(j.InsertVals, valJson)
+		j.InsertRows = append(j.InsertRows, rowJson)
 	}
 
 	// Convert RETURNING
@@ -535,13 +539,17 @@ func (j *ASTJson) FromJSON() (*AST, error) {
 		ast.InsertCols = append(ast.InsertCols, col.ToColumn())
 	}
 
-	// Convert INSERT values
-	for _, val := range j.InsertVals {
-		valExpr, err := val.FromJSON()
-		if err != nil {
-			return nil, err
+	// Convert INSERT values (all rows)
+	for _, rowJson := range j.InsertRows {
+		var row []Expr
+		for _, val := range rowJson {
+			valExpr, err := val.FromJSON()
+			if err != nil {
+				return nil, err
+			}
+			row = append(row, valExpr)
 		}
-		ast.InsertVals = append(ast.InsertVals, valExpr)
+		ast.InsertRows = append(ast.InsertRows, row)
 	}
 
 	// Convert RETURNING

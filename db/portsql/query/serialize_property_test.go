@@ -68,6 +68,31 @@ func TestProperty_SerializeDeserialize_Roundtrip(t *testing.T) {
 		if (deserialized.Where == nil) != (ast.Where == nil) {
 			t.Errorf("iteration %d: Where presence mismatch", i)
 		}
+		// Verify InsertRows structure preserved (row count and per-row value count)
+		if len(deserialized.InsertRows) != len(ast.InsertRows) {
+			t.Errorf("iteration %d: InsertRows length mismatch: got %d, want %d", i, len(deserialized.InsertRows), len(ast.InsertRows))
+		} else {
+			for ri, row := range ast.InsertRows {
+				if len(deserialized.InsertRows[ri]) != len(row) {
+					t.Errorf("iteration %d: InsertRows[%d] length mismatch: got %d, want %d",
+						i, ri, len(deserialized.InsertRows[ri]), len(row))
+				}
+			}
+		}
+		// Verify InsertSource preserved
+		if (deserialized.InsertSource == nil) != (ast.InsertSource == nil) {
+			t.Errorf("iteration %d: InsertSource presence mismatch", i)
+		}
+		if ast.InsertSource != nil && deserialized.InsertSource != nil {
+			if deserialized.InsertSource.Kind != ast.InsertSource.Kind {
+				t.Errorf("iteration %d: InsertSource.Kind mismatch: got %q, want %q",
+					i, deserialized.InsertSource.Kind, ast.InsertSource.Kind)
+			}
+			if deserialized.InsertSource.FromTable.Name != ast.InsertSource.FromTable.Name {
+				t.Errorf("iteration %d: InsertSource.FromTable.Name mismatch: got %q, want %q",
+					i, deserialized.InsertSource.FromTable.Name, ast.InsertSource.FromTable.Name)
+			}
+		}
 	}
 }
 
@@ -298,10 +323,40 @@ func generateRandomAST(gen *proptest.Generator) *AST {
 	if kind == InsertQuery {
 		numCols := gen.IntRange(1, 4)
 		ast.InsertCols = make([]Column, numCols)
-		ast.InsertVals = make([]Expr, numCols)
+		colNames := make([]string, numCols)
 		for i := 0; i < numCols; i++ {
-			ast.InsertCols[i] = StringColumn{Table: ast.FromTable.Name, Name: gen.Identifier(20)}
-			ast.InsertVals[i] = generateRandomExpr(gen, 1)
+			colNames[i] = gen.Identifier(20)
+			ast.InsertCols[i] = StringColumn{Table: ast.FromTable.Name, Name: colNames[i]}
+		}
+
+		if gen.Float64() < 0.4 {
+			// INSERT ... SELECT
+			sourceTable := gen.Identifier(20)
+			sourceCols := make([]SelectExpr, numCols)
+			for i := 0; i < numCols; i++ {
+				sourceCols[i] = SelectExpr{
+					Expr: ColumnExpr{Column: StringColumn{Table: sourceTable, Name: gen.Identifier(20)}},
+				}
+			}
+			ast.InsertSource = &AST{
+				Kind:       SelectQuery,
+				FromTable:  TableRef{Name: sourceTable},
+				SelectCols: sourceCols,
+			}
+			if gen.Float64() < 0.5 {
+				ast.InsertSource.Where = generateLeafExpr(gen)
+			}
+		} else {
+			// VALUES-based insert
+			numRows := gen.IntRange(1, 4)
+			ast.InsertRows = make([][]Expr, numRows)
+			for r := 0; r < numRows; r++ {
+				row := make([]Expr, numCols)
+				for c := 0; c < numCols; c++ {
+					row[c] = generateRandomExpr(gen, 1)
+				}
+				ast.InsertRows[r] = row
+			}
 		}
 	}
 

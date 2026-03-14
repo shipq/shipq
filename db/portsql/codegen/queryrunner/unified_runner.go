@@ -242,6 +242,13 @@ type userQueryInfo struct {
 	CursorSQL        string                   // SQL with cursor WHERE clause injected
 	CursorParamOrder []string                 // Parameter names in SQL order for cursor SQL
 	CursorColumns    []query.SerializedColumn // Cursor column metadata
+
+	// Bulk insert fields (only set when ReturnType == ReturnBulkExec)
+	BulkPrefix       string   // e.g. `INSERT INTO "t" ("a", "b") VALUES `
+	BulkParamsPerRow int      // number of params per row
+	BulkParamNames   []string // param names per row (template order)
+	BulkSuffix       string   // e.g. ` RETURNING "public_id"` or ""
+	BulkDialect      string   // "postgres", "mysql", "sqlite"
 }
 
 type paramInfo struct {
@@ -295,11 +302,29 @@ func getDialect(dialect string) (compile.Dialect, error) {
 func compileUserQueries(queries []query.SerializedQuery, compiler *compile.Compiler) ([]userQueryInfo, error) {
 	result := make([]userQueryInfo, 0, len(queries))
 
+	dialectName := compiler.DialectName()
+
 	for _, sq := range queries {
 		// Deserialize the AST
 		ast := query.DeserializeAST(sq.AST)
 		if ast == nil {
 			return nil, fmt.Errorf("failed to deserialize AST for query %s", sq.Name)
+		}
+
+		// Reject unsupported INSERT ... SELECT combinations
+		if ast.InsertSource != nil {
+			if sq.ReturnType == query.ReturnBulkExec {
+				return nil, fmt.Errorf(
+					"query %s: INSERT ... SELECT cannot use ReturnBulkExec "+
+						"(row count is determined by the subquery, not a params slice)",
+					sq.Name)
+			}
+			if dialectName == "mysql" && len(sq.AST.Returning) > 0 {
+				return nil, fmt.Errorf(
+					"query %s: INSERT ... SELECT ... RETURNING is not supported on MySQL "+
+						"(MySQL does not support RETURNING)",
+					sq.Name)
+			}
 		}
 
 		// Compile to SQL
@@ -309,7 +334,13 @@ func compileUserQueries(queries []query.SerializedQuery, compiler *compile.Compi
 		}
 
 		// Extract parameters (deduplicated, in definition order)
-		params := extractParams(sq.AST)
+		var params []paramInfo
+		if sq.ReturnType == query.ReturnBulkExec {
+			// For bulk queries, extract params from first row only (template)
+			params = extractBulkParams(sq.AST)
+		} else {
+			params = extractParams(sq.AST)
+		}
 
 		// Extract result columns for SELECT queries
 		var results []resultInfo
@@ -327,6 +358,13 @@ func compileUserQueries(queries []query.SerializedQuery, compiler *compile.Compi
 			ParamOrder:   paramOrder,
 			Params:       params,
 			Results:      results,
+		}
+
+		// For bulk exec queries, compute the prefix/suffix/template parts
+		if sq.ReturnType == query.ReturnBulkExec {
+			if err := compileBulkInsertParts(&qi, ast, compiler, dialectName); err != nil {
+				return nil, fmt.Errorf("failed to compile bulk insert parts for query %s: %w", sq.Name, err)
+			}
 		}
 
 		// For paginated queries, recompile the base SQL with ORDER BY + LIMIT,
@@ -472,6 +510,57 @@ func buildCursorWhereExpr(cols []query.SerializedColumn) query.Expr {
 	}
 }
 
+// compileBulkInsertParts computes the prefix, per-row param count/names, and suffix
+// for a bulk insert query. It splits the compiled single-row SQL at " VALUES "
+// and extracts the per-row template.
+func compileBulkInsertParts(qi *userQueryInfo, ast *query.AST, compiler *compile.Compiler, dialectName string) error {
+	// The SQL was compiled with the template row(s). We need to extract the prefix and suffix.
+	// Strategy: compile a single-row version, then split on " VALUES "
+	singleRowAST := *ast
+	if len(ast.InsertRows) > 0 {
+		singleRowAST.InsertRows = ast.InsertRows[:1] // just the first row
+	}
+	singleSQL, singleParamOrder, err := compiler.Compile(&singleRowAST)
+	if err != nil {
+		return fmt.Errorf("compiling single-row template: %w", err)
+	}
+
+	// Split on " VALUES "
+	valuesIdx := strings.Index(singleSQL, " VALUES ")
+	if valuesIdx == -1 {
+		return fmt.Errorf("could not find VALUES clause in compiled SQL: %s", singleSQL)
+	}
+
+	qi.BulkPrefix = singleSQL[:valuesIdx+len(" VALUES ")]
+	qi.BulkParamsPerRow = len(singleParamOrder)
+	qi.BulkParamNames = singleParamOrder
+	qi.BulkDialect = dialectName
+
+	// The suffix is everything after the closing paren of the VALUES tuple.
+	// For single-row: "INSERT INTO t (a) VALUES ($1) RETURNING id"
+	// The values part is everything from " VALUES " to the end, minus the suffix.
+	afterValues := singleSQL[valuesIdx+len(" VALUES "):]
+	// Find the closing paren of the tuple
+	parenDepth := 0
+	suffixStart := -1
+	for i, ch := range afterValues {
+		if ch == '(' {
+			parenDepth++
+		} else if ch == ')' {
+			parenDepth--
+			if parenDepth == 0 {
+				suffixStart = i + 1
+				break
+			}
+		}
+	}
+	if suffixStart >= 0 && suffixStart < len(afterValues) {
+		qi.BulkSuffix = afterValues[suffixStart:]
+	}
+
+	return nil
+}
+
 func extractParams(ast *query.SerializedAST) []paramInfo {
 	if ast == nil {
 		return nil
@@ -504,6 +593,34 @@ func extractParams(ast *query.SerializedAST) []paramInfo {
 			}
 		}
 	})
+
+	return params
+}
+
+// extractBulkParams extracts unique parameters from the first row of InsertRows only.
+// For bulk queries, all rows have the same parameter shape by definition.
+func extractBulkParams(ast *query.SerializedAST) []paramInfo {
+	if ast == nil || len(ast.InsertRows) == 0 {
+		return nil
+	}
+
+	seen := make(map[string]bool)
+	var params []paramInfo
+
+	firstRow := ast.InsertRows[0]
+	for i := range firstRow {
+		walkSerializedExpr(&firstRow[i], func(expr *query.SerializedExpr) {
+			if expr.Type == "param" && expr.Param != nil {
+				if !seen[expr.Param.Name] {
+					seen[expr.Param.Name] = true
+					params = append(params, paramInfo{
+						Name:   expr.Param.Name,
+						GoType: expr.Param.GoType,
+					})
+				}
+			}
+		})
+	}
 
 	return params
 }
@@ -749,9 +866,16 @@ func walkSerializedAST(ast *query.SerializedAST, fn func(*query.SerializedExpr))
 		walkSerializedExpr(ast.Offset, fn)
 	}
 
-	// Walk insert values
-	for i := range ast.InsertVals {
-		walkSerializedExpr(&ast.InsertVals[i], fn)
+	// Walk INSERT values (all rows)
+	for ri := range ast.InsertRows {
+		for ci := range ast.InsertRows[ri] {
+			walkSerializedExpr(&ast.InsertRows[ri][ci], fn)
+		}
+	}
+
+	// Walk INSERT source query (INSERT ... SELECT)
+	if ast.InsertSource != nil {
+		walkSerializedAST(ast.InsertSource, fn)
 	}
 
 	// Walk set clauses
@@ -826,6 +950,16 @@ func collectRunnerImports(cfg UnifiedRunnerConfig, queries []userQueryInfo) map[
 	// Types package import
 	imports[cfg.ModulePath+"/shipq/queries"] = true
 
+	// Bulk exec queries need strings and fmt for runtime SQL building
+	for _, qi := range queries {
+		if qi.ReturnType == query.ReturnBulkExec {
+			imports["strings"] = true
+			imports["fmt"] = true
+			imports["database/sql/driver"] = true
+			break
+		}
+	}
+
 	// SQLite needs extra imports for scan helpers (parseSQLiteTime, etc.)
 	// Non-SQLite dialects reference time.Time and json.RawMessage only via the
 	// shared queries package types, so the runner itself doesn't import them.
@@ -874,7 +1008,7 @@ func collectTypesImports(queries []userQueryInfo, cfg UnifiedRunnerConfig) map[s
 	// Check user queries
 	for _, qi := range queries {
 		// Runner interface needs database/sql for Exec-type queries
-		if qi.ReturnType == query.ReturnExec {
+		if qi.ReturnType == query.ReturnExec || qi.ReturnType == query.ReturnBulkExec {
 			imports["database/sql"] = true
 		}
 		for _, p := range qi.Params {
@@ -978,11 +1112,20 @@ type QueryRunner struct {
 	if len(queries) > 0 {
 		buf.WriteString("\t// User-defined query SQL\n")
 		for _, qi := range queries {
-			fieldName := dbstrings.ToLowerCamel(qi.Name) + "SQL"
-			buf.WriteString(fmt.Sprintf("\t%s string\n", fieldName))
-			if qi.ReturnType == query.ReturnPaginated {
-				cursorFieldName := dbstrings.ToLowerCamel(qi.Name) + "CursorSQL"
-				buf.WriteString(fmt.Sprintf("\t%s string\n", cursorFieldName))
+			if qi.ReturnType == query.ReturnBulkExec {
+				prefix := dbstrings.ToLowerCamel(qi.Name) + "BulkPrefix"
+				suffix := dbstrings.ToLowerCamel(qi.Name) + "BulkSuffix"
+				ppr := dbstrings.ToLowerCamel(qi.Name) + "BulkParamsPerRow"
+				buf.WriteString(fmt.Sprintf("\t%s string\n", prefix))
+				buf.WriteString(fmt.Sprintf("\t%s string\n", suffix))
+				buf.WriteString(fmt.Sprintf("\t%s int\n", ppr))
+			} else {
+				fieldName := dbstrings.ToLowerCamel(qi.Name) + "SQL"
+				buf.WriteString(fmt.Sprintf("\t%s string\n", fieldName))
+				if qi.ReturnType == query.ReturnPaginated {
+					cursorFieldName := dbstrings.ToLowerCamel(qi.Name) + "CursorSQL"
+					buf.WriteString(fmt.Sprintf("\t%s string\n", cursorFieldName))
+				}
 			}
 		}
 	}
@@ -1003,11 +1146,20 @@ func NewQueryRunner(db Querier) *QueryRunner {
 	if len(queries) > 0 {
 		buf.WriteString("\t\t// User-defined queries\n")
 		for _, qi := range queries {
-			fieldName := dbstrings.ToLowerCamel(qi.Name) + "SQL"
-			buf.WriteString(fmt.Sprintf("\t\t%s: %q,\n", fieldName, qi.SQL))
-			if qi.ReturnType == query.ReturnPaginated {
-				cursorFieldName := dbstrings.ToLowerCamel(qi.Name) + "CursorSQL"
-				buf.WriteString(fmt.Sprintf("\t\t%s: %q,\n", cursorFieldName, qi.CursorSQL))
+			if qi.ReturnType == query.ReturnBulkExec {
+				prefix := dbstrings.ToLowerCamel(qi.Name) + "BulkPrefix"
+				suffix := dbstrings.ToLowerCamel(qi.Name) + "BulkSuffix"
+				ppr := dbstrings.ToLowerCamel(qi.Name) + "BulkParamsPerRow"
+				buf.WriteString(fmt.Sprintf("\t\t%s: %q,\n", prefix, qi.BulkPrefix))
+				buf.WriteString(fmt.Sprintf("\t\t%s: %q,\n", suffix, qi.BulkSuffix))
+				buf.WriteString(fmt.Sprintf("\t\t%s: %d,\n", ppr, qi.BulkParamsPerRow))
+			} else {
+				fieldName := dbstrings.ToLowerCamel(qi.Name) + "SQL"
+				buf.WriteString(fmt.Sprintf("\t\t%s: %q,\n", fieldName, qi.SQL))
+				if qi.ReturnType == query.ReturnPaginated {
+					cursorFieldName := dbstrings.ToLowerCamel(qi.Name) + "CursorSQL"
+					buf.WriteString(fmt.Sprintf("\t\t%s: %q,\n", cursorFieldName, qi.CursorSQL))
+				}
 			}
 		}
 	}
@@ -1027,11 +1179,20 @@ func (r *QueryRunner) WithTx(tx *sql.Tx) *QueryRunner {
 	// Copy all query SQL (user-defined and CRUD queries are unified)
 	if len(queries) > 0 {
 		for _, qi := range queries {
-			fieldName := dbstrings.ToLowerCamel(qi.Name) + "SQL"
-			buf.WriteString(fmt.Sprintf("\t\t%s: r.%s,\n", fieldName, fieldName))
-			if qi.ReturnType == query.ReturnPaginated {
-				cursorFieldName := dbstrings.ToLowerCamel(qi.Name) + "CursorSQL"
-				buf.WriteString(fmt.Sprintf("\t\t%s: r.%s,\n", cursorFieldName, cursorFieldName))
+			if qi.ReturnType == query.ReturnBulkExec {
+				prefix := dbstrings.ToLowerCamel(qi.Name) + "BulkPrefix"
+				suffix := dbstrings.ToLowerCamel(qi.Name) + "BulkSuffix"
+				ppr := dbstrings.ToLowerCamel(qi.Name) + "BulkParamsPerRow"
+				buf.WriteString(fmt.Sprintf("\t\t%s: r.%s,\n", prefix, prefix))
+				buf.WriteString(fmt.Sprintf("\t\t%s: r.%s,\n", suffix, suffix))
+				buf.WriteString(fmt.Sprintf("\t\t%s: r.%s,\n", ppr, ppr))
+			} else {
+				fieldName := dbstrings.ToLowerCamel(qi.Name) + "SQL"
+				buf.WriteString(fmt.Sprintf("\t\t%s: r.%s,\n", fieldName, fieldName))
+				if qi.ReturnType == query.ReturnPaginated {
+					cursorFieldName := dbstrings.ToLowerCamel(qi.Name) + "CursorSQL"
+					buf.WriteString(fmt.Sprintf("\t\t%s: r.%s,\n", cursorFieldName, cursorFieldName))
+				}
 			}
 		}
 	}
@@ -1076,11 +1237,20 @@ func (r *QueryRunner) WithDB(db Querier) *QueryRunner {
 	// Copy all query SQL (user-defined and CRUD queries are unified)
 	if len(queries) > 0 {
 		for _, qi := range queries {
-			fieldName := dbstrings.ToLowerCamel(qi.Name) + "SQL"
-			buf.WriteString(fmt.Sprintf("\t\t%s: r.%s,\n", fieldName, fieldName))
-			if qi.ReturnType == query.ReturnPaginated {
-				cursorFieldName := dbstrings.ToLowerCamel(qi.Name) + "CursorSQL"
-				buf.WriteString(fmt.Sprintf("\t\t%s: r.%s,\n", cursorFieldName, cursorFieldName))
+			if qi.ReturnType == query.ReturnBulkExec {
+				prefix := dbstrings.ToLowerCamel(qi.Name) + "BulkPrefix"
+				suffix := dbstrings.ToLowerCamel(qi.Name) + "BulkSuffix"
+				ppr := dbstrings.ToLowerCamel(qi.Name) + "BulkParamsPerRow"
+				buf.WriteString(fmt.Sprintf("\t\t%s: r.%s,\n", prefix, prefix))
+				buf.WriteString(fmt.Sprintf("\t\t%s: r.%s,\n", suffix, suffix))
+				buf.WriteString(fmt.Sprintf("\t\t%s: r.%s,\n", ppr, ppr))
+			} else {
+				fieldName := dbstrings.ToLowerCamel(qi.Name) + "SQL"
+				buf.WriteString(fmt.Sprintf("\t\t%s: r.%s,\n", fieldName, fieldName))
+				if qi.ReturnType == query.ReturnPaginated {
+					cursorFieldName := dbstrings.ToLowerCamel(qi.Name) + "CursorSQL"
+					buf.WriteString(fmt.Sprintf("\t\t%s: r.%s,\n", cursorFieldName, cursorFieldName))
+				}
 			}
 		}
 	}
@@ -1092,6 +1262,10 @@ func writeUserQueryMethod(buf *bytes.Buffer, qi userQueryInfo, cfg UnifiedRunner
 	typesPackage := "queries"
 
 	switch qi.ReturnType {
+	case query.ReturnBulkExec:
+		writeBulkExecMethod(buf, qi, cfg)
+		return nil
+
 	case query.ReturnOne:
 		// Returns (*Result, error)
 		paramType := fmt.Sprintf("%s.%sParams", typesPackage, qi.Name)
@@ -1579,6 +1753,66 @@ func sqliteScanType(goType string) string {
 	}
 }
 
+// writeBulkExecMethod generates the bulk insert method that builds SQL at runtime.
+func writeBulkExecMethod(buf *bytes.Buffer, qi userQueryInfo, cfg UnifiedRunnerConfig) {
+	typesPackage := "queries"
+	paramType := fmt.Sprintf("%s.%sParams", typesPackage, qi.Name)
+	prefixField := dbstrings.ToLowerCamel(qi.Name) + "BulkPrefix"
+	suffixField := dbstrings.ToLowerCamel(qi.Name) + "BulkSuffix"
+	pprField := dbstrings.ToLowerCamel(qi.Name) + "BulkParamsPerRow"
+
+	buf.WriteString(fmt.Sprintf("// %s executes a multi-row INSERT.\n", qi.Name))
+	buf.WriteString(fmt.Sprintf("// Pass an empty slice for a no-op (returns driver.RowsAffected(0)).\n"))
+	buf.WriteString(fmt.Sprintf("func (r *QueryRunner) %s(ctx context.Context, params []%s) (sql.Result, error) {\n", qi.Name, paramType))
+	buf.WriteString("\tif len(params) == 0 {\n")
+	buf.WriteString("\t\treturn driver.RowsAffected(0), nil\n")
+	buf.WriteString("\t}\n\n")
+
+	// Build SQL and args at runtime
+	buf.WriteString("\tvar sb strings.Builder\n")
+	buf.WriteString(fmt.Sprintf("\tsb.WriteString(r.%s)\n", prefixField))
+	buf.WriteString(fmt.Sprintf("\targs := make([]any, 0, len(params)*r.%s)\n", pprField))
+	buf.WriteString("\tfor i, p := range params {\n")
+	buf.WriteString("\t\tif i > 0 {\n")
+	buf.WriteString("\t\t\tsb.WriteString(\", \")\n")
+	buf.WriteString("\t\t}\n")
+
+	isPostgres := cfg.Dialect == "postgres"
+
+	if isPostgres {
+		// Postgres needs $N placeholders renumbered per row
+		buf.WriteString(fmt.Sprintf("\t\tbase := i * r.%s\n", pprField))
+		buf.WriteString("\t\tsb.WriteString(\"(\")\n")
+		buf.WriteString(fmt.Sprintf("\t\tfor j := 0; j < r.%s; j++ {\n", pprField))
+		buf.WriteString("\t\t\tif j > 0 {\n")
+		buf.WriteString("\t\t\t\tsb.WriteString(\", \")\n")
+		buf.WriteString("\t\t\t}\n")
+		buf.WriteString("\t\t\tfmt.Fprintf(&sb, \"$%d\", base+j+1)\n")
+		buf.WriteString("\t\t}\n")
+		buf.WriteString("\t\tsb.WriteString(\")\")\n")
+	} else {
+		// MySQL/SQLite: all placeholders are ?, so the row template is static
+		buf.WriteString("\t\tsb.WriteString(\"(\")\n")
+		buf.WriteString(fmt.Sprintf("\t\tfor j := 0; j < r.%s; j++ {\n", pprField))
+		buf.WriteString("\t\t\tif j > 0 {\n")
+		buf.WriteString("\t\t\t\tsb.WriteString(\", \")\n")
+		buf.WriteString("\t\t\t}\n")
+		buf.WriteString("\t\t\tsb.WriteString(\"?\")\n")
+		buf.WriteString("\t\t}\n")
+		buf.WriteString("\t\tsb.WriteString(\")\")\n")
+	}
+
+	// Append args from the params struct in the template order
+	for _, paramName := range qi.BulkParamNames {
+		buf.WriteString(fmt.Sprintf("\t\targs = append(args, p.%s)\n", dbstrings.ToPascalCase(paramName)))
+	}
+
+	buf.WriteString("\t}\n")
+	buf.WriteString(fmt.Sprintf("\tsb.WriteString(r.%s)\n", suffixField))
+	buf.WriteString("\treturn r.db.ExecContext(ctx, sb.String(), args...)\n")
+	buf.WriteString("}\n\n")
+}
+
 func writeUserQueryTypes(buf *bytes.Buffer, qi userQueryInfo) {
 	if qi.ReturnType == query.ReturnPaginated {
 		writePaginatedTypes(buf, qi)
@@ -1587,6 +1821,9 @@ func writeUserQueryTypes(buf *bytes.Buffer, qi userQueryInfo) {
 
 	// Write params struct
 	buf.WriteString(fmt.Sprintf("// %sParams are the parameters for the %s query.\n", qi.Name, qi.Name))
+	if qi.ReturnType == query.ReturnBulkExec {
+		buf.WriteString(fmt.Sprintf("// Each element represents one row in the bulk insert.\n"))
+	}
 	buf.WriteString(fmt.Sprintf("type %sParams struct {\n", qi.Name))
 	for _, p := range qi.Params {
 		buf.WriteString(fmt.Sprintf("\t%s %s\n", dbstrings.ToPascalCase(p.Name), p.GoType))

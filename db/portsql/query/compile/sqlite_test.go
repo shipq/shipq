@@ -288,10 +288,10 @@ func TestSQLite_InsertWithReturning(t *testing.T) {
 		Kind:       query.InsertQuery,
 		FromTable:  query.TableRef{Name: "authors"},
 		InsertCols: []query.Column{publicID, name},
-		InsertVals: []query.Expr{
+		InsertRows: [][]query.Expr{{
 			query.ParamExpr{Name: "public_id", GoType: "string"},
 			query.ParamExpr{Name: "name", GoType: "string"},
-		},
+		}},
 		Returning: []query.Column{publicID},
 	}
 
@@ -318,10 +318,10 @@ func TestSQLite_InsertWithNow(t *testing.T) {
 		Kind:       query.InsertQuery,
 		FromTable:  query.TableRef{Name: "authors"},
 		InsertCols: []query.Column{name, createdAt},
-		InsertVals: []query.Expr{
+		InsertRows: [][]query.Expr{{
 			query.ParamExpr{Name: "name", GoType: "string"},
 			query.FuncExpr{Name: "NOW"},
-		},
+		}},
 	}
 
 	sql, _, err := NewCompiler(SQLite).Compile(ast)
@@ -1096,5 +1096,150 @@ func TestSQLite_UpdateWithSubtraction(t *testing.T) {
 	}
 	if len(params) != 2 || params[0] != "delta" || params[1] != "id" {
 		t.Errorf("expected params [delta, id], got %v", params)
+	}
+}
+
+func TestSQLite_BulkInsert(t *testing.T) {
+	publicID := query.StringColumn{Table: "authors", Name: "public_id"}
+	name := query.StringColumn{Table: "authors", Name: "name"}
+	email := query.StringColumn{Table: "authors", Name: "email"}
+
+	ast := &query.AST{
+		Kind:       query.InsertQuery,
+		FromTable:  query.TableRef{Name: "authors"},
+		InsertCols: []query.Column{name, email},
+		InsertRows: [][]query.Expr{
+			{query.ParamExpr{Name: "name_0", GoType: "string"}, query.ParamExpr{Name: "email_0", GoType: "string"}},
+			{query.ParamExpr{Name: "name_1", GoType: "string"}, query.ParamExpr{Name: "email_1", GoType: "string"}},
+		},
+		Returning: []query.Column{publicID},
+	}
+
+	sql, params, err := NewCompiler(SQLite).Compile(ast)
+	if err != nil {
+		t.Fatalf("Compile failed: %v", err)
+	}
+
+	expected := `INSERT INTO "authors" ("name", "email") VALUES (?, ?), (?, ?) RETURNING "public_id"`
+	if sql != expected {
+		t.Errorf("expected SQL:\n%s\ngot:\n%s", expected, sql)
+	}
+	if len(params) != 4 {
+		t.Errorf("expected 4 params, got %d: %v", len(params), params)
+	}
+}
+
+// =============================================================================
+// INSERT ... SELECT Tests
+// =============================================================================
+
+func TestSQLite_InsertSelect(t *testing.T) {
+	ast := &query.AST{
+		Kind:      query.InsertQuery,
+		FromTable: query.TableRef{Name: "target"},
+		InsertCols: []query.Column{
+			query.StringColumn{Table: "target", Name: "name"},
+			query.StringColumn{Table: "target", Name: "email"},
+		},
+		InsertSource: &query.AST{
+			Kind:      query.SelectQuery,
+			FromTable: query.TableRef{Name: "source"},
+			SelectCols: []query.SelectExpr{
+				{Expr: query.ColumnExpr{Column: query.StringColumn{Table: "source", Name: "name"}}},
+				{Expr: query.ColumnExpr{Column: query.StringColumn{Table: "source", Name: "email"}}},
+			},
+			Where: query.BinaryExpr{
+				Left:  query.ColumnExpr{Column: query.BoolColumn{Table: "source", Name: "active"}},
+				Op:    query.OpEq,
+				Right: query.LiteralExpr{Value: true},
+			},
+		},
+	}
+	sql, params, err := NewCompiler(SQLite).Compile(ast)
+	if err != nil {
+		t.Fatalf("Compile failed: %v", err)
+	}
+	expected := `INSERT INTO "target" ("name", "email") SELECT "source"."name", "source"."email" FROM "source" WHERE ("source"."active" = 1)`
+	if sql != expected {
+		t.Errorf("expected SQL:\n%s\ngot:\n%s", expected, sql)
+	}
+	if len(params) != 0 {
+		t.Errorf("expected no params, got %v", params)
+	}
+}
+
+func TestSQLite_InsertSelect_WithReturning(t *testing.T) {
+	ast := &query.AST{
+		Kind:      query.InsertQuery,
+		FromTable: query.TableRef{Name: "target"},
+		InsertCols: []query.Column{
+			query.StringColumn{Table: "target", Name: "name"},
+			query.StringColumn{Table: "target", Name: "email"},
+		},
+		InsertSource: &query.AST{
+			Kind:      query.SelectQuery,
+			FromTable: query.TableRef{Name: "source"},
+			SelectCols: []query.SelectExpr{
+				{Expr: query.ColumnExpr{Column: query.StringColumn{Table: "source", Name: "name"}}},
+				{Expr: query.ColumnExpr{Column: query.StringColumn{Table: "source", Name: "email"}}},
+			},
+		},
+		Returning: []query.Column{query.Int64Column{Table: "target", Name: "id"}},
+	}
+	sql, _, err := NewCompiler(SQLite).Compile(ast)
+	if err != nil {
+		t.Fatalf("Compile failed: %v", err)
+	}
+	expected := `INSERT INTO "target" ("name", "email") SELECT "source"."name", "source"."email" FROM "source" RETURNING "id"`
+	if sql != expected {
+		t.Errorf("expected SQL:\n%s\ngot:\n%s", expected, sql)
+	}
+}
+
+func TestSQLite_InsertSelect_WithCTE(t *testing.T) {
+	ast := &query.AST{
+		Kind:      query.InsertQuery,
+		FromTable: query.TableRef{Name: "archive"},
+		InsertCols: []query.Column{
+			query.StringColumn{Table: "archive", Name: "name"},
+			query.StringColumn{Table: "archive", Name: "email"},
+		},
+		CTEs: []query.CTE{
+			{
+				Name: "active_users",
+				Query: &query.AST{
+					Kind:      query.SelectQuery,
+					FromTable: query.TableRef{Name: "users"},
+					SelectCols: []query.SelectExpr{
+						{Expr: query.ColumnExpr{Column: query.StringColumn{Table: "users", Name: "name"}}},
+						{Expr: query.ColumnExpr{Column: query.StringColumn{Table: "users", Name: "email"}}},
+					},
+					Where: query.BinaryExpr{
+						Left:  query.ColumnExpr{Column: query.BoolColumn{Table: "users", Name: "active"}},
+						Op:    query.OpEq,
+						Right: query.LiteralExpr{Value: true},
+					},
+				},
+			},
+		},
+		InsertSource: &query.AST{
+			Kind:      query.SelectQuery,
+			FromTable: query.TableRef{Name: "active_users"},
+			SelectCols: []query.SelectExpr{
+				{Expr: query.ColumnExpr{Column: query.StringColumn{Table: "active_users", Name: "name"}}},
+				{Expr: query.ColumnExpr{Column: query.StringColumn{Table: "active_users", Name: "email"}}},
+			},
+		},
+	}
+	sql, params, err := NewCompiler(SQLite).Compile(ast)
+	if err != nil {
+		t.Fatalf("Compile failed: %v", err)
+	}
+	expected := `WITH "active_users" AS (SELECT "users"."name", "users"."email" FROM "users" WHERE ("users"."active" = 1)) INSERT INTO "archive" ("name", "email") SELECT "active_users"."name", "active_users"."email" FROM "active_users"`
+	if sql != expected {
+		t.Errorf("expected SQL:\n%s\ngot:\n%s", expected, sql)
+	}
+	if len(params) != 0 {
+		t.Errorf("expected no params, got %v", params)
 	}
 }

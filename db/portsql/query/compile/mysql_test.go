@@ -295,10 +295,10 @@ func TestMySQL_Insert_NoReturning(t *testing.T) {
 		Kind:       query.InsertQuery,
 		FromTable:  query.TableRef{Name: "authors"},
 		InsertCols: []query.Column{publicID, name},
-		InsertVals: []query.Expr{
+		InsertRows: [][]query.Expr{{
 			query.ParamExpr{Name: "public_id", GoType: "string"},
 			query.ParamExpr{Name: "name", GoType: "string"},
-		},
+		}},
 		Returning: []query.Column{publicID}, // Should be IGNORED for MySQL
 	}
 
@@ -328,10 +328,10 @@ func TestMySQL_InsertWithNow(t *testing.T) {
 		Kind:       query.InsertQuery,
 		FromTable:  query.TableRef{Name: "authors"},
 		InsertCols: []query.Column{name, createdAt},
-		InsertVals: []query.Expr{
+		InsertRows: [][]query.Expr{{
 			query.ParamExpr{Name: "name", GoType: "string"},
 			query.FuncExpr{Name: "NOW"},
-		},
+		}},
 	}
 
 	sql, _, err := NewCompiler(MySQL).Compile(ast)
@@ -1106,5 +1106,192 @@ func TestMySQL_UpdateWithArithmeticSub(t *testing.T) {
 	}
 	if len(params) != 2 || params[0] != "delta" || params[1] != "id" {
 		t.Errorf("expected params [delta, id], got %v", params)
+	}
+}
+
+func TestMySQL_BulkInsert(t *testing.T) {
+	name := query.StringColumn{Table: "authors", Name: "name"}
+	email := query.StringColumn{Table: "authors", Name: "email"}
+
+	ast := &query.AST{
+		Kind:       query.InsertQuery,
+		FromTable:  query.TableRef{Name: "authors"},
+		InsertCols: []query.Column{name, email},
+		InsertRows: [][]query.Expr{
+			{query.ParamExpr{Name: "name_0", GoType: "string"}, query.ParamExpr{Name: "email_0", GoType: "string"}},
+			{query.ParamExpr{Name: "name_1", GoType: "string"}, query.ParamExpr{Name: "email_1", GoType: "string"}},
+		},
+	}
+
+	sql, params, err := NewCompiler(MySQL).Compile(ast)
+	if err != nil {
+		t.Fatalf("Compile failed: %v", err)
+	}
+
+	expected := "INSERT INTO `authors` (`name`, `email`) VALUES (?, ?), (?, ?)"
+	if sql != expected {
+		t.Errorf("expected SQL:\n%s\ngot:\n%s", expected, sql)
+	}
+	if containsStr(sql, "RETURNING") {
+		t.Errorf("MySQL SQL should NOT contain RETURNING: %s", sql)
+	}
+	if len(params) != 4 {
+		t.Errorf("expected 4 params, got %d: %v", len(params), params)
+	}
+}
+
+// =============================================================================
+// INSERT ... SELECT Tests
+// =============================================================================
+
+func TestMySQL_InsertSelect(t *testing.T) {
+	ast := &query.AST{
+		Kind:      query.InsertQuery,
+		FromTable: query.TableRef{Name: "target"},
+		InsertCols: []query.Column{
+			query.StringColumn{Table: "target", Name: "name"},
+			query.StringColumn{Table: "target", Name: "email"},
+		},
+		InsertSource: &query.AST{
+			Kind:      query.SelectQuery,
+			FromTable: query.TableRef{Name: "source"},
+			SelectCols: []query.SelectExpr{
+				{Expr: query.ColumnExpr{Column: query.StringColumn{Table: "source", Name: "name"}}},
+				{Expr: query.ColumnExpr{Column: query.StringColumn{Table: "source", Name: "email"}}},
+			},
+			Where: query.BinaryExpr{
+				Left:  query.ColumnExpr{Column: query.BoolColumn{Table: "source", Name: "active"}},
+				Op:    query.OpEq,
+				Right: query.LiteralExpr{Value: true},
+			},
+		},
+	}
+	sql, params, err := NewCompiler(MySQL).Compile(ast)
+	if err != nil {
+		t.Fatalf("Compile failed: %v", err)
+	}
+	expected := "INSERT INTO `target` (`name`, `email`) SELECT `source`.`name`, `source`.`email` FROM `source` WHERE (`source`.`active` = 1)"
+	if sql != expected {
+		t.Errorf("expected SQL:\n%s\ngot:\n%s", expected, sql)
+	}
+	if len(params) != 0 {
+		t.Errorf("expected no params, got %v", params)
+	}
+}
+
+func TestMySQL_InsertSelect_WithParams(t *testing.T) {
+	ast := &query.AST{
+		Kind:      query.InsertQuery,
+		FromTable: query.TableRef{Name: "target"},
+		InsertCols: []query.Column{
+			query.StringColumn{Table: "target", Name: "name"},
+			query.StringColumn{Table: "target", Name: "email"},
+		},
+		InsertSource: &query.AST{
+			Kind:      query.SelectQuery,
+			FromTable: query.TableRef{Name: "source"},
+			SelectCols: []query.SelectExpr{
+				{Expr: query.ColumnExpr{Column: query.StringColumn{Table: "source", Name: "name"}}},
+				{Expr: query.ColumnExpr{Column: query.StringColumn{Table: "source", Name: "email"}}},
+			},
+			Where: query.BinaryExpr{
+				Left:  query.ColumnExpr{Column: query.StringColumn{Table: "source", Name: "status"}},
+				Op:    query.OpEq,
+				Right: query.ParamExpr{Name: "status", GoType: "string"},
+			},
+		},
+	}
+	sql, params, err := NewCompiler(MySQL).Compile(ast)
+	if err != nil {
+		t.Fatalf("Compile failed: %v", err)
+	}
+	if !containsStr(sql, "?") {
+		t.Errorf("SQL should contain ? placeholder: %s", sql)
+	}
+	expected := "INSERT INTO `target` (`name`, `email`) SELECT `source`.`name`, `source`.`email` FROM `source` WHERE (`source`.`status` = ?)"
+	if sql != expected {
+		t.Errorf("expected SQL:\n%s\ngot:\n%s", expected, sql)
+	}
+	if len(params) != 1 || params[0] != "status" {
+		t.Errorf("expected params [status], got %v", params)
+	}
+}
+
+func TestMySQL_InsertSelect_WithCTE(t *testing.T) {
+	ast := &query.AST{
+		Kind:      query.InsertQuery,
+		FromTable: query.TableRef{Name: "archive"},
+		InsertCols: []query.Column{
+			query.StringColumn{Table: "archive", Name: "name"},
+			query.StringColumn{Table: "archive", Name: "email"},
+		},
+		CTEs: []query.CTE{
+			{
+				Name: "active_users",
+				Query: &query.AST{
+					Kind:      query.SelectQuery,
+					FromTable: query.TableRef{Name: "users"},
+					SelectCols: []query.SelectExpr{
+						{Expr: query.ColumnExpr{Column: query.StringColumn{Table: "users", Name: "name"}}},
+						{Expr: query.ColumnExpr{Column: query.StringColumn{Table: "users", Name: "email"}}},
+					},
+					Where: query.BinaryExpr{
+						Left:  query.ColumnExpr{Column: query.BoolColumn{Table: "users", Name: "active"}},
+						Op:    query.OpEq,
+						Right: query.LiteralExpr{Value: true},
+					},
+				},
+			},
+		},
+		InsertSource: &query.AST{
+			Kind:      query.SelectQuery,
+			FromTable: query.TableRef{Name: "active_users"},
+			SelectCols: []query.SelectExpr{
+				{Expr: query.ColumnExpr{Column: query.StringColumn{Table: "active_users", Name: "name"}}},
+				{Expr: query.ColumnExpr{Column: query.StringColumn{Table: "active_users", Name: "email"}}},
+			},
+		},
+	}
+	sql, params, err := NewCompiler(MySQL).Compile(ast)
+	if err != nil {
+		t.Fatalf("Compile failed: %v", err)
+	}
+	expected := "WITH `active_users` AS (SELECT `users`.`name`, `users`.`email` FROM `users` WHERE (`users`.`active` = 1)) INSERT INTO `archive` (`name`, `email`) SELECT `active_users`.`name`, `active_users`.`email` FROM `active_users`"
+	if sql != expected {
+		t.Errorf("expected SQL:\n%s\ngot:\n%s", expected, sql)
+	}
+	if len(params) != 0 {
+		t.Errorf("expected no params, got %v", params)
+	}
+}
+
+func TestMySQL_InsertSelect_NoReturning(t *testing.T) {
+	ast := &query.AST{
+		Kind:      query.InsertQuery,
+		FromTable: query.TableRef{Name: "target"},
+		InsertCols: []query.Column{
+			query.StringColumn{Table: "target", Name: "name"},
+			query.StringColumn{Table: "target", Name: "email"},
+		},
+		InsertSource: &query.AST{
+			Kind:      query.SelectQuery,
+			FromTable: query.TableRef{Name: "source"},
+			SelectCols: []query.SelectExpr{
+				{Expr: query.ColumnExpr{Column: query.StringColumn{Table: "source", Name: "name"}}},
+				{Expr: query.ColumnExpr{Column: query.StringColumn{Table: "source", Name: "email"}}},
+			},
+		},
+		Returning: []query.Column{query.Int64Column{Table: "target", Name: "id"}}, // Should be IGNORED for MySQL
+	}
+	sql, _, err := NewCompiler(MySQL).Compile(ast)
+	if err != nil {
+		t.Fatalf("Compile failed: %v", err)
+	}
+	expected := "INSERT INTO `target` (`name`, `email`) SELECT `source`.`name`, `source`.`email` FROM `source`"
+	if sql != expected {
+		t.Errorf("expected SQL:\n%s\ngot:\n%s", expected, sql)
+	}
+	if containsStr(sql, "RETURNING") {
+		t.Errorf("MySQL SQL should NOT contain RETURNING: %s", sql)
 	}
 }

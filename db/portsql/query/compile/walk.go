@@ -91,9 +91,16 @@ func WalkAST(ast *query.AST, visit ExprVisitor) {
 	WalkExpr(ast.Limit, visit)
 	WalkExpr(ast.Offset, visit)
 
-	// Walk INSERT values
-	for _, val := range ast.InsertVals {
-		WalkExpr(val, visit)
+	// Walk INSERT values (all rows)
+	for _, row := range ast.InsertRows {
+		for _, val := range row {
+			WalkExpr(val, visit)
+		}
+	}
+
+	// Walk INSERT source query (INSERT ... SELECT)
+	if ast.InsertSource != nil {
+		WalkAST(ast.InsertSource, visit)
 	}
 
 	// Walk SET clauses

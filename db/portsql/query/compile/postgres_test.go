@@ -385,10 +385,10 @@ func TestPostgres_Insert(t *testing.T) {
 		Kind:       query.InsertQuery,
 		FromTable:  query.TableRef{Name: "authors"},
 		InsertCols: []query.Column{publicID, name},
-		InsertVals: []query.Expr{
+		InsertRows: [][]query.Expr{{
 			query.ParamExpr{Name: "public_id", GoType: "string"},
 			query.ParamExpr{Name: "name", GoType: "string"},
-		},
+		}},
 		Returning: []query.Column{publicID},
 	}
 
@@ -414,10 +414,10 @@ func TestPostgres_InsertWithNow(t *testing.T) {
 		Kind:       query.InsertQuery,
 		FromTable:  query.TableRef{Name: "authors"},
 		InsertCols: []query.Column{name, createdAt},
-		InsertVals: []query.Expr{
+		InsertRows: [][]query.Expr{{
 			query.ParamExpr{Name: "name", GoType: "string"},
 			query.FuncExpr{Name: "NOW"},
-		},
+		}},
 	}
 
 	sql, _, err := NewCompiler(Postgres).Compile(ast)
@@ -1687,5 +1687,438 @@ func TestPostgres_UpdateWithSubtraction(t *testing.T) {
 	}
 	if len(params) != 2 || params[0] != "delta" || params[1] != "id" {
 		t.Errorf("expected params [delta, id], got %v", params)
+	}
+}
+
+func TestPostgres_BulkInsert(t *testing.T) {
+	name := query.StringColumn{Table: "authors", Name: "name"}
+	email := query.StringColumn{Table: "authors", Name: "email"}
+
+	ast := &query.AST{
+		Kind:       query.InsertQuery,
+		FromTable:  query.TableRef{Name: "authors"},
+		InsertCols: []query.Column{name, email},
+		InsertRows: [][]query.Expr{
+			{query.ParamExpr{Name: "name_0", GoType: "string"}, query.ParamExpr{Name: "email_0", GoType: "string"}},
+			{query.ParamExpr{Name: "name_1", GoType: "string"}, query.ParamExpr{Name: "email_1", GoType: "string"}},
+			{query.ParamExpr{Name: "name_2", GoType: "string"}, query.ParamExpr{Name: "email_2", GoType: "string"}},
+		},
+	}
+
+	sql, params, err := NewCompiler(Postgres).Compile(ast)
+	if err != nil {
+		t.Fatalf("Compile failed: %v", err)
+	}
+
+	expected := `INSERT INTO "authors" ("name", "email") VALUES ($1, $2), ($3, $4), ($5, $6)`
+	if sql != expected {
+		t.Errorf("expected SQL:\n%s\ngot:\n%s", expected, sql)
+	}
+	if len(params) != 6 {
+		t.Errorf("expected 6 params, got %d: %v", len(params), params)
+	}
+}
+
+func TestPostgres_BulkInsert_WithReturning(t *testing.T) {
+	publicID := query.StringColumn{Table: "authors", Name: "public_id"}
+	name := query.StringColumn{Table: "authors", Name: "name"}
+	email := query.StringColumn{Table: "authors", Name: "email"}
+
+	ast := &query.AST{
+		Kind:       query.InsertQuery,
+		FromTable:  query.TableRef{Name: "authors"},
+		InsertCols: []query.Column{name, email},
+		InsertRows: [][]query.Expr{
+			{query.ParamExpr{Name: "name_0", GoType: "string"}, query.ParamExpr{Name: "email_0", GoType: "string"}},
+			{query.ParamExpr{Name: "name_1", GoType: "string"}, query.ParamExpr{Name: "email_1", GoType: "string"}},
+		},
+		Returning: []query.Column{publicID},
+	}
+
+	sql, params, err := NewCompiler(Postgres).Compile(ast)
+	if err != nil {
+		t.Fatalf("Compile failed: %v", err)
+	}
+
+	expected := `INSERT INTO "authors" ("name", "email") VALUES ($1, $2), ($3, $4) RETURNING "public_id"`
+	if sql != expected {
+		t.Errorf("expected SQL:\n%s\ngot:\n%s", expected, sql)
+	}
+	if len(params) != 4 {
+		t.Errorf("expected 4 params, got %d: %v", len(params), params)
+	}
+}
+
+func TestPostgres_BulkInsert_ParamOrder(t *testing.T) {
+	name := query.StringColumn{Table: "authors", Name: "name"}
+	email := query.StringColumn{Table: "authors", Name: "email"}
+
+	ast := &query.AST{
+		Kind:       query.InsertQuery,
+		FromTable:  query.TableRef{Name: "authors"},
+		InsertCols: []query.Column{name, email},
+		InsertRows: [][]query.Expr{
+			{query.ParamExpr{Name: "name_0", GoType: "string"}, query.ParamExpr{Name: "email_0", GoType: "string"}},
+			{query.ParamExpr{Name: "name_1", GoType: "string"}, query.ParamExpr{Name: "email_1", GoType: "string"}},
+		},
+	}
+
+	_, params, err := NewCompiler(Postgres).Compile(ast)
+	if err != nil {
+		t.Fatalf("Compile failed: %v", err)
+	}
+
+	expectedOrder := []string{"name_0", "email_0", "name_1", "email_1"}
+	if len(params) != len(expectedOrder) {
+		t.Fatalf("expected %d params, got %d: %v", len(expectedOrder), len(params), params)
+	}
+	for i, expected := range expectedOrder {
+		if params[i] != expected {
+			t.Errorf("param %d: expected %q, got %q", i, expected, params[i])
+		}
+	}
+}
+
+// =============================================================================
+// INSERT ... SELECT Tests
+// =============================================================================
+
+func TestPostgres_InsertSelect(t *testing.T) {
+	ast := &query.AST{
+		Kind:      query.InsertQuery,
+		FromTable: query.TableRef{Name: "target"},
+		InsertCols: []query.Column{
+			query.StringColumn{Table: "target", Name: "name"},
+			query.StringColumn{Table: "target", Name: "email"},
+		},
+		InsertSource: &query.AST{
+			Kind:      query.SelectQuery,
+			FromTable: query.TableRef{Name: "source"},
+			SelectCols: []query.SelectExpr{
+				{Expr: query.ColumnExpr{Column: query.StringColumn{Table: "source", Name: "name"}}},
+				{Expr: query.ColumnExpr{Column: query.StringColumn{Table: "source", Name: "email"}}},
+			},
+			Where: query.BinaryExpr{
+				Left:  query.ColumnExpr{Column: query.BoolColumn{Table: "source", Name: "active"}},
+				Op:    query.OpEq,
+				Right: query.LiteralExpr{Value: true},
+			},
+		},
+	}
+	sql, params, err := NewCompiler(Postgres).Compile(ast)
+	if err != nil {
+		t.Fatalf("Compile failed: %v", err)
+	}
+	expected := `INSERT INTO "target" ("name", "email") SELECT "source"."name", "source"."email" FROM "source" WHERE ("source"."active" = TRUE)`
+	if sql != expected {
+		t.Errorf("expected SQL:\n%s\ngot:\n%s", expected, sql)
+	}
+	if len(params) != 0 {
+		t.Errorf("expected no params, got %v", params)
+	}
+}
+
+func TestPostgres_InsertSelect_WithParams(t *testing.T) {
+	ast := &query.AST{
+		Kind:      query.InsertQuery,
+		FromTable: query.TableRef{Name: "target"},
+		InsertCols: []query.Column{
+			query.StringColumn{Table: "target", Name: "name"},
+			query.StringColumn{Table: "target", Name: "email"},
+		},
+		InsertSource: &query.AST{
+			Kind:      query.SelectQuery,
+			FromTable: query.TableRef{Name: "source"},
+			SelectCols: []query.SelectExpr{
+				{Expr: query.ColumnExpr{Column: query.StringColumn{Table: "source", Name: "name"}}},
+				{Expr: query.ColumnExpr{Column: query.StringColumn{Table: "source", Name: "email"}}},
+			},
+			Where: query.BinaryExpr{
+				Left:  query.ColumnExpr{Column: query.StringColumn{Table: "source", Name: "status"}},
+				Op:    query.OpEq,
+				Right: query.ParamExpr{Name: "status", GoType: "string"},
+			},
+		},
+	}
+	sql, params, err := NewCompiler(Postgres).Compile(ast)
+	if err != nil {
+		t.Fatalf("Compile failed: %v", err)
+	}
+	if !containsStr(sql, "$1") {
+		t.Errorf("SQL should contain $1: %s", sql)
+	}
+	if len(params) != 1 || params[0] != "status" {
+		t.Errorf("expected params [status], got %v", params)
+	}
+}
+
+func TestPostgres_InsertSelect_WithReturning(t *testing.T) {
+	ast := &query.AST{
+		Kind:      query.InsertQuery,
+		FromTable: query.TableRef{Name: "target"},
+		InsertCols: []query.Column{
+			query.StringColumn{Table: "target", Name: "name"},
+			query.StringColumn{Table: "target", Name: "email"},
+		},
+		InsertSource: &query.AST{
+			Kind:      query.SelectQuery,
+			FromTable: query.TableRef{Name: "source"},
+			SelectCols: []query.SelectExpr{
+				{Expr: query.ColumnExpr{Column: query.StringColumn{Table: "source", Name: "name"}}},
+				{Expr: query.ColumnExpr{Column: query.StringColumn{Table: "source", Name: "email"}}},
+			},
+		},
+		Returning: []query.Column{query.Int64Column{Table: "target", Name: "id"}},
+	}
+	sql, _, err := NewCompiler(Postgres).Compile(ast)
+	if err != nil {
+		t.Fatalf("Compile failed: %v", err)
+	}
+	expected := `INSERT INTO "target" ("name", "email") SELECT "source"."name", "source"."email" FROM "source" RETURNING "id"`
+	if sql != expected {
+		t.Errorf("expected SQL:\n%s\ngot:\n%s", expected, sql)
+	}
+}
+
+func TestPostgres_InsertSelect_WithCTE(t *testing.T) {
+	ast := &query.AST{
+		Kind:      query.InsertQuery,
+		FromTable: query.TableRef{Name: "archive"},
+		InsertCols: []query.Column{
+			query.StringColumn{Table: "archive", Name: "name"},
+			query.StringColumn{Table: "archive", Name: "email"},
+		},
+		CTEs: []query.CTE{
+			{
+				Name: "active_users",
+				Query: &query.AST{
+					Kind:      query.SelectQuery,
+					FromTable: query.TableRef{Name: "users"},
+					SelectCols: []query.SelectExpr{
+						{Expr: query.ColumnExpr{Column: query.StringColumn{Table: "users", Name: "name"}}},
+						{Expr: query.ColumnExpr{Column: query.StringColumn{Table: "users", Name: "email"}}},
+					},
+					Where: query.BinaryExpr{
+						Left:  query.ColumnExpr{Column: query.BoolColumn{Table: "users", Name: "active"}},
+						Op:    query.OpEq,
+						Right: query.LiteralExpr{Value: true},
+					},
+				},
+			},
+		},
+		InsertSource: &query.AST{
+			Kind:      query.SelectQuery,
+			FromTable: query.TableRef{Name: "active_users"},
+			SelectCols: []query.SelectExpr{
+				{Expr: query.ColumnExpr{Column: query.StringColumn{Table: "active_users", Name: "name"}}},
+				{Expr: query.ColumnExpr{Column: query.StringColumn{Table: "active_users", Name: "email"}}},
+			},
+		},
+	}
+	sql, params, err := NewCompiler(Postgres).Compile(ast)
+	if err != nil {
+		t.Fatalf("Compile failed: %v", err)
+	}
+	expected := `WITH "active_users" AS (SELECT "users"."name", "users"."email" FROM "users" WHERE ("users"."active" = TRUE)) INSERT INTO "archive" ("name", "email") SELECT "active_users"."name", "active_users"."email" FROM "active_users"`
+	if sql != expected {
+		t.Errorf("expected SQL:\n%s\ngot:\n%s", expected, sql)
+	}
+	if len(params) != 0 {
+		t.Errorf("expected no params, got %v", params)
+	}
+}
+
+func TestPostgres_InsertSelect_CTE_WithParams(t *testing.T) {
+	ast := &query.AST{
+		Kind:      query.InsertQuery,
+		FromTable: query.TableRef{Name: "archive"},
+		InsertCols: []query.Column{
+			query.StringColumn{Table: "archive", Name: "name"},
+			query.StringColumn{Table: "archive", Name: "email"},
+		},
+		CTEs: []query.CTE{
+			{
+				Name: "filtered",
+				Query: &query.AST{
+					Kind:      query.SelectQuery,
+					FromTable: query.TableRef{Name: "users"},
+					SelectCols: []query.SelectExpr{
+						{Expr: query.ColumnExpr{Column: query.StringColumn{Table: "users", Name: "name"}}},
+						{Expr: query.ColumnExpr{Column: query.StringColumn{Table: "users", Name: "email"}}},
+					},
+					Where: query.BinaryExpr{
+						Left:  query.ColumnExpr{Column: query.StringColumn{Table: "users", Name: "status"}},
+						Op:    query.OpEq,
+						Right: query.ParamExpr{Name: "status", GoType: "string"},
+					},
+				},
+			},
+		},
+		InsertSource: &query.AST{
+			Kind:      query.SelectQuery,
+			FromTable: query.TableRef{Name: "filtered"},
+			SelectCols: []query.SelectExpr{
+				{Expr: query.ColumnExpr{Column: query.StringColumn{Table: "filtered", Name: "name"}}},
+				{Expr: query.ColumnExpr{Column: query.StringColumn{Table: "filtered", Name: "email"}}},
+			},
+			Where: query.BinaryExpr{
+				Left:  query.ColumnExpr{Column: query.StringColumn{Table: "filtered", Name: "name"}},
+				Op:    query.OpEq,
+				Right: query.ParamExpr{Name: "name", GoType: "string"},
+			},
+		},
+	}
+	sql, params, err := NewCompiler(Postgres).Compile(ast)
+	if err != nil {
+		t.Fatalf("Compile failed: %v", err)
+	}
+	// CTE param should be $1, source SELECT param should be $2
+	if !containsStr(sql, "$1") {
+		t.Errorf("SQL should contain $1: %s", sql)
+	}
+	if !containsStr(sql, "$2") {
+		t.Errorf("SQL should contain $2: %s", sql)
+	}
+	if len(params) != 2 {
+		t.Fatalf("expected 2 params, got %d: %v", len(params), params)
+	}
+	if params[0] != "status" {
+		t.Errorf("expected first param to be 'status', got %q", params[0])
+	}
+	if params[1] != "name" {
+		t.Errorf("expected second param to be 'name', got %q", params[1])
+	}
+}
+
+func TestPostgres_InsertSelect_WithJoin(t *testing.T) {
+	ast := &query.AST{
+		Kind:      query.InsertQuery,
+		FromTable: query.TableRef{Name: "report"},
+		InsertCols: []query.Column{
+			query.StringColumn{Table: "report", Name: "user_name"},
+			query.StringColumn{Table: "report", Name: "order_total"},
+		},
+		InsertSource: &query.AST{
+			Kind:      query.SelectQuery,
+			FromTable: query.TableRef{Name: "users"},
+			SelectCols: []query.SelectExpr{
+				{Expr: query.ColumnExpr{Column: query.StringColumn{Table: "users", Name: "name"}}},
+				{Expr: query.ColumnExpr{Column: query.StringColumn{Table: "orders", Name: "total"}}},
+			},
+			Joins: []query.JoinClause{
+				{
+					Type:  query.InnerJoin,
+					Table: query.TableRef{Name: "orders"},
+					Condition: query.BinaryExpr{
+						Left:  query.ColumnExpr{Column: query.Int64Column{Table: "users", Name: "id"}},
+						Op:    query.OpEq,
+						Right: query.ColumnExpr{Column: query.Int64Column{Table: "orders", Name: "user_id"}},
+					},
+				},
+			},
+		},
+	}
+	sql, params, err := NewCompiler(Postgres).Compile(ast)
+	if err != nil {
+		t.Fatalf("Compile failed: %v", err)
+	}
+	expected := `INSERT INTO "report" ("user_name", "order_total") SELECT "users"."name", "orders"."total" FROM "users" INNER JOIN "orders" ON ("users"."id" = "orders"."user_id")`
+	if sql != expected {
+		t.Errorf("expected SQL:\n%s\ngot:\n%s", expected, sql)
+	}
+	if len(params) != 0 {
+		t.Errorf("expected no params, got %v", params)
+	}
+}
+
+func TestPostgres_InsertSelect_NoColumns(t *testing.T) {
+	ast := &query.AST{
+		Kind:      query.InsertQuery,
+		FromTable: query.TableRef{Name: "target"},
+		InsertSource: &query.AST{
+			Kind:      query.SelectQuery,
+			FromTable: query.TableRef{Name: "source"},
+			SelectCols: []query.SelectExpr{
+				{Expr: query.ColumnExpr{Column: query.StringColumn{Table: "source", Name: "name"}}},
+				{Expr: query.ColumnExpr{Column: query.StringColumn{Table: "source", Name: "email"}}},
+			},
+		},
+	}
+	sql, params, err := NewCompiler(Postgres).Compile(ast)
+	if err != nil {
+		t.Fatalf("Compile failed: %v", err)
+	}
+	expected := `INSERT INTO "target" SELECT "source"."name", "source"."email" FROM "source"`
+	if sql != expected {
+		t.Errorf("expected SQL:\n%s\ngot:\n%s", expected, sql)
+	}
+	if len(params) != 0 {
+		t.Errorf("expected no params, got %v", params)
+	}
+}
+
+func TestPostgres_InsertSelect_CTE_ParamOrder(t *testing.T) {
+	ast := &query.AST{
+		Kind:      query.InsertQuery,
+		FromTable: query.TableRef{Name: "target"},
+		InsertCols: []query.Column{
+			query.StringColumn{Table: "target", Name: "name"},
+			query.StringColumn{Table: "target", Name: "email"},
+		},
+		CTEs: []query.CTE{
+			{
+				Name: "cte1",
+				Query: &query.AST{
+					Kind:      query.SelectQuery,
+					FromTable: query.TableRef{Name: "users"},
+					SelectCols: []query.SelectExpr{
+						{Expr: query.ColumnExpr{Column: query.StringColumn{Table: "users", Name: "name"}}},
+						{Expr: query.ColumnExpr{Column: query.StringColumn{Table: "users", Name: "email"}}},
+					},
+					Where: query.BinaryExpr{
+						Left:  query.ColumnExpr{Column: query.StringColumn{Table: "users", Name: "role"}},
+						Op:    query.OpEq,
+						Right: query.ParamExpr{Name: "role", GoType: "string"},
+					},
+				},
+			},
+		},
+		InsertSource: &query.AST{
+			Kind:      query.SelectQuery,
+			FromTable: query.TableRef{Name: "cte1"},
+			SelectCols: []query.SelectExpr{
+				{Expr: query.ColumnExpr{Column: query.StringColumn{Table: "cte1", Name: "name"}}},
+				{Expr: query.ColumnExpr{Column: query.StringColumn{Table: "cte1", Name: "email"}}},
+			},
+			Where: query.BinaryExpr{
+				Left:  query.ColumnExpr{Column: query.StringColumn{Table: "cte1", Name: "name"}},
+				Op:    query.OpEq,
+				Right: query.ParamExpr{Name: "filter_name", GoType: "string"},
+			},
+		},
+	}
+	sql, params, err := NewCompiler(Postgres).Compile(ast)
+	if err != nil {
+		t.Fatalf("Compile failed: %v", err)
+	}
+	// CTE param ($1) comes first, then INSERT ... SELECT param ($2)
+	if len(params) != 2 {
+		t.Fatalf("expected 2 params, got %d: %v", len(params), params)
+	}
+	if params[0] != "role" {
+		t.Errorf("expected first param to be 'role', got %q", params[0])
+	}
+	if params[1] != "filter_name" {
+		t.Errorf("expected second param to be 'filter_name', got %q", params[1])
+	}
+	if !containsStr(sql, "$1") {
+		t.Errorf("SQL should contain $1: %s", sql)
+	}
+	if !containsStr(sql, "$2") {
+		t.Errorf("SQL should contain $2: %s", sql)
+	}
+	// Verify the CTE param is $1 (appears in WITH clause) and source param is $2
+	if containsStr(sql, `"role" = $2`) {
+		t.Errorf("CTE param should be $1, not $2: %s", sql)
 	}
 }

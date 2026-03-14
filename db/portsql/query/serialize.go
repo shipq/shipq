@@ -30,9 +30,10 @@ type SerializedAST struct {
 	Offset     *SerializedExpr        `json:"offset,omitempty"`
 
 	// INSERT specific
-	InsertCols []SerializedColumn `json:"insert_cols,omitempty"`
-	InsertVals []SerializedExpr   `json:"insert_vals,omitempty"`
-	Returning  []SerializedColumn `json:"returning,omitempty"`
+	InsertCols   []SerializedColumn `json:"insert_cols,omitempty"`
+	InsertRows   [][]SerializedExpr `json:"insert_rows,omitempty"`
+	InsertSource *SerializedAST     `json:"insert_source,omitempty"`
+	Returning    []SerializedColumn `json:"returning,omitempty"`
 
 	// UPDATE specific
 	SetClauses []SerializedSetClause `json:"set_clauses,omitempty"`
@@ -265,11 +266,18 @@ func SerializeAST(ast *AST) *SerializedAST {
 		}
 	}
 
-	if len(ast.InsertVals) > 0 {
-		s.InsertVals = make([]SerializedExpr, len(ast.InsertVals))
-		for i, val := range ast.InsertVals {
-			s.InsertVals[i] = SerializeExpr(val)
+	if len(ast.InsertRows) > 0 {
+		s.InsertRows = make([][]SerializedExpr, len(ast.InsertRows))
+		for ri, row := range ast.InsertRows {
+			s.InsertRows[ri] = make([]SerializedExpr, len(row))
+			for ci, val := range row {
+				s.InsertRows[ri][ci] = SerializeExpr(val)
+			}
 		}
+	}
+
+	if ast.InsertSource != nil {
+		s.InsertSource = SerializeAST(ast.InsertSource)
 	}
 
 	if len(ast.Returning) > 0 {
@@ -594,11 +602,18 @@ func DeserializeAST(s *SerializedAST) *AST {
 		}
 	}
 
-	if len(s.InsertVals) > 0 {
-		ast.InsertVals = make([]Expr, len(s.InsertVals))
-		for i, val := range s.InsertVals {
-			ast.InsertVals[i] = DeserializeExpr(val)
+	if len(s.InsertRows) > 0 {
+		ast.InsertRows = make([][]Expr, len(s.InsertRows))
+		for ri, row := range s.InsertRows {
+			ast.InsertRows[ri] = make([]Expr, len(row))
+			for ci, val := range row {
+				ast.InsertRows[ri][ci] = DeserializeExpr(val)
+			}
 		}
+	}
+
+	if s.InsertSource != nil {
+		ast.InsertSource = DeserializeAST(s.InsertSource)
 	}
 
 	if len(s.Returning) > 0 {

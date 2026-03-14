@@ -254,10 +254,10 @@ func TestSerializeAST_Insert(t *testing.T) {
 			StringColumn{Table: "users", Name: "email"},
 			StringColumn{Table: "users", Name: "name"},
 		},
-		InsertVals: []Expr{
+		InsertRows: [][]Expr{{
 			ParamExpr{Name: "email", GoType: "string"},
 			ParamExpr{Name: "name", GoType: "string"},
-		},
+		}},
 		Returning: []Column{
 			Int64Column{Table: "users", Name: "id"},
 		},
@@ -271,8 +271,11 @@ func TestSerializeAST_Insert(t *testing.T) {
 	if len(s.InsertCols) != 2 {
 		t.Errorf("expected len(InsertCols) = 2, got %d", len(s.InsertCols))
 	}
-	if len(s.InsertVals) != 2 {
-		t.Errorf("expected len(InsertVals) = 2, got %d", len(s.InsertVals))
+	if len(s.InsertRows) != 1 {
+		t.Errorf("expected len(InsertRows) = 1, got %d", len(s.InsertRows))
+	}
+	if len(s.InsertRows[0]) != 2 {
+		t.Errorf("expected len(InsertRows[0]) = 2, got %d", len(s.InsertRows[0]))
 	}
 	if len(s.Returning) != 1 {
 		t.Errorf("expected len(Returning) = 1, got %d", len(s.Returning))
@@ -681,6 +684,145 @@ func TestSimpleColumn_Nullable(t *testing.T) {
 	}
 }
 
+func TestSerialize_BulkInsert_RoundTrip(t *testing.T) {
+	original := &AST{
+		Kind:      InsertQuery,
+		FromTable: TableRef{Name: "authors"},
+		InsertCols: []Column{
+			StringColumn{Table: "authors", Name: "name"},
+			StringColumn{Table: "authors", Name: "email"},
+		},
+		InsertRows: [][]Expr{
+			{ParamExpr{Name: "name_0", GoType: "string"}, ParamExpr{Name: "email_0", GoType: "string"}},
+			{ParamExpr{Name: "name_1", GoType: "string"}, ParamExpr{Name: "email_1", GoType: "string"}},
+			{ParamExpr{Name: "name_2", GoType: "string"}, ParamExpr{Name: "email_2", GoType: "string"}},
+		},
+		Returning: []Column{
+			StringColumn{Table: "authors", Name: "public_id"},
+		},
+	}
+
+	// Serialize
+	serialized := SerializeAST(original)
+
+	// Verify the serialized form has InsertRows as a 2D array
+	if len(serialized.InsertRows) != 3 {
+		t.Fatalf("expected 3 InsertRows in serialized form, got %d", len(serialized.InsertRows))
+	}
+	for i, row := range serialized.InsertRows {
+		if len(row) != 2 {
+			t.Errorf("serialized row %d: expected 2 values, got %d", i, len(row))
+		}
+	}
+
+	// Convert to JSON and back
+	jsonData, err := json.Marshal(serialized)
+	if err != nil {
+		t.Fatalf("failed to marshal to JSON: %v", err)
+	}
+
+	// Verify JSON uses "insert_rows" key (not "insert_vals")
+	jsonStr := string(jsonData)
+	if !contains(jsonStr, `"insert_rows"`) {
+		t.Errorf("expected JSON to contain \"insert_rows\" key, got: %s", jsonStr)
+	}
+	if contains(jsonStr, `"insert_vals"`) {
+		t.Errorf("JSON should NOT contain \"insert_vals\" key, got: %s", jsonStr)
+	}
+
+	var fromJSON SerializedAST
+	if err := json.Unmarshal(jsonData, &fromJSON); err != nil {
+		t.Fatalf("failed to unmarshal from JSON: %v", err)
+	}
+
+	// Deserialize
+	result := DeserializeAST(&fromJSON)
+
+	// Verify structural equality
+	if result.Kind != original.Kind {
+		t.Errorf("Kind: expected %q, got %q", original.Kind, result.Kind)
+	}
+	if result.FromTable.Name != original.FromTable.Name {
+		t.Errorf("FromTable.Name: expected %q, got %q", original.FromTable.Name, result.FromTable.Name)
+	}
+	if len(result.InsertCols) != len(original.InsertCols) {
+		t.Errorf("InsertCols length: expected %d, got %d", len(original.InsertCols), len(result.InsertCols))
+	}
+	if len(result.InsertRows) != len(original.InsertRows) {
+		t.Fatalf("InsertRows length: expected %d, got %d", len(original.InsertRows), len(result.InsertRows))
+	}
+	for ri, row := range result.InsertRows {
+		if len(row) != len(original.InsertRows[ri]) {
+			t.Errorf("InsertRows[%d] length: expected %d, got %d", ri, len(original.InsertRows[ri]), len(row))
+			continue
+		}
+		for ci, val := range row {
+			p, ok := val.(ParamExpr)
+			if !ok {
+				t.Errorf("InsertRows[%d][%d]: expected ParamExpr, got %T", ri, ci, val)
+				continue
+			}
+			origP := original.InsertRows[ri][ci].(ParamExpr)
+			if p.Name != origP.Name {
+				t.Errorf("InsertRows[%d][%d] param name: expected %q, got %q", ri, ci, origP.Name, p.Name)
+			}
+		}
+	}
+	if len(result.Returning) != len(original.Returning) {
+		t.Errorf("Returning length: expected %d, got %d", len(original.Returning), len(result.Returning))
+	}
+}
+
+func TestSerialize_BulkInsert_SingleRow_RoundTrip(t *testing.T) {
+	// Verify single-row insert still round-trips correctly with InsertRows
+	original := &AST{
+		Kind:      InsertQuery,
+		FromTable: TableRef{Name: "users"},
+		InsertCols: []Column{
+			StringColumn{Table: "users", Name: "email"},
+		},
+		InsertRows: [][]Expr{
+			{ParamExpr{Name: "email", GoType: "string"}},
+		},
+	}
+
+	serialized := SerializeAST(original)
+	jsonData, err := json.Marshal(serialized)
+	if err != nil {
+		t.Fatalf("failed to marshal to JSON: %v", err)
+	}
+
+	var fromJSON SerializedAST
+	if err := json.Unmarshal(jsonData, &fromJSON); err != nil {
+		t.Fatalf("failed to unmarshal from JSON: %v", err)
+	}
+
+	result := DeserializeAST(&fromJSON)
+
+	if len(result.InsertRows) != 1 {
+		t.Fatalf("expected 1 InsertRows, got %d", len(result.InsertRows))
+	}
+	if len(result.InsertRows[0]) != 1 {
+		t.Fatalf("expected 1 value in row 0, got %d", len(result.InsertRows[0]))
+	}
+	p, ok := result.InsertRows[0][0].(ParamExpr)
+	if !ok {
+		t.Fatalf("expected ParamExpr, got %T", result.InsertRows[0][0])
+	}
+	if p.Name != "email" {
+		t.Errorf("expected param name %q, got %q", "email", p.Name)
+	}
+}
+
+func contains(s, substr string) bool {
+	for i := 0; i <= len(s)-len(substr); i++ {
+		if s[i:i+len(substr)] == substr {
+			return true
+		}
+	}
+	return false
+}
+
 func TestSerializeQueries_MultipleQueries(t *testing.T) {
 	ClearRegistry()
 	defer ClearRegistry()
@@ -745,5 +887,256 @@ func TestSerializeQueries_MultipleQueries(t *testing.T) {
 		if q.ReturnType != expected {
 			t.Errorf("%s: expected ReturnType = %q, got %q", q.Name, expected, q.ReturnType)
 		}
+	}
+}
+
+func TestSerialize_InsertSelect_RoundTrip(t *testing.T) {
+	ast := &AST{
+		Kind:       InsertQuery,
+		FromTable:  TableRef{Name: "target"},
+		InsertCols: []Column{StringColumn{Table: "target", Name: "name"}},
+		InsertSource: &AST{
+			Kind:      SelectQuery,
+			FromTable: TableRef{Name: "source"},
+			SelectCols: []SelectExpr{
+				{Expr: ColumnExpr{Column: StringColumn{Table: "source", Name: "name"}}},
+			},
+		},
+	}
+	serialized := SerializeAST(ast)
+	deserialized := DeserializeAST(serialized)
+
+	if deserialized.Kind != InsertQuery {
+		t.Errorf("expected Kind InsertQuery, got %s", deserialized.Kind)
+	}
+	if deserialized.InsertSource == nil {
+		t.Fatal("expected InsertSource to be non-nil")
+	}
+	if deserialized.InsertSource.Kind != SelectQuery {
+		t.Errorf("expected source Kind SelectQuery, got %s", deserialized.InsertSource.Kind)
+	}
+	if deserialized.InsertSource.FromTable.Name != "source" {
+		t.Errorf("expected source table name 'source', got %s", deserialized.InsertSource.FromTable.Name)
+	}
+	if len(deserialized.InsertRows) != 0 {
+		t.Errorf("expected no InsertRows, got %d", len(deserialized.InsertRows))
+	}
+}
+
+func TestSerialize_InsertSelect_WithCTE_RoundTrip(t *testing.T) {
+	ast := &AST{
+		Kind:      InsertQuery,
+		FromTable: TableRef{Name: "target"},
+		CTEs: []CTE{
+			{
+				Name: "active_source",
+				Query: &AST{
+					Kind:      SelectQuery,
+					FromTable: TableRef{Name: "source"},
+					SelectCols: []SelectExpr{
+						{Expr: ColumnExpr{Column: StringColumn{Table: "source", Name: "name"}}},
+					},
+					Where: BinaryExpr{
+						Left:  ColumnExpr{Column: StringColumn{Table: "source", Name: "active"}},
+						Op:    OpEq,
+						Right: LiteralExpr{Value: true},
+					},
+				},
+			},
+		},
+		InsertCols: []Column{StringColumn{Table: "target", Name: "name"}},
+		InsertSource: &AST{
+			Kind:      SelectQuery,
+			FromTable: TableRef{Name: "active_source"},
+			SelectCols: []SelectExpr{
+				{Expr: ColumnExpr{Column: StringColumn{Table: "active_source", Name: "name"}}},
+			},
+		},
+	}
+
+	serialized := SerializeAST(ast)
+	jsonData, err := json.Marshal(serialized)
+	if err != nil {
+		t.Fatalf("failed to marshal to JSON: %v", err)
+	}
+
+	var fromJSON SerializedAST
+	if err := json.Unmarshal(jsonData, &fromJSON); err != nil {
+		t.Fatalf("failed to unmarshal from JSON: %v", err)
+	}
+
+	deserialized := DeserializeAST(&fromJSON)
+
+	if deserialized.Kind != InsertQuery {
+		t.Errorf("expected Kind InsertQuery, got %s", deserialized.Kind)
+	}
+	if len(deserialized.CTEs) != 1 {
+		t.Fatalf("expected 1 CTE, got %d", len(deserialized.CTEs))
+	}
+	if deserialized.CTEs[0].Name != "active_source" {
+		t.Errorf("expected CTE name 'active_source', got %s", deserialized.CTEs[0].Name)
+	}
+	if deserialized.CTEs[0].Query == nil {
+		t.Fatal("expected CTE query to be non-nil")
+	}
+	if deserialized.CTEs[0].Query.Kind != SelectQuery {
+		t.Errorf("expected CTE query Kind SelectQuery, got %s", deserialized.CTEs[0].Query.Kind)
+	}
+	if deserialized.InsertSource == nil {
+		t.Fatal("expected InsertSource to be non-nil")
+	}
+	if deserialized.InsertSource.FromTable.Name != "active_source" {
+		t.Errorf("expected InsertSource table 'active_source', got %s", deserialized.InsertSource.FromTable.Name)
+	}
+}
+
+func TestSerialize_InsertSelect_JSON(t *testing.T) {
+	ast := &AST{
+		Kind:       InsertQuery,
+		FromTable:  TableRef{Name: "target"},
+		InsertCols: []Column{StringColumn{Table: "target", Name: "name"}},
+		InsertSource: &AST{
+			Kind:      SelectQuery,
+			FromTable: TableRef{Name: "source"},
+			SelectCols: []SelectExpr{
+				{Expr: ColumnExpr{Column: StringColumn{Table: "source", Name: "name"}}},
+			},
+		},
+	}
+
+	serialized := SerializeAST(ast)
+	jsonData, err := json.Marshal(serialized)
+	if err != nil {
+		t.Fatalf("failed to marshal to JSON: %v", err)
+	}
+
+	var raw map[string]interface{}
+	if err := json.Unmarshal(jsonData, &raw); err != nil {
+		t.Fatalf("failed to unmarshal into map: %v", err)
+	}
+
+	if _, ok := raw["insert_source"]; !ok {
+		t.Error("expected JSON to contain 'insert_source' key")
+	}
+	if _, ok := raw["insert_rows"]; ok {
+		t.Error("expected JSON to NOT contain 'insert_rows' key")
+	}
+}
+
+func TestSerialize_InsertSelect_WithParams_RoundTrip(t *testing.T) {
+	ast := &AST{
+		Kind:      InsertQuery,
+		FromTable: TableRef{Name: "target"},
+		InsertCols: []Column{
+			StringColumn{Table: "target", Name: "name"},
+			StringColumn{Table: "target", Name: "email"},
+		},
+		InsertSource: &AST{
+			Kind:      SelectQuery,
+			FromTable: TableRef{Name: "source"},
+			SelectCols: []SelectExpr{
+				{Expr: ColumnExpr{Column: StringColumn{Table: "source", Name: "name"}}},
+				{Expr: ColumnExpr{Column: StringColumn{Table: "source", Name: "email"}}},
+			},
+			Where: BinaryExpr{
+				Left:  ColumnExpr{Column: StringColumn{Table: "source", Name: "status"}},
+				Op:    OpEq,
+				Right: ParamExpr{Name: "status", GoType: "string"},
+			},
+		},
+		Params: []ParamInfo{
+			{Name: "status", GoType: "string"},
+		},
+	}
+
+	serialized := SerializeAST(ast)
+	jsonData, err := json.Marshal(serialized)
+	if err != nil {
+		t.Fatalf("failed to marshal to JSON: %v", err)
+	}
+
+	var fromJSON SerializedAST
+	if err := json.Unmarshal(jsonData, &fromJSON); err != nil {
+		t.Fatalf("failed to unmarshal from JSON: %v", err)
+	}
+
+	deserialized := DeserializeAST(&fromJSON)
+
+	if deserialized.InsertSource == nil {
+		t.Fatal("expected InsertSource to be non-nil")
+	}
+	if deserialized.InsertSource.Where == nil {
+		t.Fatal("expected InsertSource.Where to be non-nil")
+	}
+
+	// Verify the param survived round-trip
+	binExpr, ok := deserialized.InsertSource.Where.(BinaryExpr)
+	if !ok {
+		t.Fatalf("expected BinaryExpr, got %T", deserialized.InsertSource.Where)
+	}
+	paramExpr, ok := binExpr.Right.(ParamExpr)
+	if !ok {
+		t.Fatalf("expected ParamExpr on right side, got %T", binExpr.Right)
+	}
+	if paramExpr.Name != "status" {
+		t.Errorf("expected param name 'status', got %s", paramExpr.Name)
+	}
+	if paramExpr.GoType != "string" {
+		t.Errorf("expected param GoType 'string', got %s", paramExpr.GoType)
+	}
+
+	// Verify top-level Params survived
+	if len(deserialized.Params) != 1 {
+		t.Fatalf("expected 1 param, got %d", len(deserialized.Params))
+	}
+	if deserialized.Params[0].Name != "status" {
+		t.Errorf("expected param info name 'status', got %s", deserialized.Params[0].Name)
+	}
+}
+
+func TestSerialize_InsertSelect_WithReturning_RoundTrip(t *testing.T) {
+	ast := &AST{
+		Kind:      InsertQuery,
+		FromTable: TableRef{Name: "target"},
+		InsertCols: []Column{
+			StringColumn{Table: "target", Name: "name"},
+		},
+		InsertSource: &AST{
+			Kind:      SelectQuery,
+			FromTable: TableRef{Name: "source"},
+			SelectCols: []SelectExpr{
+				{Expr: ColumnExpr{Column: StringColumn{Table: "source", Name: "name"}}},
+			},
+		},
+		Returning: []Column{
+			Int64Column{Table: "target", Name: "id"},
+			StringColumn{Table: "target", Name: "name"},
+		},
+	}
+
+	serialized := SerializeAST(ast)
+	jsonData, err := json.Marshal(serialized)
+	if err != nil {
+		t.Fatalf("failed to marshal to JSON: %v", err)
+	}
+
+	var fromJSON SerializedAST
+	if err := json.Unmarshal(jsonData, &fromJSON); err != nil {
+		t.Fatalf("failed to unmarshal from JSON: %v", err)
+	}
+
+	deserialized := DeserializeAST(&fromJSON)
+
+	if deserialized.InsertSource == nil {
+		t.Fatal("expected InsertSource to be non-nil")
+	}
+	if deserialized.InsertSource.Kind != SelectQuery {
+		t.Errorf("expected source Kind SelectQuery, got %s", deserialized.InsertSource.Kind)
+	}
+	if len(deserialized.Returning) != 2 {
+		t.Fatalf("expected 2 Returning columns, got %d", len(deserialized.Returning))
+	}
+	if len(deserialized.InsertRows) != 0 {
+		t.Errorf("expected no InsertRows, got %d", len(deserialized.InsertRows))
 	}
 }
