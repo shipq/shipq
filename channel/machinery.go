@@ -2,8 +2,9 @@ package channel
 
 import (
 	"context"
+	"crypto/tls"
 	"fmt"
-	"strings"
+	"net/url"
 	"sync"
 
 	machinery "github.com/RichardKnop/machinery/v2"
@@ -35,22 +36,31 @@ var _ TaskQueue = (*MachineryQueue)(nil)
 
 // NewMachineryQueue creates a new MachineryQueue backed by Redis at the given address.
 //
-// [L2] config.Config has Broker and ResultBackend string fields. They are used for
-// logging only (e.g., "worker.go:59 - Broker: redis://localhost:6379"). The actual
-// Redis connection is established by redisbroker.NewGR(cnf, addrs, db). We set these
-// fields for readable log output.
+// redisAddr accepts:
+//   - bare "host:port"
+//   - "redis://host:port"
+//   - "rediss://host:port" (TLS — e.g. DigitalOcean Managed Redis/Valkey)
+//   - any of the above with userinfo: "rediss://user:pass@host:port"
+//
+// When the scheme is "rediss", TLS is enabled on the underlying go-redis client
+// via config.TLSConfig. Credentials embedded in the URL are forwarded to
+// Machinery's NewGR in the "user:pass@host:port" format it expects.
+//
+// [L2] config.Config.Broker and .ResultBackend are used for logging only
+// (e.g., "worker.go:59 - Broker: redis://localhost:6379"). The actual Redis
+// connection is established by redisbroker.NewGR(cnf, addrs, db).
 func NewMachineryQueue(redisAddr string) (*MachineryQueue, error) {
-	// Normalize: accept both "redis://host:port" and bare "host:port".
-	// Strip the scheme so NewGR always receives a bare address, then
-	// re-add it for the Config fields (used for logging only).
-	redisAddr = strings.TrimPrefix(redisAddr, "redis://")
+	addr, scheme, err := parseRedisAddr(redisAddr)
+	if err != nil {
+		return nil, err
+	}
 
 	cnf := &config.Config{
-		Broker:          "redis://" + redisAddr, // used for logging only; actual connection via NewGR
-		ResultBackend:   "redis://" + redisAddr, // used for logging only; actual connection via NewGR
+		Broker:          scheme + "://" + addr,
+		ResultBackend:   scheme + "://" + addr,
 		DefaultQueue:    "shipq_tasks",
 		ResultsExpireIn: 86400,
-		NoUnixSignals:   true, // important: disables built-in SIGINT/SIGTERM so we control shutdown via context
+		NoUnixSignals:   true,
 		Redis: &config.RedisConfig{
 			MaxIdle:                3,
 			IdleTimeout:            240,
@@ -62,14 +72,74 @@ func NewMachineryQueue(redisAddr string) (*MachineryQueue, error) {
 		},
 	}
 
-	broker := redisbroker.NewGR(cnf, []string{redisAddr}, 0)
-	backend := redisbackend.NewGR(cnf, []string{redisAddr}, 0)
+	if scheme == "rediss" {
+		cnf.TLSConfig = &tls.Config{MinVersion: tls.VersionTLS12}
+	}
+
+	broker := redisbroker.NewGR(cnf, []string{addr}, 0)
+	backend := redisbackend.NewGR(cnf, []string{addr}, 0)
 	lock := eagerlock.New()
 	server := machinery.NewServer(cnf, broker, backend, lock)
 
 	return &MachineryQueue{
 		server: server,
 	}, nil
+}
+
+// parseRedisAddr normalises a Redis address into the "user:pass@host:port"
+// format that Machinery's NewGR expects, and returns the effective scheme
+// ("redis" or "rediss").
+//
+// Accepted inputs:
+//
+//	"host:port"                      → ("host:port",            "redis")
+//	"redis://host:port"              → ("host:port",            "redis")
+//	"rediss://user:pass@host:port"   → ("user:pass@host:port",  "rediss")
+func parseRedisAddr(raw string) (addr, scheme string, err error) {
+	// Bare host:port — no scheme to parse.
+	if !hasScheme(raw) {
+		return raw, "redis", nil
+	}
+
+	u, err := url.Parse(raw)
+	if err != nil {
+		return "", "", fmt.Errorf("invalid Redis URL: %w", err)
+	}
+
+	switch u.Scheme {
+	case "redis", "rediss":
+		scheme = u.Scheme
+	default:
+		return "", "", fmt.Errorf("unsupported Redis URL scheme %q (expected redis or rediss)", u.Scheme)
+	}
+
+	host := u.Host
+	if host == "" {
+		return "", "", fmt.Errorf("invalid Redis URL: missing host")
+	}
+
+	// Rebuild the "user:pass@host:port" string that NewGR parses internally.
+	if u.User != nil {
+		addr = u.User.String() + "@" + host
+	} else {
+		addr = host
+	}
+
+	return addr, scheme, nil
+}
+
+func hasScheme(s string) bool {
+	for i, c := range s {
+		switch {
+		case 'a' <= c && c <= 'z', 'A' <= c && c <= 'Z':
+			continue
+		case c == ':' && i > 0 && len(s) > i+2 && s[i+1] == '/' && s[i+2] == '/':
+			return true
+		default:
+			return false
+		}
+	}
+	return false
 }
 
 // Config returns the internal Machinery config for inspection (e.g., in tests).

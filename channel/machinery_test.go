@@ -1,6 +1,7 @@
 package channel
 
 import (
+	"crypto/tls"
 	"testing"
 )
 
@@ -177,6 +178,8 @@ func TestNewMachineryQueue_NormalizesVariousRedisURLs(t *testing.T) {
 		{"redis://my-redis:6380", "redis://my-redis:6380"},
 		{"my-redis:6380", "redis://my-redis:6380"},
 		{"redis://10.0.0.5:6379", "redis://10.0.0.5:6379"},
+		{"rediss://managed-valkey.example.com:25061", "rediss://managed-valkey.example.com:25061"},
+		{"rediss://default:secret@managed-valkey.example.com:25061", "rediss://default:secret@managed-valkey.example.com:25061"},
 	}
 
 	for _, tt := range tests {
@@ -191,6 +194,87 @@ func TestNewMachineryQueue_NormalizesVariousRedisURLs(t *testing.T) {
 		}
 		if cnf.ResultBackend != tt.wantBroker {
 			t.Errorf("input=%q: ResultBackend got %q, want %q", tt.input, cnf.ResultBackend, tt.wantBroker)
+		}
+	}
+}
+
+func TestNewMachineryQueue_RedissTLSEnabled(t *testing.T) {
+	mq, err := NewMachineryQueue("rediss://managed-valkey.example.com:25061")
+	if err != nil {
+		t.Fatalf("NewMachineryQueue: %v", err)
+	}
+
+	cnf := mq.Config()
+	if cnf.TLSConfig == nil {
+		t.Fatal("TLSConfig should be non-nil for rediss:// URL")
+	}
+	if cnf.TLSConfig.MinVersion != tls.VersionTLS12 {
+		t.Errorf("TLSConfig.MinVersion = %d, want %d", cnf.TLSConfig.MinVersion, tls.VersionTLS12)
+	}
+}
+
+func TestNewMachineryQueue_RedisTLSNotEnabled(t *testing.T) {
+	for _, input := range []string{"localhost:6379", "redis://localhost:6379"} {
+		mq, err := NewMachineryQueue(input)
+		if err != nil {
+			t.Fatalf("NewMachineryQueue(%q): %v", input, err)
+		}
+		cnf := mq.Config()
+		if cnf.TLSConfig != nil {
+			t.Errorf("input=%q: TLSConfig should be nil for non-TLS URL", input)
+		}
+	}
+}
+
+func TestNewMachineryQueue_RedissWithCredentials(t *testing.T) {
+	mq, err := NewMachineryQueue("rediss://default:s3cret@db-valkey.example.com:25061")
+	if err != nil {
+		t.Fatalf("NewMachineryQueue: %v", err)
+	}
+
+	cnf := mq.Config()
+	wantBroker := "rediss://default:s3cret@db-valkey.example.com:25061"
+	if cnf.Broker != wantBroker {
+		t.Errorf("Broker = %q, want %q", cnf.Broker, wantBroker)
+	}
+	if cnf.TLSConfig == nil {
+		t.Fatal("TLSConfig should be non-nil for rediss:// URL")
+	}
+}
+
+func TestParseRedisAddr(t *testing.T) {
+	tests := []struct {
+		input      string
+		wantAddr   string
+		wantScheme string
+		wantErr    bool
+	}{
+		{"localhost:6379", "localhost:6379", "redis", false},
+		{"redis://localhost:6379", "localhost:6379", "redis", false},
+		{"rediss://host:25061", "host:25061", "rediss", false},
+		{"rediss://user:pass@host:25061", "user:pass@host:25061", "rediss", false},
+		{"redis://user:pass@host:6379", "user:pass@host:6379", "redis", false},
+		{"http://host:6379", "", "", true},
+		{"rediss://", "", "", true},
+	}
+
+	for _, tt := range tests {
+		addr, scheme, err := parseRedisAddr(tt.input)
+		if tt.wantErr {
+			if err == nil {
+				t.Errorf("parseRedisAddr(%q): expected error, got addr=%q scheme=%q", tt.input, addr, scheme)
+			}
+			continue
+		}
+		if err != nil {
+			t.Errorf("parseRedisAddr(%q): unexpected error: %v", tt.input, err)
+			continue
+		}
+		if addr != tt.wantAddr {
+			t.Errorf("parseRedisAddr(%q): addr = %q, want %q", tt.input, addr, tt.wantAddr)
+		}
+		if scheme != tt.wantScheme {
+			t.Errorf("parseRedisAddr(%q): scheme = %q, want %q", tt.input, scheme, tt.wantScheme)
 		}
 	}
 }
