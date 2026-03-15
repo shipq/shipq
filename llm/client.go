@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"strings"
 	"sync"
 	"time"
@@ -29,6 +30,7 @@ type Client struct {
 	name        string             // optional name for multi-client contexts (empty = default)
 	sequential  bool               // if true, tool calls execute one at a time
 	taskDAG     *dag.Graph[string] // nil = no ordering constraints
+	logger      *slog.Logger
 }
 
 // Option configures a Client.
@@ -103,6 +105,12 @@ func WithTaskDAG(g *dag.Graph[string]) Option {
 	return func(c *Client) { c.taskDAG = g }
 }
 
+// WithLogger sets the structured logger used for retry and diagnostic messages.
+// Defaults to slog.Default() if not provided.
+func WithLogger(l *slog.Logger) Option {
+	return func(c *Client) { c.logger = l }
+}
+
 // NewClient creates a new LLM client with the given provider and options.
 func NewClient(provider Provider, opts ...Option) *Client {
 	c := &Client{
@@ -112,6 +120,10 @@ func NewClient(provider Provider, opts ...Option) *Client {
 	}
 	for _, opt := range opts {
 		opt(c)
+	}
+
+	if c.logger == nil {
+		c.logger = slog.Default()
 	}
 
 	// Validate DAG node IDs against registry.
@@ -129,22 +141,48 @@ func NewClient(provider Provider, opts ...Option) *Client {
 	return c
 }
 
+// ── Per-call options ──────────────────────────────────────────────────────────
+
+// ChatOption configures a single Chat or ChatWithHistory call.
+type ChatOption func(*chatConfig)
+
+type chatConfig struct {
+	onText func(delta string)
+}
+
+// WithOnText registers a callback that fires on every text delta during
+// streaming (or once with the full text for non-streaming providers).
+// Use this to feed deltas into a JSONArrayStreamer for incremental parsing.
+func WithOnText(fn func(delta string)) ChatOption {
+	return func(cfg *chatConfig) { cfg.onText = fn }
+}
+
+func buildChatConfig(opts []ChatOption) chatConfig {
+	var cfg chatConfig
+	for _, o := range opts {
+		o(&cfg)
+	}
+	return cfg
+}
+
 // ── Public conversation API ───────────────────────────────────────────────────
 
 // Chat starts a new single-turn conversation with the given user message.
-func (c *Client) Chat(ctx context.Context, userMessage string) (*Response, error) {
+func (c *Client) Chat(ctx context.Context, userMessage string, opts ...ChatOption) (*Response, error) {
 	return c.ChatWithHistory(ctx, []Message{
 		{Role: RoleUser, Text: userMessage},
-	})
+	}, opts...)
 }
 
 // ChatWithHistory runs a conversation turn starting from an existing message
 // history. The history must begin with a user message. Returns the model's
 // final response after all tool calls have been resolved.
-func (c *Client) ChatWithHistory(ctx context.Context, messages []Message) (*Response, error) {
+func (c *Client) ChatWithHistory(ctx context.Context, messages []Message, opts ...ChatOption) (*Response, error) {
 	if len(messages) == 0 {
 		return nil, fmt.Errorf("llm: ChatWithHistory requires at least one message")
 	}
+
+	cfg := buildChatConfig(opts)
 
 	// Convert public messages to internal ProviderMessages.
 	history := make([]ProviderMessage, len(messages))
@@ -156,14 +194,14 @@ func (c *Client) ChatWithHistory(ctx context.Context, messages []Message) (*Resp
 		}
 	}
 
-	return c.run(ctx, history)
+	return c.run(ctx, history, cfg.onText)
 }
 
 // ── Core conversation loop ────────────────────────────────────────────────────
 
 // run executes the conversation loop against the provider, handling tool calls,
 // streaming, and persistence as configured.
-func (c *Client) run(ctx context.Context, history []ProviderMessage) (*Response, error) {
+func (c *Client) run(ctx context.Context, history []ProviderMessage, onText func(string)) (*Response, error) {
 	var (
 		convID     int64
 		publicID   string
@@ -244,8 +282,9 @@ func (c *Client) run(ctx context.Context, history []ProviderMessage) (*Response,
 		}
 
 		// ── 3a. Call the provider ─────────────────────────────────────────────
-		provResp, err := c.callProvider(ctx, req)
+		provResp, err := c.callProvider(ctx, req, onText)
 		if err != nil {
+			_ = publishError(ctx, c.channel, err.Error(), errorCodeFromErr(err))
 			c.failConversation(ctx, convID, totalUsage, len(toolLogs), err)
 			return nil, err
 		}
@@ -340,12 +379,61 @@ func (c *Client) run(ctx context.Context, history []ProviderMessage) (*Response,
 
 // ── Provider dispatch ─────────────────────────────────────────────────────────
 
-// callProvider calls the provider, preferring streaming when a channel is
-// wired in. Falls back to non-streaming Send when SendStream returns
-// ErrStreamingNotSupported.
-func (c *Client) callProvider(ctx context.Context, req *ProviderRequest) (*ProviderResponse, error) {
+const maxRateLimitRetries = 3
+
+// callProvider wraps callProviderOnce with rate-limit retry logic. If the
+// provider returns a RateLimitError, we wait the requested duration and
+// retry up to maxRateLimitRetries times before giving up.
+func (c *Client) callProvider(ctx context.Context, req *ProviderRequest, onText func(string)) (*ProviderResponse, error) {
+	for attempt := 0; ; attempt++ {
+		resp, err := c.callProviderOnce(ctx, req, onText)
+		if err == nil {
+			return resp, nil
+		}
+
+		var rle *RateLimitError
+		if !errors.As(err, &rle) || attempt >= maxRateLimitRetries {
+			if attempt > 0 && errors.As(err, &rle) {
+				c.logger.Warn("llm: rate limit retries exhausted",
+					"attempts", attempt+1,
+					"provider", c.provider.Name(),
+				)
+			}
+			return nil, err
+		}
+
+		wait := rle.RetryAfter
+		if wait <= 0 {
+			wait = time.Duration(attempt+1) * 2 * time.Second
+		}
+		if wait > 60*time.Second {
+			wait = 60 * time.Second
+		}
+
+		c.logger.Info("llm: rate limited, retrying",
+			"attempt", attempt+1,
+			"wait", wait,
+			"provider", c.provider.Name(),
+		)
+		_ = publishError(ctx, c.channel,
+			fmt.Sprintf("Rate limited by provider, retrying in %s (attempt %d/%d)...",
+				wait, attempt+1, maxRateLimitRetries),
+			"rate_limit_retry")
+
+		select {
+		case <-time.After(wait):
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
+	}
+}
+
+// callProviderOnce calls the provider once, preferring streaming when a
+// channel is wired in. Falls back to non-streaming Send when SendStream
+// returns ErrStreamingNotSupported.
+func (c *Client) callProviderOnce(ctx context.Context, req *ProviderRequest, onText func(string)) (*ProviderResponse, error) {
 	if c.channel != nil {
-		resp, err := c.callProviderStream(ctx, req)
+		resp, err := c.callProviderStream(ctx, req, onText)
 		if err != nil && !errors.Is(err, ErrStreamingNotSupported) {
 			return nil, err
 		}
@@ -354,12 +442,19 @@ func (c *Client) callProvider(ctx context.Context, req *ProviderRequest) (*Provi
 		}
 		// Fall through to non-streaming.
 	}
-	return c.provider.Send(ctx, req)
+	resp, err := c.provider.Send(ctx, req)
+	if err != nil {
+		return nil, err
+	}
+	if onText != nil && resp.Text != "" {
+		onText(resp.Text)
+	}
+	return resp, nil
 }
 
 // callProviderStream calls SendStream and drains the event channel, publishing
 // text deltas to the channel and accumulating a complete ProviderResponse.
-func (c *Client) callProviderStream(ctx context.Context, req *ProviderRequest) (*ProviderResponse, error) {
+func (c *Client) callProviderStream(ctx context.Context, req *ProviderRequest, onText func(string)) (*ProviderResponse, error) {
 	events, err := c.provider.SendStream(ctx, req)
 	if err != nil {
 		return nil, err
@@ -385,6 +480,9 @@ func (c *Client) callProviderStream(ctx context.Context, req *ProviderRequest) (
 			textBuf.WriteString(evt.Text)
 			if err := publishTextDelta(ctx, c.channel, evt.Text); err != nil {
 				return nil, fmt.Errorf("llm: publish text delta: %w", err)
+			}
+			if onText != nil {
+				onText(evt.Text)
 			}
 
 		case StreamToolCallDelta:
@@ -647,6 +745,17 @@ func (c *Client) failConversation(ctx context.Context, convID int64, usage Usage
 		CompletedAt:   time.Now(),
 		ErrorMessage:  cause.Error(),
 	})
+}
+
+// errorCodeFromErr derives a short error code from an error for the LLMError
+// stream event. Returns "rate_limit_exceeded" for RateLimitError, otherwise
+// "provider_error".
+func errorCodeFromErr(err error) string {
+	var rle *RateLimitError
+	if errors.As(err, &rle) {
+		return "rate_limit_exceeded"
+	}
+	return "provider_error"
 }
 
 // generatePublicID generates a simple unique public ID for a conversation.

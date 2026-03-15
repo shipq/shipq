@@ -3,6 +3,7 @@ package anthropic
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -667,13 +668,18 @@ func TestSendAPIError(t *testing.T) {
 }
 
 func TestSendRateLimitError(t *testing.T) {
+	// Anthropic 429 responses use the format documented at
+	// https://docs.anthropic.com/en/api/errors — the error body type is
+	// "rate_limit_error" and the message is generic (no "try again in Xs"
+	// pattern like OpenAI). The retry-after header is the primary signal.
 	p, _ := newTestProvider(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("retry-after", "7")
 		w.WriteHeader(http.StatusTooManyRequests)
 		json.NewEncoder(w).Encode(map[string]any{
 			"type": "error",
 			"error": map[string]any{
 				"type":    "rate_limit_error",
-				"message": "Rate limit exceeded",
+				"message": "Your account has hit a rate limit.",
 			},
 		})
 	})
@@ -684,8 +690,76 @@ func TestSendRateLimitError(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error for rate limit")
 	}
-	if !strings.Contains(err.Error(), "429") {
-		t.Errorf("error should mention HTTP 429, got %q", err.Error())
+
+	var rle *llm.RateLimitError
+	if !errors.As(err, &rle) {
+		t.Fatalf("expected *llm.RateLimitError, got %T: %v", err, err)
+	}
+	if rle.StatusCode != 429 {
+		t.Errorf("StatusCode = %d, want 429", rle.StatusCode)
+	}
+	if rle.RetryAfter != 7*time.Second {
+		t.Errorf("RetryAfter = %v, want 7s", rle.RetryAfter)
+	}
+	if !strings.Contains(rle.Message, "rate limit") {
+		t.Errorf("Message = %q, want to contain 'rate limit'", rle.Message)
+	}
+}
+
+func TestSendRateLimitError_NoRetryAfterHeader(t *testing.T) {
+	// When Anthropic omits the retry-after header and the body has no
+	// parseable wait duration, RetryAfter should be 0 (caller uses fallback).
+	p, _ := newTestProvider(t, func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusTooManyRequests)
+		json.NewEncoder(w).Encode(map[string]any{
+			"type": "error",
+			"error": map[string]any{
+				"type":    "rate_limit_error",
+				"message": "Your account has hit a rate limit.",
+			},
+		})
+	})
+
+	_, err := p.Send(context.Background(), &llm.ProviderRequest{
+		Messages: []llm.ProviderMessage{{Role: llm.RoleUser, Text: "hi"}},
+	})
+
+	var rle *llm.RateLimitError
+	if !errors.As(err, &rle) {
+		t.Fatalf("expected *llm.RateLimitError, got %T: %v", err, err)
+	}
+	if rle.RetryAfter != 0 {
+		t.Errorf("RetryAfter = %v, want 0 (no header, no body hint)", rle.RetryAfter)
+	}
+}
+
+func TestSendStreamRateLimitError(t *testing.T) {
+	// Streaming endpoint should also return RateLimitError on 429.
+	p, _ := newTestProvider(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("retry-after", "4")
+		w.WriteHeader(http.StatusTooManyRequests)
+		json.NewEncoder(w).Encode(map[string]any{
+			"type": "error",
+			"error": map[string]any{
+				"type":    "rate_limit_error",
+				"message": "Your account has hit a rate limit.",
+			},
+		})
+	})
+
+	_, err := p.SendStream(context.Background(), &llm.ProviderRequest{
+		Messages: []llm.ProviderMessage{{Role: llm.RoleUser, Text: "hi"}},
+	})
+	if err == nil {
+		t.Fatal("expected error for rate limit")
+	}
+
+	var rle *llm.RateLimitError
+	if !errors.As(err, &rle) {
+		t.Fatalf("expected *llm.RateLimitError, got %T: %v", err, err)
+	}
+	if rle.RetryAfter != 4*time.Second {
+		t.Errorf("RetryAfter = %v, want 4s", rle.RetryAfter)
 	}
 }
 

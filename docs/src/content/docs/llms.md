@@ -1042,6 +1042,7 @@ func HandleChatRequest(ctx context.Context, req *ChatRequest) error {
 - `WithErrorStrategy(s)` — `SendErrorToModel` (default, recoverable) or `AbortOnToolError`
 - `WithSequentialToolCalls()` — execute parallel tool calls sequentially
 - `WithTaskDAG(g)` — attach a `*dag.Graph[string]` to enforce tool ordering constraints. Tools whose hard dependencies haven't been satisfied are omitted from the provider request. See "Task DAGs" section below.
+- `WithLogger(l)` — structured `*slog.Logger` for retry and diagnostic messages (default: `slog.Default()`)
 
 ### Multiple Providers
 
