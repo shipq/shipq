@@ -40,6 +40,8 @@ func TestGoTypeStringToTS(t *testing.T) {
 		{"map[string]string", "Record<string, string>"},
 		{"map[string]int", "Record<string, number>"},
 		{"map[string][]string", "Record<string, string[]>"},
+		{"json.RawMessage", "any"},
+		{"*json.RawMessage", "any"},
 		{"time.Time", "any"},
 		{"SomeCustomType", "any"},
 	}

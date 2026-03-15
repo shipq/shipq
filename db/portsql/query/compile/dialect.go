@@ -67,6 +67,11 @@ type CompilerState struct {
 // Shared Helpers
 // =============================================================================
 
+// isTimeColumn returns true if the column's Go type is time.Time or *time.Time.
+func isTimeColumn(col query.Column) bool {
+	return col.GoType() == "time.Time" || col.GoType() == "*time.Time"
+}
+
 // writeILIKEWithLower is a shared helper for dialects that don't have native ILIKE.
 // It emulates ILIKE using LOWER(x) LIKE LOWER(y).
 func writeILIKEWithLower(b *strings.Builder, args []query.Expr, writeExpr func(query.Expr) error) error {
@@ -221,7 +226,13 @@ func (d *MySQLDialect) WriteJSONAgg(b *strings.Builder, cols []query.Column, wri
 		}
 		// Key is column name as string literal
 		fmt.Fprintf(b, "'%s', ", col.ColumnName())
-		writeColumn(col)
+		if isTimeColumn(col) {
+			b.WriteString("DATE_FORMAT(")
+			writeColumn(col)
+			b.WriteString(", '%Y-%m-%dT%H:%i:%s.%fZ')")
+		} else {
+			writeColumn(col)
+		}
 	}
 	b.WriteString(") END), JSON_ARRAY())")
 	return nil
@@ -292,7 +303,13 @@ func (d *SQLiteDialect) WriteJSONAgg(b *strings.Builder, cols []query.Column, wr
 		}
 		// Key is column name as string literal
 		fmt.Fprintf(b, "'%s', ", col.ColumnName())
-		writeColumn(col)
+		if isTimeColumn(col) {
+			b.WriteString("strftime('%Y-%m-%dT%H:%M:%fZ', ")
+			writeColumn(col)
+			b.WriteString(")")
+		} else {
+			writeColumn(col)
+		}
 	}
 	b.WriteString(") END), '[]')")
 	return nil

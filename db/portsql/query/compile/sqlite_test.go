@@ -1243,3 +1243,112 @@ func TestSQLite_InsertSelect_WithCTE(t *testing.T) {
 		t.Errorf("expected no params, got %v", params)
 	}
 }
+
+// =============================================================================
+// Regression tests for Bug 2: time.Time fields inside JSONAGG break on SQLite
+// =============================================================================
+
+// TestSQLite_JSONAgg_DateTimeColumn_UsesStrftime verifies that SQLite's
+// WriteJSONAgg wraps time.Time columns with strftime to produce RFC3339.
+// Regression test: SQLite JSON_OBJECT serializes datetime in SQLite's native
+// format which breaks Go's json.Unmarshal into time.Time (expects RFC3339).
+func TestSQLite_JSONAgg_DateTimeColumn_UsesStrftime(t *testing.T) {
+	bookTitle := query.StringColumn{Table: "books", Name: "title"}
+	createdAt := query.TimeColumn{Table: "books", Name: "created_at"}
+
+	jsonAgg := query.JSONAggExpr{
+		FieldName: "books",
+		Columns:   []query.Column{bookTitle, createdAt},
+	}
+
+	ast := &query.AST{
+		Kind:      query.SelectQuery,
+		FromTable: query.TableRef{Name: "books"},
+		SelectCols: []query.SelectExpr{
+			{Expr: jsonAgg, Alias: "books"},
+		},
+	}
+
+	sql, _, err := NewCompiler(SQLite).Compile(ast)
+	if err != nil {
+		t.Fatalf("Compile failed: %v", err)
+	}
+
+	t.Logf("Compiled SQL: %s", sql)
+
+	// Must wrap created_at with strftime for RFC3339 output
+	if !containsStr(sql, "strftime(") {
+		t.Errorf("SQL should contain strftime for time column: %s", sql)
+	}
+	if !containsStr(sql, "'created_at', strftime(") {
+		t.Errorf("SQL should wrap created_at value with strftime: %s", sql)
+	}
+	// Non-time column (title) should NOT be wrapped
+	if containsStr(sql, "'title', strftime(") {
+		t.Errorf("SQL should NOT wrap non-time column with strftime: %s", sql)
+	}
+	// Must use RFC3339-compatible format string
+	if !containsStr(sql, "%Y-%m-%dT%H:%M:%fZ") {
+		t.Errorf("strftime should use RFC3339-compatible format: %s", sql)
+	}
+}
+
+// TestSQLite_JSONAgg_NullableDateTimeColumn_UsesStrftime verifies that nullable
+// time columns (*time.Time) are also wrapped with strftime.
+func TestSQLite_JSONAgg_NullableDateTimeColumn_UsesStrftime(t *testing.T) {
+	bookTitle := query.StringColumn{Table: "books", Name: "title"}
+	deletedAt := query.NullTimeColumn{Table: "books", Name: "deleted_at"}
+
+	jsonAgg := query.JSONAggExpr{
+		FieldName: "books",
+		Columns:   []query.Column{bookTitle, deletedAt},
+	}
+
+	ast := &query.AST{
+		Kind:      query.SelectQuery,
+		FromTable: query.TableRef{Name: "books"},
+		SelectCols: []query.SelectExpr{
+			{Expr: jsonAgg, Alias: "books"},
+		},
+	}
+
+	sql, _, err := NewCompiler(SQLite).Compile(ast)
+	if err != nil {
+		t.Fatalf("Compile failed: %v", err)
+	}
+
+	t.Logf("Compiled SQL: %s", sql)
+
+	if !containsStr(sql, "'deleted_at', strftime(") {
+		t.Errorf("SQL should wrap nullable time column with strftime: %s", sql)
+	}
+}
+
+// TestSQLite_JSONAgg_NoTimeColumns_NoStrftime verifies that JSON_OBJECT without
+// time columns does NOT emit strftime.
+func TestSQLite_JSONAgg_NoTimeColumns_NoStrftime(t *testing.T) {
+	bookID := query.Int64Column{Table: "books", Name: "id"}
+	bookTitle := query.StringColumn{Table: "books", Name: "title"}
+
+	jsonAgg := query.JSONAggExpr{
+		FieldName: "books",
+		Columns:   []query.Column{bookID, bookTitle},
+	}
+
+	ast := &query.AST{
+		Kind:      query.SelectQuery,
+		FromTable: query.TableRef{Name: "books"},
+		SelectCols: []query.SelectExpr{
+			{Expr: jsonAgg, Alias: "books"},
+		},
+	}
+
+	sql, _, err := NewCompiler(SQLite).Compile(ast)
+	if err != nil {
+		t.Fatalf("Compile failed: %v", err)
+	}
+
+	if containsStr(sql, "strftime") {
+		t.Errorf("SQL should NOT contain strftime when no time columns: %s", sql)
+	}
+}

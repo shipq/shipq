@@ -207,7 +207,7 @@ func AuthCmd() {
 	}
 
 	queryDefsPath := filepath.Join(queryDefsDir, "queries.go")
-	if err := os.WriteFile(queryDefsPath, authQueryDefs, 0644); err != nil {
+	if _, err := codegen.WriteGeneratedFile(queryDefsPath, authQueryDefs); err != nil {
 		fmt.Fprintf(os.Stderr, "error: failed to write querydefs/auth/queries.go: %v\n", err)
 		os.Exit(1)
 	}

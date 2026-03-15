@@ -596,3 +596,127 @@ func TestFileGetAll(t *testing.T) {
 		}
 	})
 }
+
+func TestCommentPreservation(t *testing.T) {
+	t.Run("preamble comments survive round-trip", func(t *testing.T) {
+		ini := "# file-level comment\n\n[db]\nurl = x\n"
+		f, err := Parse(strings.NewReader(ini))
+		if err != nil {
+			t.Fatalf("parse error: %v", err)
+		}
+		var buf bytes.Buffer
+		if err := f.Write(&buf); err != nil {
+			t.Fatalf("write error: %v", err)
+		}
+		if !strings.Contains(buf.String(), "# file-level comment") {
+			t.Errorf("preamble comment lost, got:\n%s", buf.String())
+		}
+	})
+
+	t.Run("inline comments survive round-trip", func(t *testing.T) {
+		ini := "[db]\n# inline comment\nurl = x\n"
+		f, err := Parse(strings.NewReader(ini))
+		if err != nil {
+			t.Fatalf("parse error: %v", err)
+		}
+		var buf bytes.Buffer
+		if err := f.Write(&buf); err != nil {
+			t.Fatalf("write error: %v", err)
+		}
+		if !strings.Contains(buf.String(), "# inline comment") {
+			t.Errorf("inline comment lost, got:\n%s", buf.String())
+		}
+	})
+
+	t.Run("comments between sections survive round-trip", func(t *testing.T) {
+		ini := "[db]\nurl = x\n\n# between sections\n[paths]\nmigrations = m\n"
+		f, err := Parse(strings.NewReader(ini))
+		if err != nil {
+			t.Fatalf("parse error: %v", err)
+		}
+		var buf bytes.Buffer
+		if err := f.Write(&buf); err != nil {
+			t.Fatalf("write error: %v", err)
+		}
+		if !strings.Contains(buf.String(), "# between sections") {
+			t.Errorf("inter-section comment lost, got:\n%s", buf.String())
+		}
+	})
+
+	t.Run("Set preserves existing comments", func(t *testing.T) {
+		ini := "# preamble\n[db]\n# explain the url\nurl = old\n"
+		f, err := Parse(strings.NewReader(ini))
+		if err != nil {
+			t.Fatalf("parse error: %v", err)
+		}
+		f.Set("db", "url", "new")
+		var buf bytes.Buffer
+		if err := f.Write(&buf); err != nil {
+			t.Fatalf("write error: %v", err)
+		}
+		out := buf.String()
+		if !strings.Contains(out, "# preamble") {
+			t.Errorf("preamble lost, got:\n%s", out)
+		}
+		if !strings.Contains(out, "# explain the url") {
+			t.Errorf("inline comment lost, got:\n%s", out)
+		}
+		if !strings.Contains(out, "url = new") {
+			t.Errorf("updated value missing, got:\n%s", out)
+		}
+	})
+
+	t.Run("semicolon comments survive round-trip", func(t *testing.T) {
+		ini := "; semicolon comment\n[db]\n; another\nurl = x\n"
+		f, err := Parse(strings.NewReader(ini))
+		if err != nil {
+			t.Fatalf("parse error: %v", err)
+		}
+		var buf bytes.Buffer
+		if err := f.Write(&buf); err != nil {
+			t.Fatalf("write error: %v", err)
+		}
+		out := buf.String()
+		if !strings.Contains(out, "; semicolon comment") {
+			t.Errorf("preamble semicolon comment lost, got:\n%s", out)
+		}
+		if !strings.Contains(out, "; another") {
+			t.Errorf("inline semicolon comment lost, got:\n%s", out)
+		}
+	})
+
+	t.Run("full round-trip preserves comments through WriteFile and ParseFile", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		path := filepath.Join(tmpDir, "test.ini")
+
+		original := "# Main config\n[db]\n# Connection string\nurl = postgres://localhost/mydb\npool_size = 10\n\n# Paths section\n[paths]\nmigrations = ./migrations\n"
+		os.WriteFile(path, []byte(original), 0644)
+
+		f, err := ParseFile(path)
+		if err != nil {
+			t.Fatalf("parse error: %v", err)
+		}
+
+		f.Set("db", "url", "postgres://localhost/updated")
+
+		if err := f.WriteFile(path); err != nil {
+			t.Fatalf("write error: %v", err)
+		}
+
+		content, _ := os.ReadFile(path)
+		out := string(content)
+
+		if !strings.Contains(out, "# Main config") {
+			t.Errorf("preamble comment lost")
+		}
+		if !strings.Contains(out, "# Connection string") {
+			t.Errorf("inline comment lost")
+		}
+		if !strings.Contains(out, "# Paths section") {
+			t.Errorf("inter-section comment lost")
+		}
+		if !strings.Contains(out, "url = postgres://localhost/updated") {
+			t.Errorf("updated value missing")
+		}
+	})
+}

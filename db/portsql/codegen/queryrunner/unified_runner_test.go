@@ -2413,3 +2413,254 @@ func TestGenerateUnifiedRunner_InsertSelect_FormatValidation(t *testing.T) {
 		})
 	}
 }
+
+// =============================================================================
+// Regression tests for Bug 1: [null] from empty LEFT JOINs
+// =============================================================================
+
+// TestGenerateUnifiedRunner_JSONAgg_NullStrip_MySQL verifies that the generated
+// runner for MySQL emits stripJSONNulls before json.Unmarshal for json_agg fields.
+// Regression test: MySQL JSON_ARRAYAGG(CASE WHEN ... END) produces [null] for
+// empty LEFT JOINs, which unmarshals to [{zero-value}] instead of [].
+func TestGenerateUnifiedRunner_JSONAgg_NullStrip_MySQL(t *testing.T) {
+	sq := makeJSONAggQuery("GetDraft", []query.SerializedColumn{
+		{Table: "entries", Name: "public_id", GoType: "string"},
+		{Table: "entries", Name: "title", GoType: "string"},
+	})
+
+	cfg := UnifiedRunnerConfig{
+		ModulePath:  "example.com/myapp",
+		Dialect:     dburl.DialectMySQL,
+		UserQueries: []query.SerializedQuery{sq},
+	}
+
+	code, err := GenerateUnifiedRunner(cfg)
+	if err != nil {
+		t.Fatalf("GenerateUnifiedRunner failed: %v", err)
+	}
+
+	codeStr := string(code)
+
+	// Must emit the stripJSONNulls helper
+	if !strings.Contains(codeStr, "func stripJSONNulls(") {
+		t.Error("expected stripJSONNulls helper to be emitted for MySQL")
+	}
+
+	// Must call stripJSONNulls before json.Unmarshal
+	if !strings.Contains(codeStr, "stripJSONNulls(rolesRaw)") {
+		t.Error("expected stripJSONNulls(rolesRaw) call before unmarshal")
+	}
+
+	// stripJSONNulls must appear BEFORE json.Unmarshal in the output
+	stripIdx := strings.Index(codeStr, "stripJSONNulls(rolesRaw)")
+	unmarshalIdx := strings.Index(codeStr, "json.Unmarshal([]byte(rolesRaw)")
+	if stripIdx < 0 || unmarshalIdx < 0 || stripIdx >= unmarshalIdx {
+		t.Error("stripJSONNulls must be called before json.Unmarshal")
+	}
+
+	// Must be valid Go
+	if _, err := format.Source(code); err != nil {
+		t.Errorf("generated runner is not valid Go: %v\n%s", err, codeStr)
+	}
+}
+
+// TestGenerateUnifiedRunner_JSONAgg_NullStrip_SQLite verifies that the generated
+// runner for SQLite also emits stripJSONNulls.
+func TestGenerateUnifiedRunner_JSONAgg_NullStrip_SQLite(t *testing.T) {
+	sq := makeJSONAggQuery("GetDraft", []query.SerializedColumn{
+		{Table: "entries", Name: "public_id", GoType: "string"},
+	})
+
+	cfg := UnifiedRunnerConfig{
+		ModulePath:  "example.com/myapp",
+		Dialect:     dburl.DialectSQLite,
+		UserQueries: []query.SerializedQuery{sq},
+	}
+
+	code, err := GenerateUnifiedRunner(cfg)
+	if err != nil {
+		t.Fatalf("GenerateUnifiedRunner failed: %v", err)
+	}
+
+	codeStr := string(code)
+
+	if !strings.Contains(codeStr, "func stripJSONNulls(") {
+		t.Error("expected stripJSONNulls helper to be emitted for SQLite")
+	}
+
+	if !strings.Contains(codeStr, "stripJSONNulls(rolesRaw)") {
+		t.Error("expected stripJSONNulls(rolesRaw) call before unmarshal")
+	}
+
+	if _, err := format.Source(code); err != nil {
+		t.Errorf("generated runner is not valid Go: %v\n%s", err, codeStr)
+	}
+}
+
+// TestGenerateUnifiedRunner_JSONAgg_NullStrip_Postgres_NotEmitted verifies that
+// Postgres does NOT emit stripJSONNulls because Postgres uses FILTER (WHERE ...)
+// which never produces null entries.
+func TestGenerateUnifiedRunner_JSONAgg_NullStrip_Postgres_NotEmitted(t *testing.T) {
+	sq := makeJSONAggQuery("GetDraft", []query.SerializedColumn{
+		{Table: "entries", Name: "public_id", GoType: "string"},
+	})
+
+	cfg := UnifiedRunnerConfig{
+		ModulePath:  "example.com/myapp",
+		Dialect:     dburl.DialectPostgres,
+		UserQueries: []query.SerializedQuery{sq},
+	}
+
+	code, err := GenerateUnifiedRunner(cfg)
+	if err != nil {
+		t.Fatalf("GenerateUnifiedRunner failed: %v", err)
+	}
+
+	codeStr := string(code)
+
+	if strings.Contains(codeStr, "stripJSONNulls") {
+		t.Error("Postgres should NOT emit stripJSONNulls (uses FILTER WHERE instead)")
+	}
+
+	if _, err := format.Source(code); err != nil {
+		t.Errorf("generated runner is not valid Go: %v\n%s", err, codeStr)
+	}
+}
+
+// TestGenerateUnifiedRunner_JSONAgg_NullStrip_ReturnMany verifies null strip is
+// also emitted for ReturnMany queries (row-loop path).
+func TestGenerateUnifiedRunner_JSONAgg_NullStrip_ReturnMany(t *testing.T) {
+	sq := makeJSONAggQuery("ListDrafts", []query.SerializedColumn{
+		{Table: "entries", Name: "public_id", GoType: "string"},
+	})
+	sq.ReturnType = query.ReturnMany
+
+	cfg := UnifiedRunnerConfig{
+		ModulePath:  "example.com/myapp",
+		Dialect:     dburl.DialectMySQL,
+		UserQueries: []query.SerializedQuery{sq},
+	}
+
+	code, err := GenerateUnifiedRunner(cfg)
+	if err != nil {
+		t.Fatalf("GenerateUnifiedRunner failed: %v", err)
+	}
+
+	codeStr := string(code)
+
+	if !strings.Contains(codeStr, "stripJSONNulls(rolesRaw)") {
+		t.Error("expected stripJSONNulls in ReturnMany row loop")
+	}
+
+	if _, err := format.Source(code); err != nil {
+		t.Errorf("generated runner is not valid Go: %v\n%s", err, codeStr)
+	}
+}
+
+// =============================================================================
+// Regression tests for Bug 2: time.Time fields inside JSONAGG break on MySQL
+// =============================================================================
+
+// TestGenerateSharedTypes_JSONAgg_TimeColumn verifies that when json_agg
+// columns include time.Time fields, the generated struct uses time.Time as the
+// Go type (the fix is in the SQL layer, not the type layer).
+func TestGenerateSharedTypes_JSONAgg_TimeColumn(t *testing.T) {
+	sq := makeJSONAggQuery("GetDraftWithEntries", []query.SerializedColumn{
+		{Table: "entries", Name: "title", GoType: "string"},
+		{Table: "entries", Name: "created_at", GoType: "time.Time"},
+		{Table: "entries", Name: "updated_at", GoType: "*time.Time"},
+	})
+
+	cfg := UnifiedRunnerConfig{
+		ModulePath:  "example.com/myapp",
+		Dialect:     dburl.DialectMySQL,
+		UserQueries: []query.SerializedQuery{sq},
+	}
+
+	code, err := GenerateSharedTypes(cfg)
+	if err != nil {
+		t.Fatalf("GenerateSharedTypes failed: %v", err)
+	}
+
+	codeStr := string(code)
+
+	// The item struct should have time.Time fields
+	if !strings.Contains(codeStr, "CreatedAt time.Time") {
+		t.Error("expected CreatedAt time.Time in nested struct")
+	}
+	if !strings.Contains(codeStr, "UpdatedAt *time.Time") {
+		t.Error("expected UpdatedAt *time.Time in nested struct")
+	}
+
+	if _, err := format.Source(code); err != nil {
+		t.Errorf("generated types.go is not valid Go: %v\n%s", err, codeStr)
+	}
+}
+
+// TestGenerateUnifiedRunner_JSONAgg_TimeColumn_MySQL_ValidGo verifies that the
+// full generated runner with time.Time json_agg columns produces valid Go.
+// Regression test: MySQL JSON_OBJECT serializes datetime in MySQL format, not
+// RFC3339. The fix uses DATE_FORMAT in the SQL, so the generated Go scanner
+// should remain the same (json.Unmarshal of time.Time from an RFC3339 string).
+func TestGenerateUnifiedRunner_JSONAgg_TimeColumn_MySQL_ValidGo(t *testing.T) {
+	sq := makeJSONAggQuery("GetDraftWithEntries", []query.SerializedColumn{
+		{Table: "entries", Name: "title", GoType: "string"},
+		{Table: "entries", Name: "created_at", GoType: "time.Time"},
+	})
+
+	cfg := UnifiedRunnerConfig{
+		ModulePath:  "example.com/myapp",
+		Dialect:     dburl.DialectMySQL,
+		UserQueries: []query.SerializedQuery{sq},
+	}
+
+	code, err := GenerateUnifiedRunner(cfg)
+	if err != nil {
+		t.Fatalf("GenerateUnifiedRunner failed: %v", err)
+	}
+
+	codeStr := string(code)
+
+	// Should scan json_agg into raw string and unmarshal
+	if !strings.Contains(codeStr, "var rolesRaw string") {
+		t.Error("expected 'var rolesRaw string' for json_agg scan")
+	}
+	if !strings.Contains(codeStr, "json.Unmarshal([]byte(rolesRaw), &result.Roles)") {
+		t.Error("expected json.Unmarshal for json_agg field")
+	}
+
+	// Must be valid Go
+	if _, err := format.Source(code); err != nil {
+		t.Errorf("generated runner is not valid Go: %v\n%s", err, codeStr)
+	}
+}
+
+// TestGenerateUnifiedRunner_JSONAgg_TimeColumn_AllDialects_FormatsOK ensures
+// the generated code is valid Go for all three dialects when json_agg includes
+// time columns.
+func TestGenerateUnifiedRunner_JSONAgg_TimeColumn_AllDialects_FormatsOK(t *testing.T) {
+	for _, dialect := range []string{dburl.DialectPostgres, dburl.DialectMySQL, dburl.DialectSQLite} {
+		t.Run(dialect, func(t *testing.T) {
+			sq := makeJSONAggQuery("GetDraftWithEntries", []query.SerializedColumn{
+				{Table: "entries", Name: "title", GoType: "string"},
+				{Table: "entries", Name: "created_at", GoType: "time.Time"},
+				{Table: "entries", Name: "deleted_at", GoType: "*time.Time"},
+			})
+
+			cfg := UnifiedRunnerConfig{
+				ModulePath:  "example.com/myapp",
+				Dialect:     dialect,
+				UserQueries: []query.SerializedQuery{sq},
+			}
+
+			code, err := GenerateUnifiedRunner(cfg)
+			if err != nil {
+				t.Fatalf("GenerateUnifiedRunner failed: %v", err)
+			}
+
+			if _, err := format.Source(code); err != nil {
+				t.Errorf("generated runner is not valid Go: %v\n%s", err, string(code))
+			}
+		})
+	}
+}

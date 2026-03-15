@@ -57,6 +57,12 @@ func GenerateUnifiedRunner(cfg UnifiedRunnerConfig) ([]byte, error) {
 		writeJSONBoolFixHelper(&buf)
 	}
 
+	// MySQL and SQLite JSON_ARRAYAGG with CASE WHEN produces [null] for empty
+	// LEFT JOINs. Emit a helper to strip null entries before unmarshal.
+	if jsonAggNeedsNullStrip(cfg.Dialect, userQueryInfo) {
+		writeJSONNullStripHelper(&buf)
+	}
+
 	// Write Querier interface
 	writeQuerierInterface(&buf)
 
@@ -1337,6 +1343,7 @@ func writeUserQueryMethod(buf *bytes.Buffer, qi userQueryInfo, cfg UnifiedRunner
 			buf.WriteString("\t}\n")
 			// Unmarshal json_agg fields (all dialects)
 			needsBoolFix := cfg.Dialect == dburl.DialectMySQL || cfg.Dialect == dburl.DialectSQLite
+			needsNullStrip := cfg.Dialect == dburl.DialectMySQL || cfg.Dialect == dburl.DialectSQLite
 			for _, r := range qi.Results {
 				if len(r.JSONAggCols) == 0 {
 					continue
@@ -1346,6 +1353,10 @@ func writeUserQueryMethod(buf *bytes.Buffer, qi userQueryInfo, cfg UnifiedRunner
 				if needsBoolFix && jsonAggColsHaveBool(r.JSONAggCols) {
 					boolFields := jsonAggBoolFieldNames(r.JSONAggCols)
 					buf.WriteString(fmt.Sprintf("\t%s = fixJSONBoolFields(%s, %s)\n", tmp, tmp, boolFields))
+				}
+				// Strip null entries from JSON array (MySQL/SQLite LEFT JOIN produces [null])
+				if needsNullStrip {
+					buf.WriteString(fmt.Sprintf("\t%s = stripJSONNulls(%s)\n", tmp, tmp))
 				}
 				buf.WriteString(fmt.Sprintf("\tif err := json.Unmarshal([]byte(%s), &result.%s); err != nil {\n", tmp, r.Name))
 				buf.WriteString("\t\treturn nil, err\n")
@@ -1447,6 +1458,7 @@ func writeUserQueryMethod(buf *bytes.Buffer, qi userQueryInfo, cfg UnifiedRunner
 		buf.WriteString("\t\t}\n")
 		// Unmarshal json_agg fields (all dialects)
 		needsBoolFix := cfg.Dialect == dburl.DialectMySQL || cfg.Dialect == dburl.DialectSQLite
+		needsNullStrip := cfg.Dialect == dburl.DialectMySQL || cfg.Dialect == dburl.DialectSQLite
 		for _, r := range qi.Results {
 			if len(r.JSONAggCols) == 0 {
 				continue
@@ -1456,6 +1468,10 @@ func writeUserQueryMethod(buf *bytes.Buffer, qi userQueryInfo, cfg UnifiedRunner
 			if needsBoolFix && jsonAggColsHaveBool(r.JSONAggCols) {
 				boolFields := jsonAggBoolFieldNames(r.JSONAggCols)
 				buf.WriteString(fmt.Sprintf("\t\t%s = fixJSONBoolFields(%s, %s)\n", tmp, tmp, boolFields))
+			}
+			// Strip null entries from JSON array (MySQL/SQLite LEFT JOIN produces [null])
+			if needsNullStrip {
+				buf.WriteString(fmt.Sprintf("\t\t%s = stripJSONNulls(%s)\n", tmp, tmp))
 			}
 			buf.WriteString(fmt.Sprintf("\t\tif err := json.Unmarshal([]byte(%s), &item.%s); err != nil {\n", tmp, r.Name))
 			buf.WriteString("\t\t\treturn nil, err\n")
@@ -1958,6 +1974,23 @@ func jsonAggColsHaveBool(cols []jsonAggColInfo) bool {
 	return false
 }
 
+// jsonAggNeedsNullStrip returns true if the dialect is MySQL or SQLite and any
+// query has json_agg columns. These dialects use CASE WHEN ... END which can
+// produce null entries in JSON_ARRAYAGG for empty LEFT JOINs.
+func jsonAggNeedsNullStrip(dialect string, queries []userQueryInfo) bool {
+	if dialect != dburl.DialectMySQL && dialect != dburl.DialectSQLite {
+		return false
+	}
+	for _, qi := range queries {
+		for _, r := range qi.Results {
+			if len(r.JSONAggCols) > 0 {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 // jsonAggNeedsBoolFix returns true if the dialect is MySQL or SQLite and any
 // query has json_agg columns with bool fields.
 func jsonAggNeedsBoolFix(dialect string, queries []userQueryInfo) bool {
@@ -1984,6 +2017,33 @@ func jsonAggBoolFieldNames(cols []jsonAggColInfo) string {
 		}
 	}
 	return "[]string{" + strings.Join(names, ", ") + "}"
+}
+
+// writeJSONNullStripHelper emits a stripJSONNulls function into the generated
+// runner. MySQL and SQLite JSON_ARRAYAGG with CASE WHEN produces [null] for
+// empty LEFT JOINs; this helper removes null entries before unmarshal.
+func writeJSONNullStripHelper(buf *bytes.Buffer) {
+	buf.WriteString(`// stripJSONNulls removes null entries from a JSON array string.
+// MySQL/SQLite JSON_ARRAYAGG with CASE WHEN produces [null] for empty LEFT JOINs.
+func stripJSONNulls(raw string) string {
+	var elems []json.RawMessage
+	if err := json.Unmarshal([]byte(raw), &elems); err != nil {
+		return raw
+	}
+	filtered := make([]json.RawMessage, 0, len(elems))
+	for _, e := range elems {
+		if string(e) != "null" {
+			filtered = append(filtered, e)
+		}
+	}
+	out, err := json.Marshal(filtered)
+	if err != nil {
+		return raw
+	}
+	return string(out)
+}
+
+`)
 }
 
 // writeJSONBoolFixHelper emits a fixJSONBoolFields function into the generated

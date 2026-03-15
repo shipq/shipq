@@ -97,7 +97,7 @@ func WorkersCompileCmd() {
 
 	querydefsCode := channelgen.GenerateJobResultsQuerydefs(importPrefix, hasTenancy, hasAuth)
 	querydefsPath := filepath.Join(querydefsDir, "queries.go")
-	if err := os.WriteFile(querydefsPath, querydefsCode, 0644); err != nil {
+	if _, err := codegen.WriteGeneratedFile(querydefsPath, querydefsCode); err != nil {
 		cli.FatalErr("failed to write querydefs", err)
 	}
 	fmt.Println("  Generated querydefs/job_results/queries.go")

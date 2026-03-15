@@ -248,6 +248,11 @@ func underlyingStructType(t reflect.Type) reflect.Type {
 
 // typeToString converts a reflect.Type to a string representation.
 func typeToString(t reflect.Type) string {
+	// json.RawMessage is []byte under the hood; without this guard the
+	// generic slice branch would decompose it into "[]uint8".
+	if t.PkgPath() == "encoding/json" && t.Name() == "RawMessage" {
+		return "json.RawMessage"
+	}
 	switch t.Kind() {
 	case reflect.Ptr:
 		return "*" + typeToString(t.Elem())

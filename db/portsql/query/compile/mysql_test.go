@@ -1265,6 +1265,115 @@ func TestMySQL_InsertSelect_WithCTE(t *testing.T) {
 	}
 }
 
+// =============================================================================
+// Regression tests for Bug 2: time.Time fields inside JSONAGG break on MySQL
+// =============================================================================
+
+// TestMySQL_JSONAgg_DateTimeColumn_UsesDateFormat verifies that MySQL's
+// WriteJSONAgg wraps time.Time columns with DATE_FORMAT to produce RFC3339.
+// Regression test: MySQL JSON_OBJECT serializes datetime as "2026-03-14 18:24:35.908000"
+// which breaks Go's json.Unmarshal into time.Time (expects RFC3339).
+func TestMySQL_JSONAgg_DateTimeColumn_UsesDateFormat(t *testing.T) {
+	bookTitle := query.StringColumn{Table: "books", Name: "title"}
+	createdAt := query.TimeColumn{Table: "books", Name: "created_at"}
+
+	jsonAgg := query.JSONAggExpr{
+		FieldName: "books",
+		Columns:   []query.Column{bookTitle, createdAt},
+	}
+
+	ast := &query.AST{
+		Kind:      query.SelectQuery,
+		FromTable: query.TableRef{Name: "books"},
+		SelectCols: []query.SelectExpr{
+			{Expr: jsonAgg, Alias: "books"},
+		},
+	}
+
+	sql, _, err := NewCompiler(MySQL).Compile(ast)
+	if err != nil {
+		t.Fatalf("Compile failed: %v", err)
+	}
+
+	t.Logf("Compiled SQL: %s", sql)
+
+	// Must wrap created_at with DATE_FORMAT for RFC3339 output
+	if !containsStr(sql, "DATE_FORMAT(") {
+		t.Errorf("SQL should contain DATE_FORMAT for time column: %s", sql)
+	}
+	if !containsStr(sql, "'created_at', DATE_FORMAT(") {
+		t.Errorf("SQL should wrap created_at value with DATE_FORMAT: %s", sql)
+	}
+	// Non-time column (title) should NOT be wrapped
+	if containsStr(sql, "'title', DATE_FORMAT(") {
+		t.Errorf("SQL should NOT wrap non-time column with DATE_FORMAT: %s", sql)
+	}
+	// Must use RFC3339-compatible format string
+	if !containsStr(sql, "%Y-%m-%dT%H:%i:%s.%fZ") {
+		t.Errorf("DATE_FORMAT should use RFC3339-compatible format: %s", sql)
+	}
+}
+
+// TestMySQL_JSONAgg_NullableDateTimeColumn_UsesDateFormat verifies that nullable
+// time columns (*time.Time) are also wrapped with DATE_FORMAT.
+func TestMySQL_JSONAgg_NullableDateTimeColumn_UsesDateFormat(t *testing.T) {
+	bookTitle := query.StringColumn{Table: "books", Name: "title"}
+	deletedAt := query.NullTimeColumn{Table: "books", Name: "deleted_at"}
+
+	jsonAgg := query.JSONAggExpr{
+		FieldName: "books",
+		Columns:   []query.Column{bookTitle, deletedAt},
+	}
+
+	ast := &query.AST{
+		Kind:      query.SelectQuery,
+		FromTable: query.TableRef{Name: "books"},
+		SelectCols: []query.SelectExpr{
+			{Expr: jsonAgg, Alias: "books"},
+		},
+	}
+
+	sql, _, err := NewCompiler(MySQL).Compile(ast)
+	if err != nil {
+		t.Fatalf("Compile failed: %v", err)
+	}
+
+	t.Logf("Compiled SQL: %s", sql)
+
+	if !containsStr(sql, "'deleted_at', DATE_FORMAT(") {
+		t.Errorf("SQL should wrap nullable time column with DATE_FORMAT: %s", sql)
+	}
+}
+
+// TestMySQL_JSONAgg_NoTimeColumns_NoDateFormat verifies that JSON_OBJECT without
+// time columns does NOT emit DATE_FORMAT.
+func TestMySQL_JSONAgg_NoTimeColumns_NoDateFormat(t *testing.T) {
+	bookID := query.Int64Column{Table: "books", Name: "id"}
+	bookTitle := query.StringColumn{Table: "books", Name: "title"}
+
+	jsonAgg := query.JSONAggExpr{
+		FieldName: "books",
+		Columns:   []query.Column{bookID, bookTitle},
+	}
+
+	ast := &query.AST{
+		Kind:      query.SelectQuery,
+		FromTable: query.TableRef{Name: "books"},
+		SelectCols: []query.SelectExpr{
+			{Expr: jsonAgg, Alias: "books"},
+		},
+	}
+
+	sql, _, err := NewCompiler(MySQL).Compile(ast)
+	if err != nil {
+		t.Fatalf("Compile failed: %v", err)
+	}
+
+	if containsStr(sql, "DATE_FORMAT") {
+		t.Errorf("SQL should NOT contain DATE_FORMAT when no time columns: %s", sql)
+	}
+}
+
 func TestMySQL_InsertSelect_NoReturning(t *testing.T) {
 	ast := &query.AST{
 		Kind:      query.InsertQuery,
