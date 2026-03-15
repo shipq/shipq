@@ -189,6 +189,11 @@ func TestGenerateDBFile(t *testing.T) {
 			t.Error("generated code missing pgx import")
 		}
 
+		// Postgres should NOT include net/url (only MySQL needs it)
+		if strings.Contains(contentStr, `"net/url"`) {
+			t.Error("generated Postgres code should not include net/url import")
+		}
+
 		// Check DB function
 		if !strings.Contains(contentStr, "func DB() (*sql.DB, error)") {
 			t.Error("generated code missing DB() function")
@@ -239,6 +244,21 @@ func TestGenerateDBFile(t *testing.T) {
 		// Check for tcp format in DSN conversion
 		if !strings.Contains(contentStr, "@tcp(") {
 			t.Error("generated code missing MySQL tcp format in urlToDSN")
+		}
+
+		// Check net/url import needed for URL parsing
+		if !strings.Contains(contentStr, `"net/url"`) {
+			t.Error("generated MySQL code missing net/url import")
+		}
+
+		// Check loc=Local default is applied
+		if !strings.Contains(contentStr, `params.Set("loc", "Local")`) {
+			t.Error("generated MySQL urlToDSN missing loc=Local default")
+		}
+
+		// Check parseTime=true default is applied
+		if !strings.Contains(contentStr, `params.Set("parseTime", "true")`) {
+			t.Error("generated MySQL urlToDSN missing parseTime=true default")
 		}
 	})
 

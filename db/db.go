@@ -4,6 +4,7 @@ package db
 import (
 	"database/sql"
 	"fmt"
+	"net/url"
 	"os"
 	"sync"
 
@@ -71,47 +72,38 @@ func MustDB() *sql.DB {
 	return db
 }
 
-// urlToDSN converts a mysql:// URL to a MySQL DSN.
-// Format: user:password@tcp(host:port)/dbname
+// urlToDSN converts a mysql:// URL to a go-sql-driver/mysql DSN.
+// Format: user:password@tcp(host:port)/dbname?params
+//
+// Query parameters from the input URL are preserved. If not explicitly set,
+// parseTime=true and loc=Local are added as defaults — parseTime so the driver
+// scans DATETIME columns into time.Time, and loc so timestamps use the
+// server's local timezone rather than UTC.
 func urlToDSN(dbURL string) (string, error) {
-	// Strip mysql:// prefix
-	if len(dbURL) > 8 && dbURL[:8] == "mysql://" {
-		dbURL = dbURL[8:]
+	u, err := url.Parse(dbURL)
+	if err != nil {
+		return "", fmt.Errorf("invalid MySQL URL: %w", err)
 	}
 
-	// Find @ separator
-	atIdx := -1
-	for i, c := range dbURL {
-		if c == '@' {
-			atIdx = i
-			break
-		}
-	}
-	if atIdx == -1 {
-		return "", fmt.Errorf("invalid MySQL URL: missing @ separator")
+	if u.Scheme != "mysql" {
+		return "", fmt.Errorf("invalid MySQL URL: unexpected scheme %q", u.Scheme)
 	}
 
-	user := dbURL[:atIdx]
-	rest := dbURL[atIdx+1:]
+	user := u.User.String()
+	host := u.Host
 
-	// Find / separator for database
-	slashIdx := -1
-	for i, c := range rest {
-		if c == '/' {
-			slashIdx = i
-			break
-		}
+	dbName := ""
+	if len(u.Path) > 1 {
+		dbName = u.Path[1:]
 	}
 
-	var hostPort, dbName string
-	if slashIdx == -1 {
-		hostPort = rest
-		dbName = ""
-	} else {
-		hostPort = rest[:slashIdx]
-		dbName = rest[slashIdx+1:]
+	params := u.Query()
+	if params.Get("parseTime") == "" {
+		params.Set("parseTime", "true")
+	}
+	if params.Get("loc") == "" {
+		params.Set("loc", "Local")
 	}
 
-	// parseTime=true is required so the driver scans DATETIME columns into time.Time.
-	return fmt.Sprintf("%s@tcp(%s)/%s?parseTime=true", user, hostPort, dbName), nil
+	return fmt.Sprintf("%s@tcp(%s)/%s?%s", user, host, dbName, params.Encode()), nil
 }
