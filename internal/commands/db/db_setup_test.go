@@ -240,17 +240,17 @@ func TestMysqlURLToDSN(t *testing.T) {
 		{
 			name: "standard mysql URL",
 			url:  "mysql://root@localhost:3306/mydb",
-			want: "root@tcp(localhost:3306)/mydb?parseTime=true",
+			want: "root@tcp(localhost:3306)/mydb?loc=Local&parseTime=true",
 		},
 		{
 			name: "mysql URL without database",
 			url:  "mysql://root@localhost:3306",
-			want: "root@tcp(localhost:3306)/?parseTime=true",
+			want: "root@tcp(localhost:3306)/?loc=Local&parseTime=true",
 		},
 		{
 			name: "mysql URL with different port",
 			url:  "mysql://admin@127.0.0.1:3307/testdb",
-			want: "admin@tcp(127.0.0.1:3307)/testdb?parseTime=true",
+			want: "admin@tcp(127.0.0.1:3307)/testdb?loc=Local&parseTime=true",
 		},
 		{
 			name:    "invalid URL without @",

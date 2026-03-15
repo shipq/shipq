@@ -24,6 +24,10 @@ func MySQLURLToDSN(mysqlURL string) (string, error) {
 		return "", fmt.Errorf("invalid MySQL URL: unexpected scheme %q", u.Scheme)
 	}
 
+	if u.User == nil {
+		return "", fmt.Errorf("invalid MySQL URL: missing user info (expected user@host)")
+	}
+
 	user := u.User.String()
 	host := u.Host
 
