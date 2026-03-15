@@ -288,10 +288,10 @@ func TestSQLite_InsertWithReturning(t *testing.T) {
 		Kind:       query.InsertQuery,
 		FromTable:  query.TableRef{Name: "authors"},
 		InsertCols: []query.Column{publicID, name},
-		InsertVals: []query.Expr{
+		InsertRows: [][]query.Expr{{
 			query.ParamExpr{Name: "public_id", GoType: "string"},
 			query.ParamExpr{Name: "name", GoType: "string"},
-		},
+		}},
 		Returning: []query.Column{publicID},
 	}
 
@@ -318,10 +318,10 @@ func TestSQLite_InsertWithNow(t *testing.T) {
 		Kind:       query.InsertQuery,
 		FromTable:  query.TableRef{Name: "authors"},
 		InsertCols: []query.Column{name, createdAt},
-		InsertVals: []query.Expr{
+		InsertRows: [][]query.Expr{{
 			query.ParamExpr{Name: "name", GoType: "string"},
 			query.FuncExpr{Name: "NOW"},
-		},
+		}},
 	}
 
 	sql, _, err := NewCompiler(SQLite).Compile(ast)
@@ -622,6 +622,67 @@ func TestSQLite_JSONAggregation(t *testing.T) {
 	}
 	if containsStr(sql, "JSON_ARRAYAGG") {
 		t.Errorf("SQLite SQL should NOT contain MySQL JSON_ARRAYAGG: %s", sql)
+	}
+}
+
+func TestSQLite_NestedJSONAgg(t *testing.T) {
+	bookTitle := query.StringColumn{Table: "books", Name: "title"}
+	bookID := query.Int64Column{Table: "books", Name: "id"}
+	chapterTitle := query.StringColumn{Table: "chapters", Name: "title"}
+	chapterBookID := query.Int64Column{Table: "chapters", Name: "book_id"}
+
+	chaptersSubquery := &query.AST{
+		Kind:      query.SelectQuery,
+		FromTable: query.TableRef{Name: "chapters"},
+		SelectCols: []query.SelectExpr{
+			{Expr: query.JSONAggExpr{FieldName: "ch", Columns: []query.Column{chapterTitle}}},
+		},
+		Where: query.BinaryExpr{
+			Left:  query.ColumnExpr{Column: chapterBookID},
+			Op:    query.OpEq,
+			Right: query.ColumnExpr{Column: bookID},
+		},
+	}
+
+	ast := &query.AST{
+		Kind:      query.SelectQuery,
+		FromTable: query.TableRef{Name: "authors"},
+		SelectCols: []query.SelectExpr{
+			{
+				Expr: query.JSONAggExpr{
+					FieldName: "books",
+					Fields: []query.JSONAggField{
+						{Key: "title", Column: bookTitle},
+						{Key: "chapters", Expr: query.SubqueryExpr{Query: chaptersSubquery}},
+					},
+				},
+				Alias: "books",
+			},
+		},
+	}
+
+	sql, _, err := NewCompiler(SQLite).Compile(ast)
+	if err != nil {
+		t.Fatalf("Compile failed: %v", err)
+	}
+
+	if !containsStr(sql, "JSON_GROUP_ARRAY") {
+		t.Errorf("outer should use JSON_GROUP_ARRAY: %s", sql)
+	}
+	if !containsStr(sql, "'title'") {
+		t.Errorf("SQL should contain 'title' key: %s", sql)
+	}
+	if !containsStr(sql, "'chapters'") {
+		t.Errorf("SQL should contain 'chapters' key: %s", sql)
+	}
+	count := 0
+	for i := 0; i+len("JSON_GROUP_ARRAY") <= len(sql); i++ {
+		if sql[i:i+len("JSON_GROUP_ARRAY")] == "JSON_GROUP_ARRAY" {
+			count++
+		}
+	}
+	if count < 2 {
+		t.Errorf("SQL should contain at least 2 JSON_GROUP_ARRAY calls (nested), found %d: %s", count, sql)
 	}
 }
 
@@ -1096,5 +1157,259 @@ func TestSQLite_UpdateWithSubtraction(t *testing.T) {
 	}
 	if len(params) != 2 || params[0] != "delta" || params[1] != "id" {
 		t.Errorf("expected params [delta, id], got %v", params)
+	}
+}
+
+func TestSQLite_BulkInsert(t *testing.T) {
+	publicID := query.StringColumn{Table: "authors", Name: "public_id"}
+	name := query.StringColumn{Table: "authors", Name: "name"}
+	email := query.StringColumn{Table: "authors", Name: "email"}
+
+	ast := &query.AST{
+		Kind:       query.InsertQuery,
+		FromTable:  query.TableRef{Name: "authors"},
+		InsertCols: []query.Column{name, email},
+		InsertRows: [][]query.Expr{
+			{query.ParamExpr{Name: "name_0", GoType: "string"}, query.ParamExpr{Name: "email_0", GoType: "string"}},
+			{query.ParamExpr{Name: "name_1", GoType: "string"}, query.ParamExpr{Name: "email_1", GoType: "string"}},
+		},
+		Returning: []query.Column{publicID},
+	}
+
+	sql, params, err := NewCompiler(SQLite).Compile(ast)
+	if err != nil {
+		t.Fatalf("Compile failed: %v", err)
+	}
+
+	expected := `INSERT INTO "authors" ("name", "email") VALUES (?, ?), (?, ?) RETURNING "public_id"`
+	if sql != expected {
+		t.Errorf("expected SQL:\n%s\ngot:\n%s", expected, sql)
+	}
+	if len(params) != 4 {
+		t.Errorf("expected 4 params, got %d: %v", len(params), params)
+	}
+}
+
+// =============================================================================
+// INSERT ... SELECT Tests
+// =============================================================================
+
+func TestSQLite_InsertSelect(t *testing.T) {
+	ast := &query.AST{
+		Kind:      query.InsertQuery,
+		FromTable: query.TableRef{Name: "target"},
+		InsertCols: []query.Column{
+			query.StringColumn{Table: "target", Name: "name"},
+			query.StringColumn{Table: "target", Name: "email"},
+		},
+		InsertSource: &query.AST{
+			Kind:      query.SelectQuery,
+			FromTable: query.TableRef{Name: "source"},
+			SelectCols: []query.SelectExpr{
+				{Expr: query.ColumnExpr{Column: query.StringColumn{Table: "source", Name: "name"}}},
+				{Expr: query.ColumnExpr{Column: query.StringColumn{Table: "source", Name: "email"}}},
+			},
+			Where: query.BinaryExpr{
+				Left:  query.ColumnExpr{Column: query.BoolColumn{Table: "source", Name: "active"}},
+				Op:    query.OpEq,
+				Right: query.LiteralExpr{Value: true},
+			},
+		},
+	}
+	sql, params, err := NewCompiler(SQLite).Compile(ast)
+	if err != nil {
+		t.Fatalf("Compile failed: %v", err)
+	}
+	expected := `INSERT INTO "target" ("name", "email") SELECT "source"."name", "source"."email" FROM "source" WHERE ("source"."active" = 1)`
+	if sql != expected {
+		t.Errorf("expected SQL:\n%s\ngot:\n%s", expected, sql)
+	}
+	if len(params) != 0 {
+		t.Errorf("expected no params, got %v", params)
+	}
+}
+
+func TestSQLite_InsertSelect_WithReturning(t *testing.T) {
+	ast := &query.AST{
+		Kind:      query.InsertQuery,
+		FromTable: query.TableRef{Name: "target"},
+		InsertCols: []query.Column{
+			query.StringColumn{Table: "target", Name: "name"},
+			query.StringColumn{Table: "target", Name: "email"},
+		},
+		InsertSource: &query.AST{
+			Kind:      query.SelectQuery,
+			FromTable: query.TableRef{Name: "source"},
+			SelectCols: []query.SelectExpr{
+				{Expr: query.ColumnExpr{Column: query.StringColumn{Table: "source", Name: "name"}}},
+				{Expr: query.ColumnExpr{Column: query.StringColumn{Table: "source", Name: "email"}}},
+			},
+		},
+		Returning: []query.Column{query.Int64Column{Table: "target", Name: "id"}},
+	}
+	sql, _, err := NewCompiler(SQLite).Compile(ast)
+	if err != nil {
+		t.Fatalf("Compile failed: %v", err)
+	}
+	expected := `INSERT INTO "target" ("name", "email") SELECT "source"."name", "source"."email" FROM "source" RETURNING "id"`
+	if sql != expected {
+		t.Errorf("expected SQL:\n%s\ngot:\n%s", expected, sql)
+	}
+}
+
+func TestSQLite_InsertSelect_WithCTE(t *testing.T) {
+	ast := &query.AST{
+		Kind:      query.InsertQuery,
+		FromTable: query.TableRef{Name: "archive"},
+		InsertCols: []query.Column{
+			query.StringColumn{Table: "archive", Name: "name"},
+			query.StringColumn{Table: "archive", Name: "email"},
+		},
+		CTEs: []query.CTE{
+			{
+				Name: "active_users",
+				Query: &query.AST{
+					Kind:      query.SelectQuery,
+					FromTable: query.TableRef{Name: "users"},
+					SelectCols: []query.SelectExpr{
+						{Expr: query.ColumnExpr{Column: query.StringColumn{Table: "users", Name: "name"}}},
+						{Expr: query.ColumnExpr{Column: query.StringColumn{Table: "users", Name: "email"}}},
+					},
+					Where: query.BinaryExpr{
+						Left:  query.ColumnExpr{Column: query.BoolColumn{Table: "users", Name: "active"}},
+						Op:    query.OpEq,
+						Right: query.LiteralExpr{Value: true},
+					},
+				},
+			},
+		},
+		InsertSource: &query.AST{
+			Kind:      query.SelectQuery,
+			FromTable: query.TableRef{Name: "active_users"},
+			SelectCols: []query.SelectExpr{
+				{Expr: query.ColumnExpr{Column: query.StringColumn{Table: "active_users", Name: "name"}}},
+				{Expr: query.ColumnExpr{Column: query.StringColumn{Table: "active_users", Name: "email"}}},
+			},
+		},
+	}
+	sql, params, err := NewCompiler(SQLite).Compile(ast)
+	if err != nil {
+		t.Fatalf("Compile failed: %v", err)
+	}
+	expected := `WITH "active_users" AS (SELECT "users"."name", "users"."email" FROM "users" WHERE ("users"."active" = 1)) INSERT INTO "archive" ("name", "email") SELECT "active_users"."name", "active_users"."email" FROM "active_users"`
+	if sql != expected {
+		t.Errorf("expected SQL:\n%s\ngot:\n%s", expected, sql)
+	}
+	if len(params) != 0 {
+		t.Errorf("expected no params, got %v", params)
+	}
+}
+
+// =============================================================================
+// Regression tests for Bug 2: time.Time fields inside JSONAGG break on SQLite
+// =============================================================================
+
+// TestSQLite_JSONAgg_DateTimeColumn_UsesStrftime verifies that SQLite's
+// WriteJSONAgg wraps time.Time columns with strftime to produce RFC3339.
+// Regression test: SQLite JSON_OBJECT serializes datetime in SQLite's native
+// format which breaks Go's json.Unmarshal into time.Time (expects RFC3339).
+func TestSQLite_JSONAgg_DateTimeColumn_UsesStrftime(t *testing.T) {
+	bookTitle := query.StringColumn{Table: "books", Name: "title"}
+	createdAt := query.TimeColumn{Table: "books", Name: "created_at"}
+
+	jsonAgg := query.JSONAggExpr{
+		FieldName: "books",
+		Columns:   []query.Column{bookTitle, createdAt},
+	}
+
+	ast := &query.AST{
+		Kind:      query.SelectQuery,
+		FromTable: query.TableRef{Name: "books"},
+		SelectCols: []query.SelectExpr{
+			{Expr: jsonAgg, Alias: "books"},
+		},
+	}
+
+	sql, _, err := NewCompiler(SQLite).Compile(ast)
+	if err != nil {
+		t.Fatalf("Compile failed: %v", err)
+	}
+
+	t.Logf("Compiled SQL: %s", sql)
+
+	// Must wrap created_at with strftime for RFC3339 output
+	if !containsStr(sql, "strftime(") {
+		t.Errorf("SQL should contain strftime for time column: %s", sql)
+	}
+	if !containsStr(sql, "'created_at', strftime(") {
+		t.Errorf("SQL should wrap created_at value with strftime: %s", sql)
+	}
+	// Non-time column (title) should NOT be wrapped
+	if containsStr(sql, "'title', strftime(") {
+		t.Errorf("SQL should NOT wrap non-time column with strftime: %s", sql)
+	}
+	// Must use RFC3339-compatible format string
+	if !containsStr(sql, "%Y-%m-%dT%H:%M:%fZ") {
+		t.Errorf("strftime should use RFC3339-compatible format: %s", sql)
+	}
+}
+
+// TestSQLite_JSONAgg_NullableDateTimeColumn_UsesStrftime verifies that nullable
+// time columns (*time.Time) are also wrapped with strftime.
+func TestSQLite_JSONAgg_NullableDateTimeColumn_UsesStrftime(t *testing.T) {
+	bookTitle := query.StringColumn{Table: "books", Name: "title"}
+	deletedAt := query.NullTimeColumn{Table: "books", Name: "deleted_at"}
+
+	jsonAgg := query.JSONAggExpr{
+		FieldName: "books",
+		Columns:   []query.Column{bookTitle, deletedAt},
+	}
+
+	ast := &query.AST{
+		Kind:      query.SelectQuery,
+		FromTable: query.TableRef{Name: "books"},
+		SelectCols: []query.SelectExpr{
+			{Expr: jsonAgg, Alias: "books"},
+		},
+	}
+
+	sql, _, err := NewCompiler(SQLite).Compile(ast)
+	if err != nil {
+		t.Fatalf("Compile failed: %v", err)
+	}
+
+	t.Logf("Compiled SQL: %s", sql)
+
+	if !containsStr(sql, "'deleted_at', strftime(") {
+		t.Errorf("SQL should wrap nullable time column with strftime: %s", sql)
+	}
+}
+
+// TestSQLite_JSONAgg_NoTimeColumns_NoStrftime verifies that JSON_OBJECT without
+// time columns does NOT emit strftime.
+func TestSQLite_JSONAgg_NoTimeColumns_NoStrftime(t *testing.T) {
+	bookID := query.Int64Column{Table: "books", Name: "id"}
+	bookTitle := query.StringColumn{Table: "books", Name: "title"}
+
+	jsonAgg := query.JSONAggExpr{
+		FieldName: "books",
+		Columns:   []query.Column{bookID, bookTitle},
+	}
+
+	ast := &query.AST{
+		Kind:      query.SelectQuery,
+		FromTable: query.TableRef{Name: "books"},
+		SelectCols: []query.SelectExpr{
+			{Expr: jsonAgg, Alias: "books"},
+		},
+	}
+
+	sql, _, err := NewCompiler(SQLite).Compile(ast)
+	if err != nil {
+		t.Fatalf("Compile failed: %v", err)
+	}
+
+	if containsStr(sql, "strftime") {
+		t.Errorf("SQL should NOT contain strftime when no time columns: %s", sql)
 	}
 }

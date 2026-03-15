@@ -30,9 +30,10 @@ type SerializedAST struct {
 	Offset     *SerializedExpr        `json:"offset,omitempty"`
 
 	// INSERT specific
-	InsertCols []SerializedColumn `json:"insert_cols,omitempty"`
-	InsertVals []SerializedExpr   `json:"insert_vals,omitempty"`
-	Returning  []SerializedColumn `json:"returning,omitempty"`
+	InsertCols   []SerializedColumn `json:"insert_cols,omitempty"`
+	InsertRows   [][]SerializedExpr `json:"insert_rows,omitempty"`
+	InsertSource *SerializedAST     `json:"insert_source,omitempty"`
+	Returning    []SerializedColumn `json:"returning,omitempty"`
 
 	// UPDATE specific
 	SetClauses []SerializedSetClause `json:"set_clauses,omitempty"`
@@ -159,8 +160,17 @@ type SerializedAgg struct {
 
 // SerializedJSONAgg represents JSON aggregation.
 type SerializedJSONAgg struct {
-	FieldName string             `json:"field_name"`
-	Columns   []SerializedColumn `json:"columns"`
+	FieldName string                  `json:"field_name"`
+	Columns   []SerializedColumn      `json:"columns,omitempty"`
+	Fields    []SerializedJSONAggField `json:"fields,omitempty"`
+}
+
+// SerializedJSONAggField describes a single field inside a JSON aggregate object.
+// Either Column or Expr is set (not both).
+type SerializedJSONAggField struct {
+	Key    string            `json:"key"`
+	Column *SerializedColumn `json:"column,omitempty"`
+	Expr   *SerializedExpr   `json:"expr,omitempty"`
 }
 
 // SerializedExists represents EXISTS (subquery).
@@ -265,11 +275,18 @@ func SerializeAST(ast *AST) *SerializedAST {
 		}
 	}
 
-	if len(ast.InsertVals) > 0 {
-		s.InsertVals = make([]SerializedExpr, len(ast.InsertVals))
-		for i, val := range ast.InsertVals {
-			s.InsertVals[i] = SerializeExpr(val)
+	if len(ast.InsertRows) > 0 {
+		s.InsertRows = make([][]SerializedExpr, len(ast.InsertRows))
+		for ri, row := range ast.InsertRows {
+			s.InsertRows[ri] = make([]SerializedExpr, len(row))
+			for ci, val := range row {
+				s.InsertRows[ri][ci] = SerializeExpr(val)
+			}
 		}
+	}
+
+	if ast.InsertSource != nil {
+		s.InsertSource = SerializeAST(ast.InsertSource)
 	}
 
 	if len(ast.Returning) > 0 {
@@ -418,16 +435,30 @@ func SerializeExpr(expr Expr) SerializedExpr {
 		}
 
 	case JSONAggExpr:
-		cols := make([]SerializedColumn, len(e.Columns))
-		for i, col := range e.Columns {
-			cols[i] = serializeColumn(col)
+		agg := &SerializedJSONAgg{FieldName: e.FieldName}
+		if len(e.Fields) > 0 {
+			agg.Fields = make([]SerializedJSONAggField, len(e.Fields))
+			for i, f := range e.Fields {
+				sf := SerializedJSONAggField{Key: f.Key}
+				if f.Column != nil {
+					col := serializeColumn(f.Column)
+					sf.Column = &col
+				}
+				if f.Expr != nil {
+					expr := SerializeExpr(f.Expr)
+					sf.Expr = &expr
+				}
+				agg.Fields[i] = sf
+			}
+		} else {
+			agg.Columns = make([]SerializedColumn, len(e.Columns))
+			for i, col := range e.Columns {
+				agg.Columns[i] = serializeColumn(col)
+			}
 		}
 		return SerializedExpr{
-			Type: "json_agg",
-			JSONAgg: &SerializedJSONAgg{
-				FieldName: e.FieldName,
-				Columns:   cols,
-			},
+			Type:    "json_agg",
+			JSONAgg: agg,
 		}
 
 	case SubqueryExpr:
@@ -594,11 +625,18 @@ func DeserializeAST(s *SerializedAST) *AST {
 		}
 	}
 
-	if len(s.InsertVals) > 0 {
-		ast.InsertVals = make([]Expr, len(s.InsertVals))
-		for i, val := range s.InsertVals {
-			ast.InsertVals[i] = DeserializeExpr(val)
+	if len(s.InsertRows) > 0 {
+		ast.InsertRows = make([][]Expr, len(s.InsertRows))
+		for ri, row := range s.InsertRows {
+			ast.InsertRows[ri] = make([]Expr, len(row))
+			for ci, val := range row {
+				ast.InsertRows[ri][ci] = DeserializeExpr(val)
+			}
 		}
+	}
+
+	if s.InsertSource != nil {
+		ast.InsertSource = DeserializeAST(s.InsertSource)
 	}
 
 	if len(s.Returning) > 0 {
@@ -738,14 +776,26 @@ func DeserializeExpr(s SerializedExpr) Expr {
 		if s.JSONAgg == nil {
 			return nil
 		}
-		cols := make([]Column, len(s.JSONAgg.Columns))
-		for i, col := range s.JSONAgg.Columns {
-			cols[i] = deserializeColumn(col)
+		expr := JSONAggExpr{FieldName: s.JSONAgg.FieldName}
+		if len(s.JSONAgg.Fields) > 0 {
+			expr.Fields = make([]JSONAggField, len(s.JSONAgg.Fields))
+			for i, sf := range s.JSONAgg.Fields {
+				f := JSONAggField{Key: sf.Key}
+				if sf.Column != nil {
+					f.Column = deserializeColumn(*sf.Column)
+				}
+				if sf.Expr != nil {
+					f.Expr = DeserializeExpr(*sf.Expr)
+				}
+				expr.Fields[i] = f
+			}
+		} else {
+			expr.Columns = make([]Column, len(s.JSONAgg.Columns))
+			for i, col := range s.JSONAgg.Columns {
+				expr.Columns[i] = deserializeColumn(col)
+			}
 		}
-		return JSONAggExpr{
-			FieldName: s.JSONAgg.FieldName,
-			Columns:   cols,
-		}
+		return expr
 
 	case "subquery":
 		return SubqueryExpr{Query: DeserializeAST(s.Subquery)}

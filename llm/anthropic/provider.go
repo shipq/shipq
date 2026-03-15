@@ -459,10 +459,21 @@ func (p *Provider) post(ctx context.Context, path string, body any) ([]byte, err
 	}
 
 	if resp.StatusCode >= 400 {
+		msg := string(respBytes)
 		var errEnv struct {
 			Error *apiError `json:"error"`
 		}
 		if jsonErr := json.Unmarshal(respBytes, &errEnv); jsonErr == nil && errEnv.Error != nil {
+			msg = errEnv.Error.Error()
+		}
+		if resp.StatusCode == http.StatusTooManyRequests {
+			return nil, &llm.RateLimitError{
+				StatusCode: resp.StatusCode,
+				RetryAfter: llm.ParseRetryAfter(resp.Header.Get("Retry-After"), msg),
+				Message:    msg,
+			}
+		}
+		if errEnv.Error != nil {
 			return nil, fmt.Errorf("anthropic HTTP %d: %w", resp.StatusCode, errEnv.Error)
 		}
 		return nil, fmt.Errorf("anthropic HTTP %d: %s", resp.StatusCode, string(respBytes))
@@ -494,10 +505,21 @@ func (p *Provider) postStream(ctx context.Context, path string, body any) (io.Re
 	if resp.StatusCode >= 400 {
 		b, _ := io.ReadAll(resp.Body)
 		resp.Body.Close()
+		msg := string(b)
 		var errEnv struct {
 			Error *apiError `json:"error"`
 		}
 		if jsonErr := json.Unmarshal(b, &errEnv); jsonErr == nil && errEnv.Error != nil {
+			msg = errEnv.Error.Error()
+		}
+		if resp.StatusCode == http.StatusTooManyRequests {
+			return nil, &llm.RateLimitError{
+				StatusCode: resp.StatusCode,
+				RetryAfter: llm.ParseRetryAfter(resp.Header.Get("Retry-After"), msg),
+				Message:    msg,
+			}
+		}
+		if errEnv.Error != nil {
 			return nil, fmt.Errorf("anthropic HTTP %d: %w", resp.StatusCode, errEnv.Error)
 		}
 		return nil, fmt.Errorf("anthropic HTTP %d: %s", resp.StatusCode, string(b))

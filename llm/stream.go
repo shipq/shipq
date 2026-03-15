@@ -51,6 +51,14 @@ type LLMToolsAvailable struct {
 	Blocked   []string `json:"blocked"`   // tool names waiting on dependencies
 }
 
+// LLMError is published when the provider returns an error (e.g. rate limit
+// exhaustion) or during transient retry waits. The Code field lets the
+// frontend distinguish between terminal errors and informational retries.
+type LLMError struct {
+	Message string `json:"message"`
+	Code    string `json:"code,omitempty"` // e.g. "rate_limit_retry", "rate_limit_exceeded", "provider_error"
+}
+
 // ── Message type name constants ───────────────────────────────────────────────
 //
 // These are the type names used in the channel.Envelope.Type field.
@@ -63,6 +71,7 @@ const (
 	TypeLLMToolCallResult = "LLMToolCallResult"
 	TypeLLMDone           = "LLMDone"
 	TypeLLMToolsAvailable = "LLMToolsAvailable"
+	TypeLLMError          = "LLMError"
 )
 
 // ── Publishing helpers ────────────────────────────────────────────────────────
@@ -136,6 +145,18 @@ func publishDone(ctx context.Context, ch *channel.Channel, text string, usage Us
 		InputTokens:   usage.InputTokens,
 		OutputTokens:  usage.OutputTokens,
 		ToolCallCount: toolCallCount,
+	})
+}
+
+// publishError sends an error notification to the channel subscriber.
+// It is a no-op when ch is nil.
+func publishError(ctx context.Context, ch *channel.Channel, message, code string) error {
+	if ch == nil {
+		return nil
+	}
+	return publish(ctx, ch, TypeLLMError, LLMError{
+		Message: message,
+		Code:    code,
 	})
 }
 

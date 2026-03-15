@@ -874,6 +874,400 @@ func TestCrossDB_JSONAggregation_NullableColumns(t *testing.T) {
 	})
 }
 
+// =============================================================================
+// Nested JSON_AGG property tests (authors → books → chapters)
+// =============================================================================
+
+func TestCrossDB_NestedJSONAggregation(t *testing.T) {
+	dbs, cleanup := SetupTestDBs(t)
+	if dbs == nil {
+		return
+	}
+	defer cleanup()
+
+	type ChapterItem struct {
+		Title string `json:"title"`
+	}
+	type BookItem struct {
+		Title    string        `json:"title"`
+		Chapters []ChapterItem `json:"chapters"`
+	}
+
+	proptest.Check(t, "nested JSON aggregation produces equivalent results", proptest.Config{NumTrials: 20, Verbose: true}, func(g *proptest.Generator) bool {
+		dbs.ClearAllData(t)
+
+		authorPublicID := uniqueID(g.Identifier(15))
+		authorName := g.StringAlphaNum(20)
+		if authorName == "" {
+			authorName = "defaultauthor"
+		}
+		email := uniqueID(g.StringAlphaNum(10)) + "@test.com"
+		dbs.InsertAuthor(t, authorPublicID, authorName, email, nil, true)
+
+		numBooks := g.IntRange(1, 4)
+		type bookData struct {
+			publicID string
+			title    string
+			chapters []string
+		}
+		var books []bookData
+
+		for i := 0; i < numBooks; i++ {
+			bookPublicID := uniqueID(g.Identifier(15))
+			bookTitle := g.StringAlphaNum(20)
+			if bookTitle == "" {
+				bookTitle = fmt.Sprintf("book%d", i)
+			}
+			price := fmt.Sprintf("%.2f", g.Float64Range(1.0, 100.0))
+			dbs.InsertBook(t, bookPublicID, authorPublicID, bookTitle, &price)
+
+			numChapters := g.IntRange(0, 3)
+			var chapterTitles []string
+			for j := 0; j < numChapters; j++ {
+				chapterPublicID := uniqueID(g.Identifier(15))
+				chapterTitle := g.StringAlphaNum(20)
+				if chapterTitle == "" {
+					chapterTitle = fmt.Sprintf("chapter%d_%d", i, j)
+				}
+				dbs.InsertChapter(t, chapterPublicID, bookPublicID, chapterTitle, nil)
+				chapterTitles = append(chapterTitles, chapterTitle)
+			}
+			books = append(books, bookData{publicID: bookPublicID, title: bookTitle, chapters: chapterTitles})
+		}
+
+		// Build the nested JSON_AGG query using Fields.
+		// The inner JSON_AGG for chapters is expressed as a scalar subquery.
+		authorNameCol := query.StringColumn{Table: "test_authors", Name: "name"}
+		authorIDCol := query.Int64Column{Table: "test_authors", Name: "id"}
+		authorPublicIDCol := query.StringColumn{Table: "test_authors", Name: "public_id"}
+		bookAuthorIDCol := query.Int64Column{Table: "test_books", Name: "author_id"}
+		bookIDCol := query.Int64Column{Table: "test_books", Name: "id"}
+		bookTitleCol := query.StringColumn{Table: "test_books", Name: "title"}
+		chapterBookIDCol := query.Int64Column{Table: "test_chapters", Name: "book_id"}
+		chapterTitleCol := query.StringColumn{Table: "test_chapters", Name: "title"}
+
+		// Inner subquery: SELECT JSON_AGG of chapters WHERE chapter.book_id = book.id
+		chaptersSubquery := query.From(MockTable("test_chapters")).
+			SelectExpr(query.JSONAggExpr{
+				FieldName: "chapters_inner",
+				Columns:   []query.Column{chapterTitleCol},
+			}).
+			Where(chapterBookIDCol.Eq(query.ColumnExpr{Column: bookIDCol})).
+			Build()
+
+		ast := query.From(MockTable("test_authors")).
+			Select(authorNameCol).
+			SelectJSONAggFields("books",
+				query.JSONAggCol(bookTitleCol),
+				query.JSONAggExprField("chapters", query.SubqueryExpr{Query: chaptersSubquery}),
+			).
+			LeftJoin(MockTable("test_books")).On(authorIDCol.Eq(bookAuthorIDCol)).
+			Where(authorPublicIDCol.Eq(query.Param[string]("public_id"))).
+			GroupBy(authorNameCol).
+			Build()
+
+		results := make(map[Dialect][]BookItem)
+		ctx := context.Background()
+
+		for _, dialect := range AllDialects() {
+			sqlStr, _, err := CompileFor(ast, dialect)
+			if err != nil {
+				t.Logf("compile error for %s: %v", dialect, err)
+				return false
+			}
+
+			var name string
+			var booksRaw string
+			switch dialect {
+			case DialectPostgres:
+				err = dbs.Postgres.QueryRow(ctx, sqlStr, authorPublicID).Scan(&name, &booksRaw)
+			case DialectMySQL:
+				err = dbs.MySQL.QueryRow(sqlStr, authorPublicID).Scan(&name, &booksRaw)
+			case DialectSQLite:
+				err = dbs.SQLite.QueryRow(sqlStr, authorPublicID).Scan(&name, &booksRaw)
+			}
+
+			if err != nil {
+				t.Logf("query error for %s: %v", dialect, err)
+				return false
+			}
+
+			var booksResult []BookItem
+			if err := json.Unmarshal([]byte(booksRaw), &booksResult); err != nil {
+				t.Logf("JSON unmarshal error for %s: %v (json=%s)", dialect, err, booksRaw)
+				return false
+			}
+
+			// Filter null entries from LEFT JOIN
+			var filtered []BookItem
+			for _, b := range booksResult {
+				if b.Title != "" {
+					filtered = append(filtered, b)
+				}
+			}
+			results[dialect] = filtered
+		}
+
+		// Verify all dialects return the same number of books
+		pgBooks := results[DialectPostgres]
+		myBooks := results[DialectMySQL]
+		sqBooks := results[DialectSQLite]
+
+		if len(pgBooks) != len(myBooks) || len(myBooks) != len(sqBooks) {
+			t.Logf("book count mismatch: pg=%d my=%d sq=%d", len(pgBooks), len(myBooks), len(sqBooks))
+			return false
+		}
+
+		if len(pgBooks) != numBooks {
+			t.Logf("expected %d books, got pg=%d", numBooks, len(pgBooks))
+			return false
+		}
+
+		// Build title→chapter count maps and compare across dialects
+		countChapters := func(items []BookItem) map[string]int {
+			m := make(map[string]int)
+			for _, b := range items {
+				m[b.Title] = len(b.Chapters)
+			}
+			return m
+		}
+		pgChapCounts := countChapters(pgBooks)
+		myChapCounts := countChapters(myBooks)
+		sqChapCounts := countChapters(sqBooks)
+
+		for title, pgCount := range pgChapCounts {
+			if myChapCounts[title] != pgCount || sqChapCounts[title] != pgCount {
+				t.Logf("chapter count mismatch for book %q: pg=%d my=%d sq=%d", title, pgCount, myChapCounts[title], sqChapCounts[title])
+				return false
+			}
+		}
+
+		return true
+	})
+}
+
+func TestCrossDB_NestedJSONAggregation_EmptyInner(t *testing.T) {
+	dbs, cleanup := SetupTestDBs(t)
+	if dbs == nil {
+		return
+	}
+	defer cleanup()
+
+	type ChapterItem struct {
+		Title string `json:"title"`
+	}
+	type BookItem struct {
+		Title    string        `json:"title"`
+		Chapters []ChapterItem `json:"chapters"`
+	}
+
+	proptest.Check(t, "nested JSON aggregation with empty inner arrays", proptest.Config{NumTrials: 10, Verbose: true}, func(g *proptest.Generator) bool {
+		dbs.ClearAllData(t)
+
+		authorPublicID := uniqueID(g.Identifier(15))
+		authorName := g.StringAlphaNum(20)
+		if authorName == "" {
+			authorName = "defaultauthor"
+		}
+		email := uniqueID(g.StringAlphaNum(10)) + "@test.com"
+		dbs.InsertAuthor(t, authorPublicID, authorName, email, nil, true)
+
+		// Insert books with NO chapters
+		numBooks := g.IntRange(1, 3)
+		for i := 0; i < numBooks; i++ {
+			bookPublicID := uniqueID(g.Identifier(15))
+			bookTitle := g.StringAlphaNum(20)
+			if bookTitle == "" {
+				bookTitle = fmt.Sprintf("book%d", i)
+			}
+			price := fmt.Sprintf("%.2f", g.Float64Range(1.0, 100.0))
+			dbs.InsertBook(t, bookPublicID, authorPublicID, bookTitle, &price)
+		}
+
+		authorNameCol := query.StringColumn{Table: "test_authors", Name: "name"}
+		authorIDCol := query.Int64Column{Table: "test_authors", Name: "id"}
+		authorPublicIDCol := query.StringColumn{Table: "test_authors", Name: "public_id"}
+		bookAuthorIDCol := query.Int64Column{Table: "test_books", Name: "author_id"}
+		bookIDCol := query.Int64Column{Table: "test_books", Name: "id"}
+		bookTitleCol := query.StringColumn{Table: "test_books", Name: "title"}
+		chapterBookIDCol := query.Int64Column{Table: "test_chapters", Name: "book_id"}
+		chapterTitleCol := query.StringColumn{Table: "test_chapters", Name: "title"}
+
+		chaptersSubquery := query.From(MockTable("test_chapters")).
+			SelectExpr(query.JSONAggExpr{
+				FieldName: "chapters_inner",
+				Columns:   []query.Column{chapterTitleCol},
+			}).
+			Where(chapterBookIDCol.Eq(query.ColumnExpr{Column: bookIDCol})).
+			Build()
+
+		ast := query.From(MockTable("test_authors")).
+			Select(authorNameCol).
+			SelectJSONAggFields("books",
+				query.JSONAggCol(bookTitleCol),
+				query.JSONAggExprField("chapters", query.SubqueryExpr{Query: chaptersSubquery}),
+			).
+			LeftJoin(MockTable("test_books")).On(authorIDCol.Eq(bookAuthorIDCol)).
+			Where(authorPublicIDCol.Eq(query.Param[string]("public_id"))).
+			GroupBy(authorNameCol).
+			Build()
+
+		ctx := context.Background()
+
+		for _, dialect := range AllDialects() {
+			sqlStr, _, err := CompileFor(ast, dialect)
+			if err != nil {
+				t.Logf("compile error for %s: %v", dialect, err)
+				return false
+			}
+
+			var name string
+			var booksRaw string
+			switch dialect {
+			case DialectPostgres:
+				err = dbs.Postgres.QueryRow(ctx, sqlStr, authorPublicID).Scan(&name, &booksRaw)
+			case DialectMySQL:
+				err = dbs.MySQL.QueryRow(sqlStr, authorPublicID).Scan(&name, &booksRaw)
+			case DialectSQLite:
+				err = dbs.SQLite.QueryRow(sqlStr, authorPublicID).Scan(&name, &booksRaw)
+			}
+
+			if err != nil {
+				t.Logf("query error for %s: %v", dialect, err)
+				return false
+			}
+
+			var booksResult []BookItem
+			if err := json.Unmarshal([]byte(booksRaw), &booksResult); err != nil {
+				t.Logf("JSON unmarshal error for %s: %v (json=%s)", dialect, err, booksRaw)
+				return false
+			}
+
+			// Filter null entries
+			var filtered []BookItem
+			for _, b := range booksResult {
+				if b.Title != "" {
+					filtered = append(filtered, b)
+				}
+			}
+
+			// Each book should have empty chapters
+			for _, b := range filtered {
+				if len(b.Chapters) != 0 {
+					t.Logf("%s: book %q has %d chapters, expected 0", dialect, b.Title, len(b.Chapters))
+					return false
+				}
+			}
+		}
+
+		return true
+	})
+}
+
+func TestCrossDB_NestedJSONAggregation_EmptyOuter(t *testing.T) {
+	dbs, cleanup := SetupTestDBs(t)
+	if dbs == nil {
+		return
+	}
+	defer cleanup()
+
+	type ChapterItem struct {
+		Title string `json:"title"`
+	}
+	type BookItem struct {
+		Title    string        `json:"title"`
+		Chapters []ChapterItem `json:"chapters"`
+	}
+
+	proptest.Check(t, "nested JSON aggregation with zero books returns empty array", proptest.Config{NumTrials: 10, Verbose: true}, func(g *proptest.Generator) bool {
+		dbs.ClearAllData(t)
+
+		// Insert an author with NO books
+		authorPublicID := uniqueID(g.Identifier(15))
+		authorName := g.StringAlphaNum(20)
+		if authorName == "" {
+			authorName = "lonelyauthor"
+		}
+		email := uniqueID(g.StringAlphaNum(10)) + "@test.com"
+		dbs.InsertAuthor(t, authorPublicID, authorName, email, nil, true)
+
+		authorNameCol := query.StringColumn{Table: "test_authors", Name: "name"}
+		authorIDCol := query.Int64Column{Table: "test_authors", Name: "id"}
+		authorPublicIDCol := query.StringColumn{Table: "test_authors", Name: "public_id"}
+		bookAuthorIDCol := query.Int64Column{Table: "test_books", Name: "author_id"}
+		bookIDCol := query.Int64Column{Table: "test_books", Name: "id"}
+		bookTitleCol := query.StringColumn{Table: "test_books", Name: "title"}
+		chapterBookIDCol := query.Int64Column{Table: "test_chapters", Name: "book_id"}
+		chapterTitleCol := query.StringColumn{Table: "test_chapters", Name: "title"}
+
+		chaptersSubquery := query.From(MockTable("test_chapters")).
+			SelectExpr(query.JSONAggExpr{
+				FieldName: "chapters_inner",
+				Columns:   []query.Column{chapterTitleCol},
+			}).
+			Where(chapterBookIDCol.Eq(query.ColumnExpr{Column: bookIDCol})).
+			Build()
+
+		ast := query.From(MockTable("test_authors")).
+			Select(authorNameCol).
+			SelectJSONAggFields("books",
+				query.JSONAggCol(bookTitleCol),
+				query.JSONAggExprField("chapters", query.SubqueryExpr{Query: chaptersSubquery}),
+			).
+			LeftJoin(MockTable("test_books")).On(authorIDCol.Eq(bookAuthorIDCol)).
+			Where(authorPublicIDCol.Eq(query.Param[string]("public_id"))).
+			GroupBy(authorNameCol).
+			Build()
+
+		ctx := context.Background()
+
+		for _, dialect := range AllDialects() {
+			sqlStr, _, err := CompileFor(ast, dialect)
+			if err != nil {
+				t.Logf("compile error for %s: %v", dialect, err)
+				return false
+			}
+
+			var name string
+			var booksRaw string
+			switch dialect {
+			case DialectPostgres:
+				err = dbs.Postgres.QueryRow(ctx, sqlStr, authorPublicID).Scan(&name, &booksRaw)
+			case DialectMySQL:
+				err = dbs.MySQL.QueryRow(sqlStr, authorPublicID).Scan(&name, &booksRaw)
+			case DialectSQLite:
+				err = dbs.SQLite.QueryRow(sqlStr, authorPublicID).Scan(&name, &booksRaw)
+			}
+
+			if err != nil {
+				t.Logf("query error for %s: %v", dialect, err)
+				return false
+			}
+
+			var booksResult []BookItem
+			if err := json.Unmarshal([]byte(booksRaw), &booksResult); err != nil {
+				t.Logf("JSON unmarshal error for %s: %v (json=%s)", dialect, err, booksRaw)
+				return false
+			}
+
+			// Filter null entries
+			var filtered []BookItem
+			for _, b := range booksResult {
+				if b.Title != "" {
+					filtered = append(filtered, b)
+				}
+			}
+
+			if len(filtered) != 0 {
+				t.Logf("%s: expected 0 books, got %d", dialect, len(filtered))
+				return false
+			}
+		}
+
+		return true
+	})
+}
+
 func TestCrossDB_SoftDeleteFiltering(t *testing.T) {
 	dbs, cleanup := SetupTestDBs(t)
 	if dbs == nil {

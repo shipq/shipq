@@ -200,18 +200,21 @@ func createTestSchema(t *testing.T, dbs *TestDBs) {
 
 	ctx := context.Background()
 
-	// Drop existing tables first
+	// Drop existing tables first (child tables before parents)
 	// Postgres
+	dbs.Postgres.Exec(ctx, "DROP TABLE IF EXISTS test_chapters CASCADE")
 	dbs.Postgres.Exec(ctx, "DROP TABLE IF EXISTS test_books CASCADE")
 	dbs.Postgres.Exec(ctx, "DROP TABLE IF EXISTS test_authors CASCADE")
 
 	// MySQL
 	dbs.MySQL.Exec("SET FOREIGN_KEY_CHECKS = 0")
+	dbs.MySQL.Exec("DROP TABLE IF EXISTS test_chapters")
 	dbs.MySQL.Exec("DROP TABLE IF EXISTS test_books")
 	dbs.MySQL.Exec("DROP TABLE IF EXISTS test_authors")
 	dbs.MySQL.Exec("SET FOREIGN_KEY_CHECKS = 1")
 
 	// SQLite
+	dbs.SQLite.Exec("DROP TABLE IF EXISTS test_chapters")
 	dbs.SQLite.Exec("DROP TABLE IF EXISTS test_books")
 	dbs.SQLite.Exec("DROP TABLE IF EXISTS test_authors")
 
@@ -313,6 +316,48 @@ func createTestSchema(t *testing.T, dbs *TestDBs) {
 		t.Fatalf("sqlite create books failed: %v", err)
 	}
 
+	// Create chapters table (for nested JSON_AGG tests)
+	pgChaptersSQL := `
+		CREATE TABLE test_chapters (
+			id BIGSERIAL PRIMARY KEY,
+			public_id VARCHAR(255) COLLATE "C" NOT NULL UNIQUE,
+			book_id BIGINT NOT NULL REFERENCES test_books(id),
+			title VARCHAR(255) COLLATE "C" NOT NULL,
+			page_count INTEGER
+		)
+	`
+
+	myChaptersSQL := `
+		CREATE TABLE test_chapters (
+			id BIGINT AUTO_INCREMENT PRIMARY KEY,
+			public_id VARCHAR(255) NOT NULL UNIQUE,
+			book_id BIGINT NOT NULL,
+			title VARCHAR(255) NOT NULL,
+			page_count INTEGER,
+			FOREIGN KEY (book_id) REFERENCES test_books(id)
+		) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_bin
+	`
+
+	sqChaptersSQL := `
+		CREATE TABLE test_chapters (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			public_id TEXT NOT NULL UNIQUE,
+			book_id INTEGER NOT NULL REFERENCES test_books(id),
+			title TEXT NOT NULL,
+			page_count INTEGER
+		)
+	`
+
+	if _, err := dbs.Postgres.Exec(ctx, pgChaptersSQL); err != nil {
+		t.Fatalf("postgres create chapters failed: %v", err)
+	}
+	if _, err := dbs.MySQL.Exec(myChaptersSQL); err != nil {
+		t.Fatalf("mysql create chapters failed: %v", err)
+	}
+	if _, err := dbs.SQLite.Exec(sqChaptersSQL); err != nil {
+		t.Fatalf("sqlite create chapters failed: %v", err)
+	}
+
 	// Verify tables exist in MySQL (most problematic)
 	var tableName string
 	row := dbs.MySQL.QueryRow("SHOW TABLES LIKE 'test_books'")
@@ -322,6 +367,10 @@ func createTestSchema(t *testing.T, dbs *TestDBs) {
 	row = dbs.MySQL.QueryRow("SHOW TABLES LIKE 'test_authors'")
 	if err := row.Scan(&tableName); err != nil {
 		t.Fatalf("mysql test_authors table verification failed: %v", err)
+	}
+	row = dbs.MySQL.QueryRow("SHOW TABLES LIKE 'test_chapters'")
+	if err := row.Scan(&tableName); err != nil {
+		t.Fatalf("mysql test_chapters table verification failed: %v", err)
 	}
 }
 

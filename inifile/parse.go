@@ -10,13 +10,16 @@ import (
 
 // File represents a parsed INI file.
 type File struct {
-	Sections []Section
+	Preamble []string  // comment / blank lines before the first section
+	Sections []Section // ordered sections
 }
 
 // Section represents a named section in an INI file.
 type Section struct {
-	Name   string     // e.g., "database", "crud.users"
-	Values []KeyValue // preserves order
+	Name       string     // e.g., "database", "crud.users"
+	Values     []KeyValue // preserves order of key=value pairs
+	PreLines   []string   // comment / blank lines that appear before the section header
+	IntraLines []Line     // interleaved comments, blanks and kv-pairs inside the section
 }
 
 // KeyValue represents a key-value pair.
@@ -25,41 +28,89 @@ type KeyValue struct {
 	Value string
 }
 
+// Line is a single line inside a section body.
+// If IsKV is true, KVIndex references the position in the parent Section.Values
+// slice. Otherwise, Comment holds the raw line text.
+type Line struct {
+	IsKV    bool
+	KVIndex int    // index into Section.Values (valid only when IsKV is true)
+	Comment string // raw comment or blank line (valid only when IsKV is false)
+}
+
 // Parse reads an INI file from the given reader.
 func Parse(r io.Reader) (*File, error) {
 	f := &File{}
 	var currentSection *Section
+	// pendingLines buffers comment/blank lines so they can be attached to
+	// whichever construct follows: a section header (PreLines), a key-value
+	// pair (IntraLines of the current section), or end-of-file.
+	var pendingLines []string
+
+	// flushPendingAsIntra appends buffered comment/blank lines into the
+	// current section's IntraLines and clears the buffer.
+	flushPendingAsIntra := func() {
+		if currentSection == nil {
+			return
+		}
+		for _, pl := range pendingLines {
+			currentSection.IntraLines = append(currentSection.IntraLines, Line{Comment: pl})
+		}
+		pendingLines = nil
+	}
 
 	scanner := bufio.NewScanner(r)
 	for scanner.Scan() {
-		line := strings.TrimSpace(scanner.Text())
+		raw := scanner.Text()
+		line := strings.TrimSpace(raw)
 
-		// Skip empty lines and comments
+		// Empty lines and comments -- always buffer.
 		if line == "" || strings.HasPrefix(line, "#") || strings.HasPrefix(line, ";") {
+			pendingLines = append(pendingLines, raw)
 			continue
 		}
 
 		// Section header
 		if strings.HasPrefix(line, "[") && strings.HasSuffix(line, "]") {
 			name := strings.ToLower(strings.Trim(line, "[]"))
-			f.Sections = append(f.Sections, Section{Name: name})
+			sec := Section{Name: name}
+			if currentSection == nil {
+				f.Preamble = append(f.Preamble, pendingLines...)
+			} else {
+				sec.PreLines = pendingLines
+			}
+			pendingLines = nil
+			f.Sections = append(f.Sections, sec)
 			currentSection = &f.Sections[len(f.Sections)-1]
 			continue
 		}
 
-		// Key-value pair
+		// Key-value pair (or unrecognized line)
 		if currentSection == nil {
-			continue // Ignore keys before any section
+			pendingLines = append(pendingLines, raw)
+			continue
 		}
+
+		// Flush any buffered comments/blanks as belonging to this section.
+		flushPendingAsIntra()
 
 		parts := strings.SplitN(line, "=", 2)
 		if len(parts) != 2 {
-			continue // Ignore lines without =
+			currentSection.IntraLines = append(currentSection.IntraLines, Line{Comment: raw})
+			continue
 		}
 
 		key := strings.ToLower(strings.TrimSpace(parts[0]))
 		value := strings.TrimSpace(parts[1])
 		currentSection.Values = append(currentSection.Values, KeyValue{Key: key, Value: value})
+		currentSection.IntraLines = append(currentSection.IntraLines, Line{IsKV: true, KVIndex: len(currentSection.Values) - 1})
+	}
+
+	// Trailing buffered lines: attach to last section's IntraLines if one
+	// exists, otherwise to the file preamble.
+	if currentSection != nil {
+		flushPendingAsIntra()
+	} else {
+		f.Preamble = append(f.Preamble, pendingLines...)
 	}
 
 	return f, scanner.Err()
@@ -179,25 +230,58 @@ func (f *File) Set(section, key, value string) {
 		}
 	}
 	s.Values = append(s.Values, KeyValue{Key: key, Value: value})
+	s.IntraLines = append(s.IntraLines, Line{IsKV: true, KVIndex: len(s.Values) - 1})
 }
 
-// Write serializes the INI file to the given writer.
+// Write serializes the INI file to the given writer, preserving comments and
+// blank lines that were present in the original input.
 func (f *File) Write(w io.Writer) error {
-	for i, section := range f.Sections {
-		// Write section header
-		if _, err := fmt.Fprintf(w, "[%s]\n", section.Name); err != nil {
+	// Write file preamble (comments/blanks before the first section).
+	for _, line := range f.Preamble {
+		if _, err := fmt.Fprintln(w, line); err != nil {
 			return err
 		}
+	}
 
-		// Write key-value pairs
-		for _, kv := range section.Values {
-			if _, err := fmt.Fprintf(w, "%s = %s\n", kv.Key, kv.Value); err != nil {
+	for i, section := range f.Sections {
+		// Write inter-section comments/blanks that precede this section header.
+		for _, line := range section.PreLines {
+			if _, err := fmt.Fprintln(w, line); err != nil {
 				return err
 			}
 		}
 
-		// Add blank line between sections (but not after the last one)
-		if i < len(f.Sections)-1 {
+		// Write section header.
+		if _, err := fmt.Fprintf(w, "[%s]\n", section.Name); err != nil {
+			return err
+		}
+
+		if len(section.IntraLines) > 0 {
+			// Use IntraLines to preserve original ordering of comments and kv pairs.
+			for _, l := range section.IntraLines {
+				if l.IsKV {
+					kv := section.Values[l.KVIndex]
+					if _, err := fmt.Fprintf(w, "%s = %s\n", kv.Key, kv.Value); err != nil {
+						return err
+					}
+				} else {
+					if _, err := fmt.Fprintln(w, l.Comment); err != nil {
+						return err
+					}
+				}
+			}
+		} else {
+			// Fallback for sections built programmatically (no IntraLines).
+			for _, kv := range section.Values {
+				if _, err := fmt.Fprintf(w, "%s = %s\n", kv.Key, kv.Value); err != nil {
+					return err
+				}
+			}
+		}
+
+		// Add blank line between sections (but not after the last one) when
+		// there are no PreLines on the next section to provide spacing.
+		if i < len(f.Sections)-1 && len(f.Sections[i+1].PreLines) == 0 {
 			if _, err := fmt.Fprintln(w); err != nil {
 				return err
 			}

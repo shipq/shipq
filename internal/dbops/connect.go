@@ -3,55 +3,48 @@ package dbops
 import (
 	"database/sql"
 	"fmt"
+	"net/url"
 	"strings"
 )
 
-// MySQLURLToDSN converts a mysql:// URL to a MySQL driver DSN.
-// Format: user:password@tcp(host:port)/dbname
+// MySQLURLToDSN converts a mysql:// URL to a go-sql-driver/mysql DSN.
+// Format: user:password@tcp(host:port)/dbname?params
+//
+// Query parameters from the input URL are preserved. If not explicitly set,
+// parseTime=true and loc=Local are added as defaults — parseTime so the driver
+// scans DATETIME columns into time.Time, and loc so timestamps use the
+// server's local timezone rather than UTC.
 func MySQLURLToDSN(mysqlURL string) (string, error) {
-	// Strip mysql:// prefix
-	importURL := mysqlURL
-	if len(importURL) > 8 && importURL[:8] == "mysql://" {
-		importURL = importURL[8:]
+	u, err := url.Parse(mysqlURL)
+	if err != nil {
+		return "", fmt.Errorf("invalid MySQL URL: %w", err)
 	}
 
-	// Find @ separator
-	atIdx := -1
-	for i, c := range importURL {
-		if c == '@' {
-			atIdx = i
-			break
-		}
+	if u.Scheme != "mysql" {
+		return "", fmt.Errorf("invalid MySQL URL: unexpected scheme %q", u.Scheme)
 	}
 
-	if atIdx == -1 {
-		return "", fmt.Errorf("invalid MySQL URL: missing @ separator")
+	if u.User == nil {
+		return "", fmt.Errorf("invalid MySQL URL: missing user info (expected user@host)")
 	}
 
-	user := importURL[:atIdx]
-	rest := importURL[atIdx+1:]
+	user := u.User.String()
+	host := u.Host
 
-	// Find / separator for database
-	slashIdx := -1
-	for i, c := range rest {
-		if c == '/' {
-			slashIdx = i
-			break
-		}
+	dbName := ""
+	if len(u.Path) > 1 {
+		dbName = u.Path[1:]
 	}
 
-	var hostPort, dbName string
-	if slashIdx == -1 {
-		hostPort = rest
-		dbName = ""
-	} else {
-		hostPort = rest[:slashIdx]
-		dbName = rest[slashIdx+1:]
+	params := u.Query()
+	if params.Get("parseTime") == "" {
+		params.Set("parseTime", "true")
+	}
+	if params.Get("loc") == "" {
+		params.Set("loc", "Local")
 	}
 
-	// Build DSN: user@tcp(host:port)/dbname?parseTime=true
-	// parseTime=true is required so the driver scans DATETIME columns into time.Time.
-	return fmt.Sprintf("%s@tcp(%s)/%s?parseTime=true", user, hostPort, dbName), nil
+	return fmt.Sprintf("%s@tcp(%s)/%s?%s", user, host, dbName, params.Encode()), nil
 }
 
 // OpenMaintenanceDB opens a connection to the maintenance database.

@@ -193,7 +193,7 @@ func FilesCmd() {
 	}
 
 	queryDefsPath := filepath.Join(queryDefsDir, "queries.go")
-	if err := os.WriteFile(queryDefsPath, queryDefs, 0644); err != nil {
+	if _, err := codegen.WriteGeneratedFile(queryDefsPath, queryDefs); err != nil {
 		fmt.Fprintf(os.Stderr, "error: failed to write querydefs/managed_files/queries.go: %v\n", err)
 		os.Exit(1)
 	}

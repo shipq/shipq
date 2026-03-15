@@ -3,11 +3,13 @@ package openai
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/shipq/shipq/llm"
 )
@@ -493,10 +495,11 @@ func TestSendAPIError(t *testing.T) {
 
 func TestSendRateLimitError(t *testing.T) {
 	p, _ := newTestProvider(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Retry-After", "5")
 		w.WriteHeader(http.StatusTooManyRequests)
 		json.NewEncoder(w).Encode(map[string]any{
 			"error": map[string]any{
-				"message": "Rate limit exceeded",
+				"message": "Rate limit exceeded. Please try again in 4.5s.",
 				"type":    "requests",
 				"code":    "rate_limit_exceeded",
 			},
@@ -509,8 +512,49 @@ func TestSendRateLimitError(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error for rate limit")
 	}
-	if !strings.Contains(err.Error(), "429") {
-		t.Errorf("error should mention HTTP 429, got %q", err.Error())
+
+	var rle *llm.RateLimitError
+	if !errors.As(err, &rle) {
+		t.Fatalf("expected *llm.RateLimitError, got %T: %v", err, err)
+	}
+	if rle.StatusCode != 429 {
+		t.Errorf("StatusCode = %d, want 429", rle.StatusCode)
+	}
+	// Header "Retry-After: 5" takes precedence over body "4.5s".
+	if rle.RetryAfter != 5*time.Second {
+		t.Errorf("RetryAfter = %v, want 5s", rle.RetryAfter)
+	}
+	if !strings.Contains(rle.Message, "Rate limit exceeded") {
+		t.Errorf("Message = %q, want to contain 'Rate limit exceeded'", rle.Message)
+	}
+}
+
+func TestSendStreamRateLimitError(t *testing.T) {
+	p, _ := newTestProvider(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Retry-After", "3")
+		w.WriteHeader(http.StatusTooManyRequests)
+		json.NewEncoder(w).Encode(map[string]any{
+			"error": map[string]any{
+				"message": "Rate limit exceeded",
+				"type":    "requests",
+				"code":    "rate_limit_exceeded",
+			},
+		})
+	})
+
+	_, err := p.SendStream(context.Background(), &llm.ProviderRequest{
+		Messages: []llm.ProviderMessage{{Role: llm.RoleUser, Text: "hi"}},
+	})
+	if err == nil {
+		t.Fatal("expected error for rate limit")
+	}
+
+	var rle *llm.RateLimitError
+	if !errors.As(err, &rle) {
+		t.Fatalf("expected *llm.RateLimitError, got %T: %v", err, err)
+	}
+	if rle.RetryAfter != 3*time.Second {
+		t.Errorf("RetryAfter = %v, want 3s", rle.RetryAfter)
 	}
 }
 

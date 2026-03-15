@@ -127,7 +127,7 @@ func HandlerGenerateCmd(args []string) {
 		os.Exit(1)
 	}
 	querydefsPath := filepath.Join(querydefsDir, "queries.go")
-	if written, writeErr := codegen.WriteFileIfChanged(querydefsPath, querydefsBytes); writeErr != nil {
+	if written, writeErr := codegen.WriteGeneratedFile(querydefsPath, querydefsBytes); writeErr != nil {
 		fmt.Fprintf(os.Stderr, "error: failed to write querydefs: %v\n", writeErr)
 		os.Exit(1)
 	} else if written {

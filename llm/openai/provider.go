@@ -399,10 +399,21 @@ func (p *Provider) post(ctx context.Context, path string, body any) ([]byte, err
 	}
 
 	if resp.StatusCode >= 400 {
+		msg := string(respBytes)
 		var apiErr struct {
 			Error *apiError `json:"error"`
 		}
 		if jsonErr := json.Unmarshal(respBytes, &apiErr); jsonErr == nil && apiErr.Error != nil {
+			msg = apiErr.Error.Error()
+		}
+		if resp.StatusCode == http.StatusTooManyRequests {
+			return nil, &llm.RateLimitError{
+				StatusCode: resp.StatusCode,
+				RetryAfter: llm.ParseRetryAfter(resp.Header.Get("Retry-After"), msg),
+				Message:    msg,
+			}
+		}
+		if apiErr.Error != nil {
 			return nil, fmt.Errorf("openai HTTP %d: %w", resp.StatusCode, apiErr.Error)
 		}
 		return nil, fmt.Errorf("openai HTTP %d: %s", resp.StatusCode, string(respBytes))
@@ -433,10 +444,21 @@ func (p *Provider) postStream(ctx context.Context, path string, body any) (io.Re
 	if resp.StatusCode >= 400 {
 		b, _ := io.ReadAll(resp.Body)
 		resp.Body.Close()
+		msg := string(b)
 		var apiErr struct {
 			Error *apiError `json:"error"`
 		}
 		if jsonErr := json.Unmarshal(b, &apiErr); jsonErr == nil && apiErr.Error != nil {
+			msg = apiErr.Error.Error()
+		}
+		if resp.StatusCode == http.StatusTooManyRequests {
+			return nil, &llm.RateLimitError{
+				StatusCode: resp.StatusCode,
+				RetryAfter: llm.ParseRetryAfter(resp.Header.Get("Retry-After"), msg),
+				Message:    msg,
+			}
+		}
+		if apiErr.Error != nil {
 			return nil, fmt.Errorf("openai HTTP %d: %w", resp.StatusCode, apiErr.Error)
 		}
 		return nil, fmt.Errorf("openai HTTP %d: %s", resp.StatusCode, string(b))

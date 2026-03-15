@@ -166,7 +166,7 @@ func generateResource(tableName, operation string, isPublic bool) error {
 		return fmt.Errorf("failed to generate CRUD querydefs: %w", err)
 	}
 	querydefsPath := filepath.Join(querydefsDir, "queries.go")
-	querydefsChanged, err := codegen.WriteFileIfChanged(querydefsPath, querydefsBytes)
+	querydefsChanged, err := codegen.WriteGeneratedFile(querydefsPath, querydefsBytes)
 	if err != nil {
 		return fmt.Errorf("failed to write querydefs: %w", err)
 	}

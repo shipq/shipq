@@ -111,7 +111,7 @@ func DBCompileCmd() {
 			if err != nil {
 				cli.FatalErr("failed to generate CRUD querydefs for "+tableName, err)
 			}
-			if _, err := codegen.WriteFileIfChanged(qPath, code); err != nil {
+			if _, err := codegen.WriteGeneratedFile(qPath, code); err != nil {
 				cli.FatalErr("failed to write querydefs for "+tableName, err)
 			}
 		}

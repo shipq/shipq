@@ -45,9 +45,12 @@ type Dialect interface {
 
 	// WriteJSONAgg writes a JSON aggregation expression.
 	// Each dialect has different JSON functions.
-	// The writeColumn callback should be used to write column references.
-	// Returns an error if cols is empty.
-	WriteJSONAgg(b *strings.Builder, cols []query.Column, writeColumn func(query.Column)) error
+	// When fields is non-empty it takes precedence over cols, allowing richer
+	// field definitions including nested expressions.
+	// The writeColumn callback writes column references; writeExpr writes
+	// arbitrary expressions (used for nested JSON_AGG via scalar subqueries).
+	// Returns an error if both cols and fields are empty.
+	WriteJSONAgg(b *strings.Builder, cols []query.Column, fields []query.JSONAggField, writeColumn func(query.Column), writeExpr func(query.Expr) error) error
 
 	// WriteOrderByExpr writes an expression for ORDER BY clause.
 	// Collation is handled at the schema level (COLLATE "C" for Postgres columns,
@@ -66,6 +69,11 @@ type CompilerState struct {
 // =============================================================================
 // Shared Helpers
 // =============================================================================
+
+// isTimeColumn returns true if the column's Go type is time.Time or *time.Time.
+func isTimeColumn(col query.Column) bool {
+	return col.GoType() == "time.Time" || col.GoType() == "*time.Time"
+}
 
 // writeILIKEWithLower is a shared helper for dialects that don't have native ILIKE.
 // It emulates ILIKE using LOWER(x) LIKE LOWER(y).
@@ -135,7 +143,10 @@ func (d *PostgresDialect) WriteILIKE(b *strings.Builder, args []query.Expr, writ
 	return writeExpr(args[1])
 }
 
-func (d *PostgresDialect) WriteJSONAgg(b *strings.Builder, cols []query.Column, writeColumn func(query.Column)) error {
+func (d *PostgresDialect) WriteJSONAgg(b *strings.Builder, cols []query.Column, fields []query.JSONAggField, writeColumn func(query.Column), writeExpr func(query.Expr) error) error {
+	if len(fields) > 0 {
+		return d.writeJSONAggFields(b, fields, writeColumn, writeExpr)
+	}
 	if len(cols) == 0 {
 		return fmt.Errorf("JSON aggregation requires at least one column")
 	}
@@ -145,13 +156,42 @@ func (d *PostgresDialect) WriteJSONAgg(b *strings.Builder, cols []query.Column, 
 		if i > 0 {
 			b.WriteString(", ")
 		}
-		// Key is column name
 		fmt.Fprintf(b, "'%s', ", col.ColumnName())
 		writeColumn(col)
 	}
 	b.WriteString(")) FILTER (WHERE ")
-	// Use first column for null check
 	writeColumn(cols[0])
+	b.WriteString(" IS NOT NULL), '[]')")
+	return nil
+}
+
+func (d *PostgresDialect) writeJSONAggFields(b *strings.Builder, fields []query.JSONAggField, writeColumn func(query.Column), writeExpr func(query.Expr) error) error {
+	if len(fields) == 0 {
+		return fmt.Errorf("JSON aggregation requires at least one field")
+	}
+	b.WriteString("COALESCE(JSON_AGG(JSON_BUILD_OBJECT(")
+	for i, f := range fields {
+		if i > 0 {
+			b.WriteString(", ")
+		}
+		fmt.Fprintf(b, "'%s', ", f.Key)
+		if f.Column != nil {
+			writeColumn(f.Column)
+		} else if f.Expr != nil {
+			if err := writeExpr(f.Expr); err != nil {
+				return err
+			}
+		}
+	}
+	b.WriteString(")) FILTER (WHERE ")
+	// Use first column-backed field for null check; fall back to first field's expr
+	if first := fields[0]; first.Column != nil {
+		writeColumn(first.Column)
+	} else if first.Expr != nil {
+		if err := writeExpr(first.Expr); err != nil {
+			return err
+		}
+	}
 	b.WriteString(" IS NOT NULL), '[]')")
 	return nil
 }
@@ -205,13 +245,13 @@ func (d *MySQLDialect) WriteILIKE(b *strings.Builder, args []query.Expr, writeEx
 	return writeILIKEWithLower(b, args, writeExpr)
 }
 
-func (d *MySQLDialect) WriteJSONAgg(b *strings.Builder, cols []query.Column, writeColumn func(query.Column)) error {
+func (d *MySQLDialect) WriteJSONAgg(b *strings.Builder, cols []query.Column, fields []query.JSONAggField, writeColumn func(query.Column), writeExpr func(query.Expr) error) error {
+	if len(fields) > 0 {
+		return d.writeJSONAggFields(b, fields, writeColumn, writeExpr)
+	}
 	if len(cols) == 0 {
 		return fmt.Errorf("JSON aggregation requires at least one column")
 	}
-	// COALESCE(JSON_ARRAYAGG(CASE WHEN col IS NOT NULL THEN JSON_OBJECT(...) END), JSON_ARRAY())
-	// Use CASE WHEN to produce null entries for LEFT JOIN no-match rows,
-	// which are filtered out during Go unmarshal.
 	b.WriteString("COALESCE(JSON_ARRAYAGG(CASE WHEN ")
 	writeColumn(cols[0])
 	b.WriteString(" IS NOT NULL THEN JSON_OBJECT(")
@@ -219,9 +259,50 @@ func (d *MySQLDialect) WriteJSONAgg(b *strings.Builder, cols []query.Column, wri
 		if i > 0 {
 			b.WriteString(", ")
 		}
-		// Key is column name as string literal
 		fmt.Fprintf(b, "'%s', ", col.ColumnName())
-		writeColumn(col)
+		if isTimeColumn(col) {
+			b.WriteString("DATE_FORMAT(")
+			writeColumn(col)
+			b.WriteString(", '%Y-%m-%dT%H:%i:%s.%fZ')")
+		} else {
+			writeColumn(col)
+		}
+	}
+	b.WriteString(") END), JSON_ARRAY())")
+	return nil
+}
+
+func (d *MySQLDialect) writeJSONAggFields(b *strings.Builder, fields []query.JSONAggField, writeColumn func(query.Column), writeExpr func(query.Expr) error) error {
+	if len(fields) == 0 {
+		return fmt.Errorf("JSON aggregation requires at least one field")
+	}
+	b.WriteString("COALESCE(JSON_ARRAYAGG(CASE WHEN ")
+	if first := fields[0]; first.Column != nil {
+		writeColumn(first.Column)
+	} else if first.Expr != nil {
+		if err := writeExpr(first.Expr); err != nil {
+			return err
+		}
+	}
+	b.WriteString(" IS NOT NULL THEN JSON_OBJECT(")
+	for i, f := range fields {
+		if i > 0 {
+			b.WriteString(", ")
+		}
+		fmt.Fprintf(b, "'%s', ", f.Key)
+		if f.Column != nil {
+			if isTimeColumn(f.Column) {
+				b.WriteString("DATE_FORMAT(")
+				writeColumn(f.Column)
+				b.WriteString(", '%Y-%m-%dT%H:%i:%s.%fZ')")
+			} else {
+				writeColumn(f.Column)
+			}
+		} else if f.Expr != nil {
+			if err := writeExpr(f.Expr); err != nil {
+				return err
+			}
+		}
 	}
 	b.WriteString(") END), JSON_ARRAY())")
 	return nil
@@ -276,13 +357,13 @@ func (d *SQLiteDialect) WriteILIKE(b *strings.Builder, args []query.Expr, writeE
 	return writeILIKEWithLower(b, args, writeExpr)
 }
 
-func (d *SQLiteDialect) WriteJSONAgg(b *strings.Builder, cols []query.Column, writeColumn func(query.Column)) error {
+func (d *SQLiteDialect) WriteJSONAgg(b *strings.Builder, cols []query.Column, fields []query.JSONAggField, writeColumn func(query.Column), writeExpr func(query.Expr) error) error {
+	if len(fields) > 0 {
+		return d.writeJSONAggFields(b, fields, writeColumn, writeExpr)
+	}
 	if len(cols) == 0 {
 		return fmt.Errorf("JSON aggregation requires at least one column")
 	}
-	// COALESCE(JSON_GROUP_ARRAY(CASE WHEN col IS NOT NULL THEN JSON_OBJECT(...) END), '[]')
-	// Use CASE WHEN to produce null entries for LEFT JOIN no-match rows,
-	// which are filtered out during Go unmarshal.
 	b.WriteString("COALESCE(JSON_GROUP_ARRAY(CASE WHEN ")
 	writeColumn(cols[0])
 	b.WriteString(" IS NOT NULL THEN JSON_OBJECT(")
@@ -290,9 +371,50 @@ func (d *SQLiteDialect) WriteJSONAgg(b *strings.Builder, cols []query.Column, wr
 		if i > 0 {
 			b.WriteString(", ")
 		}
-		// Key is column name as string literal
 		fmt.Fprintf(b, "'%s', ", col.ColumnName())
-		writeColumn(col)
+		if isTimeColumn(col) {
+			b.WriteString("strftime('%Y-%m-%dT%H:%M:%fZ', ")
+			writeColumn(col)
+			b.WriteString(")")
+		} else {
+			writeColumn(col)
+		}
+	}
+	b.WriteString(") END), '[]')")
+	return nil
+}
+
+func (d *SQLiteDialect) writeJSONAggFields(b *strings.Builder, fields []query.JSONAggField, writeColumn func(query.Column), writeExpr func(query.Expr) error) error {
+	if len(fields) == 0 {
+		return fmt.Errorf("JSON aggregation requires at least one field")
+	}
+	b.WriteString("COALESCE(JSON_GROUP_ARRAY(CASE WHEN ")
+	if first := fields[0]; first.Column != nil {
+		writeColumn(first.Column)
+	} else if first.Expr != nil {
+		if err := writeExpr(first.Expr); err != nil {
+			return err
+		}
+	}
+	b.WriteString(" IS NOT NULL THEN JSON_OBJECT(")
+	for i, f := range fields {
+		if i > 0 {
+			b.WriteString(", ")
+		}
+		fmt.Fprintf(b, "'%s', ", f.Key)
+		if f.Column != nil {
+			if isTimeColumn(f.Column) {
+				b.WriteString("strftime('%Y-%m-%dT%H:%M:%fZ', ")
+				writeColumn(f.Column)
+				b.WriteString(")")
+			} else {
+				writeColumn(f.Column)
+			}
+		} else if f.Expr != nil {
+			if err := writeExpr(f.Expr); err != nil {
+				return err
+			}
+		}
 	}
 	b.WriteString(") END), '[]')")
 	return nil

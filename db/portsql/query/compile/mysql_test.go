@@ -295,10 +295,10 @@ func TestMySQL_Insert_NoReturning(t *testing.T) {
 		Kind:       query.InsertQuery,
 		FromTable:  query.TableRef{Name: "authors"},
 		InsertCols: []query.Column{publicID, name},
-		InsertVals: []query.Expr{
+		InsertRows: [][]query.Expr{{
 			query.ParamExpr{Name: "public_id", GoType: "string"},
 			query.ParamExpr{Name: "name", GoType: "string"},
-		},
+		}},
 		Returning: []query.Column{publicID}, // Should be IGNORED for MySQL
 	}
 
@@ -328,10 +328,10 @@ func TestMySQL_InsertWithNow(t *testing.T) {
 		Kind:       query.InsertQuery,
 		FromTable:  query.TableRef{Name: "authors"},
 		InsertCols: []query.Column{name, createdAt},
-		InsertVals: []query.Expr{
+		InsertRows: [][]query.Expr{{
 			query.ParamExpr{Name: "name", GoType: "string"},
 			query.FuncExpr{Name: "NOW"},
-		},
+		}},
 	}
 
 	sql, _, err := NewCompiler(MySQL).Compile(ast)
@@ -625,6 +625,68 @@ func TestMySQL_JSONAggregation(t *testing.T) {
 	}
 	if containsStr(sql, "JSON_AGG") && !containsStr(sql, "JSON_ARRAYAGG") {
 		t.Errorf("MySQL SQL should NOT contain Postgres JSON_AGG: %s", sql)
+	}
+}
+
+func TestMySQL_NestedJSONAgg(t *testing.T) {
+	bookTitle := query.StringColumn{Table: "books", Name: "title"}
+	bookID := query.Int64Column{Table: "books", Name: "id"}
+	chapterTitle := query.StringColumn{Table: "chapters", Name: "title"}
+	chapterBookID := query.Int64Column{Table: "chapters", Name: "book_id"}
+
+	chaptersSubquery := &query.AST{
+		Kind:      query.SelectQuery,
+		FromTable: query.TableRef{Name: "chapters"},
+		SelectCols: []query.SelectExpr{
+			{Expr: query.JSONAggExpr{FieldName: "ch", Columns: []query.Column{chapterTitle}}},
+		},
+		Where: query.BinaryExpr{
+			Left:  query.ColumnExpr{Column: chapterBookID},
+			Op:    query.OpEq,
+			Right: query.ColumnExpr{Column: bookID},
+		},
+	}
+
+	ast := &query.AST{
+		Kind:      query.SelectQuery,
+		FromTable: query.TableRef{Name: "authors"},
+		SelectCols: []query.SelectExpr{
+			{
+				Expr: query.JSONAggExpr{
+					FieldName: "books",
+					Fields: []query.JSONAggField{
+						{Key: "title", Column: bookTitle},
+						{Key: "chapters", Expr: query.SubqueryExpr{Query: chaptersSubquery}},
+					},
+				},
+				Alias: "books",
+			},
+		},
+	}
+
+	sql, _, err := NewCompiler(MySQL).Compile(ast)
+	if err != nil {
+		t.Fatalf("Compile failed: %v", err)
+	}
+
+	if !containsStr(sql, "JSON_ARRAYAGG") {
+		t.Errorf("outer should use JSON_ARRAYAGG: %s", sql)
+	}
+	if !containsStr(sql, "'title'") {
+		t.Errorf("SQL should contain 'title' key: %s", sql)
+	}
+	if !containsStr(sql, "'chapters'") {
+		t.Errorf("SQL should contain 'chapters' key: %s", sql)
+	}
+	// Inner subquery should also have JSON_ARRAYAGG
+	count := 0
+	for i := 0; i+len("JSON_ARRAYAGG") <= len(sql); i++ {
+		if sql[i:i+len("JSON_ARRAYAGG")] == "JSON_ARRAYAGG" {
+			count++
+		}
+	}
+	if count < 2 {
+		t.Errorf("SQL should contain at least 2 JSON_ARRAYAGG calls (nested), found %d: %s", count, sql)
 	}
 }
 
@@ -1106,5 +1168,301 @@ func TestMySQL_UpdateWithArithmeticSub(t *testing.T) {
 	}
 	if len(params) != 2 || params[0] != "delta" || params[1] != "id" {
 		t.Errorf("expected params [delta, id], got %v", params)
+	}
+}
+
+func TestMySQL_BulkInsert(t *testing.T) {
+	name := query.StringColumn{Table: "authors", Name: "name"}
+	email := query.StringColumn{Table: "authors", Name: "email"}
+
+	ast := &query.AST{
+		Kind:       query.InsertQuery,
+		FromTable:  query.TableRef{Name: "authors"},
+		InsertCols: []query.Column{name, email},
+		InsertRows: [][]query.Expr{
+			{query.ParamExpr{Name: "name_0", GoType: "string"}, query.ParamExpr{Name: "email_0", GoType: "string"}},
+			{query.ParamExpr{Name: "name_1", GoType: "string"}, query.ParamExpr{Name: "email_1", GoType: "string"}},
+		},
+	}
+
+	sql, params, err := NewCompiler(MySQL).Compile(ast)
+	if err != nil {
+		t.Fatalf("Compile failed: %v", err)
+	}
+
+	expected := "INSERT INTO `authors` (`name`, `email`) VALUES (?, ?), (?, ?)"
+	if sql != expected {
+		t.Errorf("expected SQL:\n%s\ngot:\n%s", expected, sql)
+	}
+	if containsStr(sql, "RETURNING") {
+		t.Errorf("MySQL SQL should NOT contain RETURNING: %s", sql)
+	}
+	if len(params) != 4 {
+		t.Errorf("expected 4 params, got %d: %v", len(params), params)
+	}
+}
+
+// =============================================================================
+// INSERT ... SELECT Tests
+// =============================================================================
+
+func TestMySQL_InsertSelect(t *testing.T) {
+	ast := &query.AST{
+		Kind:      query.InsertQuery,
+		FromTable: query.TableRef{Name: "target"},
+		InsertCols: []query.Column{
+			query.StringColumn{Table: "target", Name: "name"},
+			query.StringColumn{Table: "target", Name: "email"},
+		},
+		InsertSource: &query.AST{
+			Kind:      query.SelectQuery,
+			FromTable: query.TableRef{Name: "source"},
+			SelectCols: []query.SelectExpr{
+				{Expr: query.ColumnExpr{Column: query.StringColumn{Table: "source", Name: "name"}}},
+				{Expr: query.ColumnExpr{Column: query.StringColumn{Table: "source", Name: "email"}}},
+			},
+			Where: query.BinaryExpr{
+				Left:  query.ColumnExpr{Column: query.BoolColumn{Table: "source", Name: "active"}},
+				Op:    query.OpEq,
+				Right: query.LiteralExpr{Value: true},
+			},
+		},
+	}
+	sql, params, err := NewCompiler(MySQL).Compile(ast)
+	if err != nil {
+		t.Fatalf("Compile failed: %v", err)
+	}
+	expected := "INSERT INTO `target` (`name`, `email`) SELECT `source`.`name`, `source`.`email` FROM `source` WHERE (`source`.`active` = 1)"
+	if sql != expected {
+		t.Errorf("expected SQL:\n%s\ngot:\n%s", expected, sql)
+	}
+	if len(params) != 0 {
+		t.Errorf("expected no params, got %v", params)
+	}
+}
+
+func TestMySQL_InsertSelect_WithParams(t *testing.T) {
+	ast := &query.AST{
+		Kind:      query.InsertQuery,
+		FromTable: query.TableRef{Name: "target"},
+		InsertCols: []query.Column{
+			query.StringColumn{Table: "target", Name: "name"},
+			query.StringColumn{Table: "target", Name: "email"},
+		},
+		InsertSource: &query.AST{
+			Kind:      query.SelectQuery,
+			FromTable: query.TableRef{Name: "source"},
+			SelectCols: []query.SelectExpr{
+				{Expr: query.ColumnExpr{Column: query.StringColumn{Table: "source", Name: "name"}}},
+				{Expr: query.ColumnExpr{Column: query.StringColumn{Table: "source", Name: "email"}}},
+			},
+			Where: query.BinaryExpr{
+				Left:  query.ColumnExpr{Column: query.StringColumn{Table: "source", Name: "status"}},
+				Op:    query.OpEq,
+				Right: query.ParamExpr{Name: "status", GoType: "string"},
+			},
+		},
+	}
+	sql, params, err := NewCompiler(MySQL).Compile(ast)
+	if err != nil {
+		t.Fatalf("Compile failed: %v", err)
+	}
+	if !containsStr(sql, "?") {
+		t.Errorf("SQL should contain ? placeholder: %s", sql)
+	}
+	expected := "INSERT INTO `target` (`name`, `email`) SELECT `source`.`name`, `source`.`email` FROM `source` WHERE (`source`.`status` = ?)"
+	if sql != expected {
+		t.Errorf("expected SQL:\n%s\ngot:\n%s", expected, sql)
+	}
+	if len(params) != 1 || params[0] != "status" {
+		t.Errorf("expected params [status], got %v", params)
+	}
+}
+
+func TestMySQL_InsertSelect_WithCTE(t *testing.T) {
+	ast := &query.AST{
+		Kind:      query.InsertQuery,
+		FromTable: query.TableRef{Name: "archive"},
+		InsertCols: []query.Column{
+			query.StringColumn{Table: "archive", Name: "name"},
+			query.StringColumn{Table: "archive", Name: "email"},
+		},
+		CTEs: []query.CTE{
+			{
+				Name: "active_users",
+				Query: &query.AST{
+					Kind:      query.SelectQuery,
+					FromTable: query.TableRef{Name: "users"},
+					SelectCols: []query.SelectExpr{
+						{Expr: query.ColumnExpr{Column: query.StringColumn{Table: "users", Name: "name"}}},
+						{Expr: query.ColumnExpr{Column: query.StringColumn{Table: "users", Name: "email"}}},
+					},
+					Where: query.BinaryExpr{
+						Left:  query.ColumnExpr{Column: query.BoolColumn{Table: "users", Name: "active"}},
+						Op:    query.OpEq,
+						Right: query.LiteralExpr{Value: true},
+					},
+				},
+			},
+		},
+		InsertSource: &query.AST{
+			Kind:      query.SelectQuery,
+			FromTable: query.TableRef{Name: "active_users"},
+			SelectCols: []query.SelectExpr{
+				{Expr: query.ColumnExpr{Column: query.StringColumn{Table: "active_users", Name: "name"}}},
+				{Expr: query.ColumnExpr{Column: query.StringColumn{Table: "active_users", Name: "email"}}},
+			},
+		},
+	}
+	sql, params, err := NewCompiler(MySQL).Compile(ast)
+	if err != nil {
+		t.Fatalf("Compile failed: %v", err)
+	}
+	expected := "WITH `active_users` AS (SELECT `users`.`name`, `users`.`email` FROM `users` WHERE (`users`.`active` = 1)) INSERT INTO `archive` (`name`, `email`) SELECT `active_users`.`name`, `active_users`.`email` FROM `active_users`"
+	if sql != expected {
+		t.Errorf("expected SQL:\n%s\ngot:\n%s", expected, sql)
+	}
+	if len(params) != 0 {
+		t.Errorf("expected no params, got %v", params)
+	}
+}
+
+// =============================================================================
+// Regression tests for Bug 2: time.Time fields inside JSONAGG break on MySQL
+// =============================================================================
+
+// TestMySQL_JSONAgg_DateTimeColumn_UsesDateFormat verifies that MySQL's
+// WriteJSONAgg wraps time.Time columns with DATE_FORMAT to produce RFC3339.
+// Regression test: MySQL JSON_OBJECT serializes datetime as "2026-03-14 18:24:35.908000"
+// which breaks Go's json.Unmarshal into time.Time (expects RFC3339).
+func TestMySQL_JSONAgg_DateTimeColumn_UsesDateFormat(t *testing.T) {
+	bookTitle := query.StringColumn{Table: "books", Name: "title"}
+	createdAt := query.TimeColumn{Table: "books", Name: "created_at"}
+
+	jsonAgg := query.JSONAggExpr{
+		FieldName: "books",
+		Columns:   []query.Column{bookTitle, createdAt},
+	}
+
+	ast := &query.AST{
+		Kind:      query.SelectQuery,
+		FromTable: query.TableRef{Name: "books"},
+		SelectCols: []query.SelectExpr{
+			{Expr: jsonAgg, Alias: "books"},
+		},
+	}
+
+	sql, _, err := NewCompiler(MySQL).Compile(ast)
+	if err != nil {
+		t.Fatalf("Compile failed: %v", err)
+	}
+
+	t.Logf("Compiled SQL: %s", sql)
+
+	// Must wrap created_at with DATE_FORMAT for RFC3339 output
+	if !containsStr(sql, "DATE_FORMAT(") {
+		t.Errorf("SQL should contain DATE_FORMAT for time column: %s", sql)
+	}
+	if !containsStr(sql, "'created_at', DATE_FORMAT(") {
+		t.Errorf("SQL should wrap created_at value with DATE_FORMAT: %s", sql)
+	}
+	// Non-time column (title) should NOT be wrapped
+	if containsStr(sql, "'title', DATE_FORMAT(") {
+		t.Errorf("SQL should NOT wrap non-time column with DATE_FORMAT: %s", sql)
+	}
+	// Must use RFC3339-compatible format string
+	if !containsStr(sql, "%Y-%m-%dT%H:%i:%s.%fZ") {
+		t.Errorf("DATE_FORMAT should use RFC3339-compatible format: %s", sql)
+	}
+}
+
+// TestMySQL_JSONAgg_NullableDateTimeColumn_UsesDateFormat verifies that nullable
+// time columns (*time.Time) are also wrapped with DATE_FORMAT.
+func TestMySQL_JSONAgg_NullableDateTimeColumn_UsesDateFormat(t *testing.T) {
+	bookTitle := query.StringColumn{Table: "books", Name: "title"}
+	deletedAt := query.NullTimeColumn{Table: "books", Name: "deleted_at"}
+
+	jsonAgg := query.JSONAggExpr{
+		FieldName: "books",
+		Columns:   []query.Column{bookTitle, deletedAt},
+	}
+
+	ast := &query.AST{
+		Kind:      query.SelectQuery,
+		FromTable: query.TableRef{Name: "books"},
+		SelectCols: []query.SelectExpr{
+			{Expr: jsonAgg, Alias: "books"},
+		},
+	}
+
+	sql, _, err := NewCompiler(MySQL).Compile(ast)
+	if err != nil {
+		t.Fatalf("Compile failed: %v", err)
+	}
+
+	t.Logf("Compiled SQL: %s", sql)
+
+	if !containsStr(sql, "'deleted_at', DATE_FORMAT(") {
+		t.Errorf("SQL should wrap nullable time column with DATE_FORMAT: %s", sql)
+	}
+}
+
+// TestMySQL_JSONAgg_NoTimeColumns_NoDateFormat verifies that JSON_OBJECT without
+// time columns does NOT emit DATE_FORMAT.
+func TestMySQL_JSONAgg_NoTimeColumns_NoDateFormat(t *testing.T) {
+	bookID := query.Int64Column{Table: "books", Name: "id"}
+	bookTitle := query.StringColumn{Table: "books", Name: "title"}
+
+	jsonAgg := query.JSONAggExpr{
+		FieldName: "books",
+		Columns:   []query.Column{bookID, bookTitle},
+	}
+
+	ast := &query.AST{
+		Kind:      query.SelectQuery,
+		FromTable: query.TableRef{Name: "books"},
+		SelectCols: []query.SelectExpr{
+			{Expr: jsonAgg, Alias: "books"},
+		},
+	}
+
+	sql, _, err := NewCompiler(MySQL).Compile(ast)
+	if err != nil {
+		t.Fatalf("Compile failed: %v", err)
+	}
+
+	if containsStr(sql, "DATE_FORMAT") {
+		t.Errorf("SQL should NOT contain DATE_FORMAT when no time columns: %s", sql)
+	}
+}
+
+func TestMySQL_InsertSelect_NoReturning(t *testing.T) {
+	ast := &query.AST{
+		Kind:      query.InsertQuery,
+		FromTable: query.TableRef{Name: "target"},
+		InsertCols: []query.Column{
+			query.StringColumn{Table: "target", Name: "name"},
+			query.StringColumn{Table: "target", Name: "email"},
+		},
+		InsertSource: &query.AST{
+			Kind:      query.SelectQuery,
+			FromTable: query.TableRef{Name: "source"},
+			SelectCols: []query.SelectExpr{
+				{Expr: query.ColumnExpr{Column: query.StringColumn{Table: "source", Name: "name"}}},
+				{Expr: query.ColumnExpr{Column: query.StringColumn{Table: "source", Name: "email"}}},
+			},
+		},
+		Returning: []query.Column{query.Int64Column{Table: "target", Name: "id"}}, // Should be IGNORED for MySQL
+	}
+	sql, _, err := NewCompiler(MySQL).Compile(ast)
+	if err != nil {
+		t.Fatalf("Compile failed: %v", err)
+	}
+	expected := "INSERT INTO `target` (`name`, `email`) SELECT `source`.`name`, `source`.`email` FROM `source`"
+	if sql != expected {
+		t.Errorf("expected SQL:\n%s\ngot:\n%s", expected, sql)
+	}
+	if containsStr(sql, "RETURNING") {
+		t.Errorf("MySQL SQL should NOT contain RETURNING: %s", sql)
 	}
 }
