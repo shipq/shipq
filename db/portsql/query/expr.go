@@ -86,10 +86,24 @@ type ListExpr struct {
 
 func (ListExpr) exprNode() {}
 
+// JSONAggField describes a single field inside a JSON aggregate object.
+// Either Column or Expr must be set (not both). When Column is set the field
+// is a plain column reference; when Expr is set the field is an arbitrary
+// expression (e.g. a nested JSON_AGG via a scalar subquery).
+type JSONAggField struct {
+	Key    string // JSON key name (e.g. "title", "chapters")
+	Column Column // Set for plain column fields
+	Expr   Expr   // Set for expression fields (e.g. nested JSON_AGG subquery)
+}
+
 // JSONAggExpr represents JSON aggregation.
+// When Fields is non-empty it takes precedence over Columns, allowing richer
+// field definitions including nested expressions. Columns is kept for backward
+// compatibility with existing callers that only need flat column aggregation.
 type JSONAggExpr struct {
-	FieldName string   // The key in the result struct
-	Columns   []Column // Columns to aggregate
+	FieldName string         // The key in the result struct
+	Columns   []Column       // Flat columns to aggregate (legacy path)
+	Fields    []JSONAggField // Rich fields that can include nested exprs
 }
 
 func (JSONAggExpr) exprNode() {}

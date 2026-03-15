@@ -513,3 +513,184 @@ func TestTryDefineExec_Success(t *testing.T) {
 		t.Errorf("Expected ReturnExec, got %v", rq.ReturnType)
 	}
 }
+
+// =============================================================================
+// MustDefineBulkExec / TryDefineBulkExec tests
+// =============================================================================
+
+func TestMustDefineBulkExec_RegistersCorrectly(t *testing.T) {
+	ClearRegistry()
+
+	authors := mockTable{name: "authors"}
+	nameCol := StringColumn{Table: "authors", Name: "name"}
+	emailCol := StringColumn{Table: "authors", Name: "email"}
+
+	ast := MustDefineBulkExec("BulkInsertAuthors",
+		InsertInto(authors).
+			Columns(nameCol, emailCol).
+			AddRow(Param[string]("name"), Param[string]("email")).
+			Build(),
+	)
+
+	if ast == nil {
+		t.Fatal("MustDefineBulkExec returned nil")
+	}
+	if ast.Kind != InsertQuery {
+		t.Errorf("expected InsertQuery, got %v", ast.Kind)
+	}
+
+	queries := GetRegisteredQueries()
+	rq, ok := queries["BulkInsertAuthors"]
+	if !ok {
+		t.Fatal("BulkInsertAuthors not found in registry")
+	}
+	if rq.AST != ast {
+		t.Error("registered AST does not match returned AST")
+	}
+	if rq.ReturnType != ReturnBulkExec {
+		t.Errorf("expected ReturnBulkExec, got %v", rq.ReturnType)
+	}
+}
+
+func TestMustDefineBulkExec_PanicsOnDuplicate(t *testing.T) {
+	ClearRegistry()
+
+	defer func() {
+		if r := recover(); r == nil {
+			t.Error("expected panic for duplicate name")
+		}
+	}()
+
+	authors := mockTable{name: "authors"}
+	nameCol := StringColumn{Table: "authors", Name: "name"}
+
+	MustDefineBulkExec("BulkInsert",
+		InsertInto(authors).Columns(nameCol).AddRow(Param[string]("name")).Build(),
+	)
+	MustDefineBulkExec("BulkInsert",
+		InsertInto(authors).Columns(nameCol).AddRow(Param[string]("name")).Build(),
+	) // Should panic
+}
+
+func TestMustDefineBulkExec_PanicsOnEmptyName(t *testing.T) {
+	ClearRegistry()
+
+	defer func() {
+		if r := recover(); r == nil {
+			t.Error("expected panic for empty name")
+		}
+	}()
+
+	authors := mockTable{name: "authors"}
+	MustDefineBulkExec("", InsertInto(authors).Build())
+}
+
+func TestMustDefineBulkExec_PanicsOnNilAST(t *testing.T) {
+	ClearRegistry()
+
+	defer func() {
+		if r := recover(); r == nil {
+			t.Error("expected panic for nil AST")
+		}
+	}()
+
+	MustDefineBulkExec("BulkInsert", nil)
+}
+
+func TestTryDefineBulkExec_Success(t *testing.T) {
+	ClearRegistry()
+
+	authors := mockTable{name: "authors"}
+	nameCol := StringColumn{Table: "authors", Name: "name"}
+
+	ast, err := TryDefineBulkExec("BulkInsertTry",
+		InsertInto(authors).Columns(nameCol).AddRow(Param[string]("name")).Build(),
+	)
+
+	if err != nil {
+		t.Errorf("TryDefineBulkExec returned error: %v", err)
+	}
+	if ast == nil {
+		t.Error("TryDefineBulkExec returned nil AST")
+	}
+
+	queries := GetRegisteredQueries()
+	rq, ok := queries["BulkInsertTry"]
+	if !ok {
+		t.Error("Query not registered")
+	}
+	if rq.ReturnType != ReturnBulkExec {
+		t.Errorf("Expected ReturnBulkExec, got %v", rq.ReturnType)
+	}
+}
+
+func TestTryDefineBulkExec_ReturnsErrorOnDuplicate(t *testing.T) {
+	ClearRegistry()
+
+	authors := mockTable{name: "authors"}
+	nameCol := StringColumn{Table: "authors", Name: "name"}
+
+	_, err := TryDefineBulkExec("BulkDup",
+		InsertInto(authors).Columns(nameCol).AddRow(Param[string]("name")).Build(),
+	)
+	if err != nil {
+		t.Fatalf("First TryDefineBulkExec failed: %v", err)
+	}
+
+	ast, err := TryDefineBulkExec("BulkDup",
+		InsertInto(authors).Columns(nameCol).AddRow(Param[string]("name")).Build(),
+	)
+	if err == nil {
+		t.Error("Expected error for duplicate name")
+	}
+	if ast != nil {
+		t.Error("Expected nil AST on error")
+	}
+}
+
+func TestTryDefineBulkExec_ReturnsErrorOnEmptyName(t *testing.T) {
+	ClearRegistry()
+
+	authors := mockTable{name: "authors"}
+	ast, err := TryDefineBulkExec("", InsertInto(authors).Build())
+
+	if err == nil {
+		t.Error("Expected error for empty name")
+	}
+	if ast != nil {
+		t.Error("Expected nil AST on error")
+	}
+}
+
+func TestTryDefineBulkExec_ReturnsErrorOnNilAST(t *testing.T) {
+	ClearRegistry()
+
+	ast, err := TryDefineBulkExec("BulkInsert", nil)
+
+	if err == nil {
+		t.Error("Expected error for nil AST")
+	}
+	if ast != nil {
+		t.Error("Expected nil AST on error")
+	}
+}
+
+func TestMustDefineBulkExec_CrossTypeNameConflict(t *testing.T) {
+	ClearRegistry()
+
+	defer func() {
+		if r := recover(); r == nil {
+			t.Error("expected panic for duplicate name across different define types")
+		}
+	}()
+
+	authors := mockTable{name: "authors"}
+	nameCol := StringColumn{Table: "authors", Name: "name"}
+
+	MustDefineExec("SameQuery",
+		InsertInto(authors).Columns(nameCol).Values(Param[string]("name")).Build(),
+	)
+	MustDefineBulkExec("SameQuery",
+		InsertInto(authors).Columns(nameCol).AddRow(Param[string]("name")).Build(),
+	) // Should panic even though different define type
+}

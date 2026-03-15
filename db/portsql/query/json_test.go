@@ -311,3 +311,72 @@ func TestExpressionTypes(t *testing.T) {
 		})
 	}
 }
+
+func TestExprJson_JSONAggWithFields_RoundTrip(t *testing.T) {
+	chapterTitle := StringColumn{Table: "chapters", Name: "title"}
+	innerSubquery := &AST{
+		Kind:      SelectQuery,
+		FromTable: TableRef{Name: "chapters"},
+		SelectCols: []SelectExpr{
+			{Expr: JSONAggExpr{FieldName: "ch", Columns: []Column{chapterTitle}}},
+		},
+		Where: BinaryExpr{
+			Left:  ColumnExpr{Column: Int64Column{Table: "chapters", Name: "book_id"}},
+			Op:    OpEq,
+			Right: ColumnExpr{Column: Int64Column{Table: "books", Name: "id"}},
+		},
+	}
+
+	original := JSONAggExpr{
+		FieldName: "books",
+		Fields: []JSONAggField{
+			{Key: "title", Column: StringColumn{Table: "books", Name: "title"}},
+			{Key: "chapters", Expr: SubqueryExpr{Query: innerSubquery}},
+		},
+	}
+
+	// Convert to JSON
+	jsonExpr, err := exprToJSON(original)
+	if err != nil {
+		t.Fatalf("exprToJSON failed: %v", err)
+	}
+
+	if jsonExpr.Type != "json_agg" {
+		t.Fatalf("expected type 'json_agg', got %q", jsonExpr.Type)
+	}
+	if len(jsonExpr.JSONFields) != 2 {
+		t.Fatalf("expected 2 JSONFields, got %d", len(jsonExpr.JSONFields))
+	}
+	if jsonExpr.JSONFields[0].Key != "title" {
+		t.Errorf("expected field[0].Key = 'title', got %q", jsonExpr.JSONFields[0].Key)
+	}
+	if jsonExpr.JSONFields[1].Key != "chapters" {
+		t.Errorf("expected field[1].Key = 'chapters', got %q", jsonExpr.JSONFields[1].Key)
+	}
+	if jsonExpr.JSONFields[1].Expr == nil {
+		t.Fatal("expected field[1].Expr to be non-nil")
+	}
+
+	// Round-trip: convert back
+	restored, err := jsonExpr.FromJSON()
+	if err != nil {
+		t.Fatalf("FromJSON failed: %v", err)
+	}
+
+	jsonAgg, ok := restored.(JSONAggExpr)
+	if !ok {
+		t.Fatalf("expected JSONAggExpr, got %T", restored)
+	}
+	if jsonAgg.FieldName != "books" {
+		t.Errorf("expected FieldName 'books', got %q", jsonAgg.FieldName)
+	}
+	if len(jsonAgg.Fields) != 2 {
+		t.Fatalf("expected 2 fields after round-trip, got %d", len(jsonAgg.Fields))
+	}
+	if jsonAgg.Fields[1].Key != "chapters" {
+		t.Errorf("expected field[1].Key = 'chapters', got %q", jsonAgg.Fields[1].Key)
+	}
+	if jsonAgg.Fields[1].Expr == nil {
+		t.Error("expected field[1].Expr to be non-nil after round-trip")
+	}
+}

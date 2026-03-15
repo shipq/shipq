@@ -25,9 +25,10 @@ type AST struct {
 	Offset     Expr
 
 	// For INSERT
-	InsertCols []Column
-	InsertVals []Expr
-	Returning  []Column
+	InsertCols   []Column
+	InsertRows   [][]Expr // For VALUES-based inserts
+	InsertSource *AST     // For INSERT ... SELECT (mutually exclusive with InsertRows)
+	Returning    []Column
 
 	// For UPDATE
 	SetClauses []SetClause
@@ -40,6 +41,15 @@ type AST struct {
 
 	// Collected parameters (for validation and codegen)
 	Params []ParamInfo
+}
+
+// FirstInsertRow returns the first (and typically only) row of insert values.
+// Returns nil if there are no rows.
+func (a *AST) FirstInsertRow() []Expr {
+	if len(a.InsertRows) == 0 {
+		return nil
+	}
+	return a.InsertRows[0]
 }
 
 // =============================================================================

@@ -13,14 +13,14 @@ func TestValidateInsert_EmptyValues(t *testing.T) {
 		Kind:       query.InsertQuery,
 		FromTable:  query.TableRef{Name: "users"},
 		InsertCols: []query.Column{},
-		InsertVals: []query.Expr{},
+		InsertRows: [][]query.Expr{},
 	}
 
 	err := ValidateAST(ast)
 	if err == nil {
 		t.Error("Expected error for INSERT with no values, got nil")
 	}
-	if err != nil && !strings.Contains(err.Error(), "INSERT requires at least one value") {
+	if err != nil && !strings.Contains(err.Error(), "INSERT requires either VALUES rows or a SELECT source") {
 		t.Errorf("Expected error about INSERT requiring values, got: %v", err)
 	}
 }
@@ -32,7 +32,7 @@ func TestValidateInsert_WithValues(t *testing.T) {
 		Kind:       query.InsertQuery,
 		FromTable:  query.TableRef{Name: "users"},
 		InsertCols: []query.Column{col},
-		InsertVals: []query.Expr{query.ParamExpr{Name: "email", GoType: "string"}},
+		InsertRows: [][]query.Expr{{query.ParamExpr{Name: "email", GoType: "string"}}},
 	}
 
 	err := ValidateAST(ast)
@@ -49,7 +49,7 @@ func TestValidateInsert_ColumnValueMismatch(t *testing.T) {
 		Kind:       query.InsertQuery,
 		FromTable:  query.TableRef{Name: "users"},
 		InsertCols: []query.Column{col1, col2},
-		InsertVals: []query.Expr{query.ParamExpr{Name: "email", GoType: "string"}}, // Only 1 value
+		InsertRows: [][]query.Expr{{query.ParamExpr{Name: "email", GoType: "string"}}}, // Only 1 value
 	}
 
 	err := ValidateAST(ast)
@@ -296,6 +296,54 @@ func TestValidate_EmptyJSONAggColumns(t *testing.T) {
 	}
 }
 
+func TestValidate_EmptyJSONAggFieldsAndColumns(t *testing.T) {
+	ast := &query.AST{
+		Kind:      query.SelectQuery,
+		FromTable: query.TableRef{Name: "authors"},
+		SelectCols: []query.SelectExpr{
+			{
+				Expr: query.JSONAggExpr{
+					FieldName: "books",
+					// Both Columns and Fields empty
+				},
+				Alias: "books",
+			},
+		},
+	}
+
+	err := ValidateAST(ast)
+	if err == nil {
+		t.Error("Expected error for empty JSON agg columns and fields")
+	}
+}
+
+func TestValidate_JSONAggFieldsRecursesIntoExpr(t *testing.T) {
+	ast := &query.AST{
+		Kind:      query.SelectQuery,
+		FromTable: query.TableRef{Name: "authors"},
+		SelectCols: []query.SelectExpr{
+			{
+				Expr: query.JSONAggExpr{
+					FieldName: "books",
+					Fields: []query.JSONAggField{
+						{Key: "title", Column: query.StringColumn{Table: "books", Name: "title"}},
+						{
+							Key: "bad_subquery",
+							Expr: query.SubqueryExpr{Query: nil}, // nil subquery should fail
+						},
+					},
+				},
+				Alias: "books",
+			},
+		},
+	}
+
+	err := ValidateAST(ast)
+	if err == nil {
+		t.Error("Expected error for nil subquery inside JSON agg field")
+	}
+}
+
 func TestValidate_SetOpNilLeftBranch(t *testing.T) {
 	ast := &query.AST{
 		Kind: query.SelectQuery,
@@ -376,5 +424,322 @@ func TestValidate_ValidSetOperation(t *testing.T) {
 	err := ValidateAST(ast)
 	if err != nil {
 		t.Errorf("Expected no error for valid set operation, got: %v", err)
+	}
+}
+
+func TestValidateInsert_MultipleRowsOK(t *testing.T) {
+	// 3 rows, all same width, matching column count — should pass
+	col1 := query.StringColumn{Table: "users", Name: "name"}
+	col2 := query.StringColumn{Table: "users", Name: "email"}
+	ast := &query.AST{
+		Kind:       query.InsertQuery,
+		FromTable:  query.TableRef{Name: "users"},
+		InsertCols: []query.Column{col1, col2},
+		InsertRows: [][]query.Expr{
+			{query.ParamExpr{Name: "name_0", GoType: "string"}, query.ParamExpr{Name: "email_0", GoType: "string"}},
+			{query.ParamExpr{Name: "name_1", GoType: "string"}, query.ParamExpr{Name: "email_1", GoType: "string"}},
+			{query.ParamExpr{Name: "name_2", GoType: "string"}, query.ParamExpr{Name: "email_2", GoType: "string"}},
+		},
+	}
+
+	err := ValidateAST(ast)
+	if err != nil {
+		t.Errorf("Expected no error for valid multi-row INSERT, got: %v", err)
+	}
+}
+
+func TestValidateInsert_MismatchedRowWidth(t *testing.T) {
+	// Row 1 has 2 values, row 2 has 1 — should error
+	ast := &query.AST{
+		Kind:      query.InsertQuery,
+		FromTable: query.TableRef{Name: "users"},
+		InsertRows: [][]query.Expr{
+			{query.ParamExpr{Name: "a", GoType: "string"}, query.ParamExpr{Name: "b", GoType: "string"}},
+			{query.ParamExpr{Name: "c", GoType: "string"}}, // wrong width
+		},
+	}
+
+	err := ValidateAST(ast)
+	if err == nil {
+		t.Error("Expected error for mismatched row widths, got nil")
+	}
+	if err != nil && !strings.Contains(err.Error(), "all rows must match") {
+		t.Errorf("Expected error about row width mismatch, got: %v", err)
+	}
+}
+
+func TestValidateInsert_EmptyRow(t *testing.T) {
+	// One row is empty — should error
+	ast := &query.AST{
+		Kind:      query.InsertQuery,
+		FromTable: query.TableRef{Name: "users"},
+		InsertRows: [][]query.Expr{
+			{query.ParamExpr{Name: "a", GoType: "string"}},
+			{}, // empty row
+		},
+	}
+
+	err := ValidateAST(ast)
+	if err == nil {
+		t.Error("Expected error for empty row, got nil")
+	}
+	if err != nil && !strings.Contains(err.Error(), "has no values") {
+		t.Errorf("Expected error about empty row, got: %v", err)
+	}
+}
+
+func TestValidateInsert_ColCountMismatch_BulkRow(t *testing.T) {
+	// 3 columns but row has 2 values — should error
+	col1 := query.StringColumn{Table: "users", Name: "name"}
+	col2 := query.StringColumn{Table: "users", Name: "email"}
+	col3 := query.StringColumn{Table: "users", Name: "bio"}
+	ast := &query.AST{
+		Kind:       query.InsertQuery,
+		FromTable:  query.TableRef{Name: "users"},
+		InsertCols: []query.Column{col1, col2, col3},
+		InsertRows: [][]query.Expr{
+			{query.ParamExpr{Name: "name_0", GoType: "string"}, query.ParamExpr{Name: "email_0", GoType: "string"}, query.ParamExpr{Name: "bio_0", GoType: "string"}},
+			{query.ParamExpr{Name: "name_1", GoType: "string"}, query.ParamExpr{Name: "email_1", GoType: "string"}}, // only 2 values
+		},
+	}
+
+	err := ValidateAST(ast)
+	if err == nil {
+		t.Error("Expected error for column/value count mismatch in bulk row, got nil")
+	}
+	if err != nil && !strings.Contains(err.Error(), "column count") {
+		t.Errorf("Expected error about column count mismatch, got: %v", err)
+	}
+}
+
+func TestValidateInsert_SingleRowStillWorks(t *testing.T) {
+	// Single row backward compatibility — should pass
+	col := query.StringColumn{Table: "users", Name: "email"}
+	ast := &query.AST{
+		Kind:       query.InsertQuery,
+		FromTable:  query.TableRef{Name: "users"},
+		InsertCols: []query.Column{col},
+		InsertRows: [][]query.Expr{
+			{query.ParamExpr{Name: "email", GoType: "string"}},
+		},
+	}
+
+	err := ValidateAST(ast)
+	if err != nil {
+		t.Errorf("Expected no error for valid single-row INSERT, got: %v", err)
+	}
+}
+
+func TestValidateInsert_NoColumnsMultipleRows(t *testing.T) {
+	// No explicit columns, but all rows same width — should pass
+	ast := &query.AST{
+		Kind:      query.InsertQuery,
+		FromTable: query.TableRef{Name: "users"},
+		InsertRows: [][]query.Expr{
+			{query.ParamExpr{Name: "a", GoType: "string"}, query.ParamExpr{Name: "b", GoType: "string"}},
+			{query.ParamExpr{Name: "c", GoType: "string"}, query.ParamExpr{Name: "d", GoType: "string"}},
+		},
+	}
+
+	err := ValidateAST(ast)
+	if err != nil {
+		t.Errorf("Expected no error for multi-row INSERT without explicit columns, got: %v", err)
+	}
+}
+
+func TestValidateInsert_SelectSource_OK(t *testing.T) {
+	ast := &query.AST{
+		Kind:      query.InsertQuery,
+		FromTable: query.TableRef{Name: "target"},
+		InsertCols: []query.Column{
+			query.StringColumn{Table: "target", Name: "name"},
+		},
+		InsertSource: &query.AST{
+			Kind:      query.SelectQuery,
+			FromTable: query.TableRef{Name: "source"},
+			SelectCols: []query.SelectExpr{
+				{Expr: query.ColumnExpr{Column: query.StringColumn{Table: "source", Name: "name"}}},
+			},
+		},
+	}
+	if err := ValidateAST(ast); err != nil {
+		t.Errorf("expected no error, got: %v", err)
+	}
+}
+
+func TestValidateInsert_SelectSource_WithCTEs_OK(t *testing.T) {
+	ast := &query.AST{
+		Kind:      query.InsertQuery,
+		FromTable: query.TableRef{Name: "target"},
+		InsertCols: []query.Column{
+			query.StringColumn{Table: "target", Name: "name"},
+		},
+		CTEs: []query.CTE{
+			{
+				Name: "active_sources",
+				Query: &query.AST{
+					Kind:      query.SelectQuery,
+					FromTable: query.TableRef{Name: "source"},
+					SelectCols: []query.SelectExpr{
+						{Expr: query.ColumnExpr{Column: query.StringColumn{Table: "source", Name: "name"}}},
+					},
+					Where: query.BinaryExpr{
+						Left:  query.ColumnExpr{Column: query.StringColumn{Table: "source", Name: "active"}},
+						Op:    query.OpEq,
+						Right: query.LiteralExpr{Value: true},
+					},
+				},
+			},
+		},
+		InsertSource: &query.AST{
+			Kind:      query.SelectQuery,
+			FromTable: query.TableRef{Name: "active_sources"},
+			SelectCols: []query.SelectExpr{
+				{Expr: query.ColumnExpr{Column: query.StringColumn{Table: "active_sources", Name: "name"}}},
+			},
+		},
+	}
+	if err := ValidateAST(ast); err != nil {
+		t.Errorf("expected no error, got: %v", err)
+	}
+}
+
+func TestValidateInsert_SelectSource_InvalidSourceKind(t *testing.T) {
+	ast := &query.AST{
+		Kind:      query.InsertQuery,
+		FromTable: query.TableRef{Name: "target"},
+		InsertCols: []query.Column{
+			query.StringColumn{Table: "target", Name: "name"},
+		},
+		InsertSource: &query.AST{
+			Kind:      query.UpdateQuery,
+			FromTable: query.TableRef{Name: "source"},
+		},
+	}
+	err := ValidateAST(ast)
+	if err == nil {
+		t.Error("expected error for non-SELECT InsertSource, got nil")
+	}
+	if err != nil && !strings.Contains(err.Error(), "must be a SELECT query") {
+		t.Errorf("expected error about must be a SELECT query, got: %v", err)
+	}
+}
+
+func TestValidateInsert_MutualExclusivity(t *testing.T) {
+	ast := &query.AST{
+		Kind:      query.InsertQuery,
+		FromTable: query.TableRef{Name: "target"},
+		InsertCols: []query.Column{
+			query.StringColumn{Table: "target", Name: "name"},
+		},
+		InsertRows: [][]query.Expr{
+			{query.ParamExpr{Name: "name", GoType: "string"}},
+		},
+		InsertSource: &query.AST{
+			Kind:      query.SelectQuery,
+			FromTable: query.TableRef{Name: "source"},
+			SelectCols: []query.SelectExpr{
+				{Expr: query.ColumnExpr{Column: query.StringColumn{Table: "source", Name: "name"}}},
+			},
+		},
+	}
+	err := ValidateAST(ast)
+	if err == nil {
+		t.Error("expected error when both InsertRows and InsertSource are set, got nil")
+	}
+	if err != nil && !strings.Contains(err.Error(), "cannot have both") {
+		t.Errorf("expected error about cannot have both, got: %v", err)
+	}
+}
+
+func TestValidateInsert_NeitherRowsNorSource(t *testing.T) {
+	ast := &query.AST{
+		Kind:      query.InsertQuery,
+		FromTable: query.TableRef{Name: "target"},
+		InsertCols: []query.Column{
+			query.StringColumn{Table: "target", Name: "name"},
+		},
+		InsertRows:   [][]query.Expr{},
+		InsertSource: nil,
+	}
+	err := ValidateAST(ast)
+	if err == nil {
+		t.Error("expected error when neither InsertRows nor InsertSource is set, got nil")
+	}
+	if err != nil && !strings.Contains(err.Error(), "requires either VALUES rows or a SELECT source") {
+		t.Errorf("expected error about requires either VALUES rows or a SELECT source, got: %v", err)
+	}
+}
+
+func TestValidateInsert_SelectSource_InvalidSubquery(t *testing.T) {
+	ast := &query.AST{
+		Kind:      query.InsertQuery,
+		FromTable: query.TableRef{Name: "target"},
+		InsertCols: []query.Column{
+			query.StringColumn{Table: "target", Name: "name"},
+		},
+		InsertSource: &query.AST{
+			Kind:      query.SelectQuery,
+			FromTable: query.TableRef{Name: "source"},
+			SelectCols: []query.SelectExpr{
+				{Expr: query.ParamExpr{Name: "", GoType: "string"}},
+			},
+		},
+	}
+	err := ValidateAST(ast)
+	if err == nil {
+		t.Error("expected error for invalid expression in InsertSource, got nil")
+	}
+	if err != nil && !strings.Contains(err.Error(), "parameter name cannot be empty") {
+		t.Errorf("expected wrapped error about empty parameter name, got: %v", err)
+	}
+}
+
+func TestValidateInsert_SelectSource_WithParams(t *testing.T) {
+	ast := &query.AST{
+		Kind:      query.InsertQuery,
+		FromTable: query.TableRef{Name: "target"},
+		InsertCols: []query.Column{
+			query.StringColumn{Table: "target", Name: "name"},
+		},
+		InsertSource: &query.AST{
+			Kind:      query.SelectQuery,
+			FromTable: query.TableRef{Name: "source"},
+			SelectCols: []query.SelectExpr{
+				{Expr: query.ColumnExpr{Column: query.StringColumn{Table: "source", Name: "name"}}},
+			},
+			Where: query.BinaryExpr{
+				Left:  query.ColumnExpr{Column: query.StringColumn{Table: "source", Name: "active"}},
+				Op:    query.OpEq,
+				Right: query.ParamExpr{Name: "is_active", GoType: "bool"},
+			},
+		},
+	}
+	if err := ValidateAST(ast); err != nil {
+		t.Errorf("expected no error, got: %v", err)
+	}
+}
+
+func TestValidateInsert_SelectSource_ColumnValuesConsistency(t *testing.T) {
+	ast := &query.AST{
+		Kind:      query.InsertQuery,
+		FromTable: query.TableRef{Name: "target"},
+		InsertCols: []query.Column{
+			query.StringColumn{Table: "target", Name: "name"},
+			query.StringColumn{Table: "target", Name: "email"},
+			query.StringColumn{Table: "target", Name: "bio"},
+		},
+		InsertSource: &query.AST{
+			Kind:      query.SelectQuery,
+			FromTable: query.TableRef{Name: "source"},
+			SelectCols: []query.SelectExpr{
+				{Expr: query.ColumnExpr{Column: query.StringColumn{Table: "source", Name: "name"}}},
+				{Expr: query.ColumnExpr{Column: query.StringColumn{Table: "source", Name: "email"}}},
+				{Expr: query.ColumnExpr{Column: query.StringColumn{Table: "source", Name: "bio"}}},
+			},
+		},
+	}
+	if err := ValidateAST(ast); err != nil {
+		t.Errorf("expected no error, got: %v", err)
 	}
 }

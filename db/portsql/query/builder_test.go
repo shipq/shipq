@@ -199,6 +199,60 @@ func TestFrom_SelectJSONAgg(t *testing.T) {
 	}
 }
 
+func TestFrom_SelectJSONAggFields(t *testing.T) {
+	authors := mockTable{name: "authors"}
+	books := mockTable{name: "books"}
+	authorID := Int64Column{Table: "authors", Name: "id"}
+	bookID := Int64Column{Table: "books", Name: "id"}
+	bookTitle := StringColumn{Table: "books", Name: "title"}
+	bookAuthorID := Int64Column{Table: "books", Name: "author_id"}
+
+	chaptersSubquery := From(mockTable{name: "chapters"}).
+		SelectExpr(JSONAggExpr{
+			FieldName: "chapters_inner",
+			Columns:   []Column{StringColumn{Table: "chapters", Name: "title"}},
+		}).
+		Build()
+
+	ast := From(authors).
+		LeftJoin(books).On(authorID.Eq(bookAuthorID)).
+		Select(authorID).
+		SelectJSONAggFields("books",
+			JSONAggCol(bookTitle),
+			JSONAggColAs("book_id", bookID),
+			JSONAggExprField("chapters", SubqueryExpr{Query: chaptersSubquery}),
+		).
+		GroupBy(authorID).
+		Build()
+
+	if len(ast.SelectCols) != 2 {
+		t.Fatalf("expected 2 SelectCols, got %d", len(ast.SelectCols))
+	}
+
+	jsonAgg, ok := ast.SelectCols[1].Expr.(JSONAggExpr)
+	if !ok {
+		t.Fatalf("expected JSONAggExpr, got %T", ast.SelectCols[1].Expr)
+	}
+	if jsonAgg.FieldName != "books" {
+		t.Errorf("expected FieldName = %q, got %q", "books", jsonAgg.FieldName)
+	}
+	if len(jsonAgg.Fields) != 3 {
+		t.Fatalf("expected 3 fields in JSONAgg, got %d", len(jsonAgg.Fields))
+	}
+	if jsonAgg.Fields[0].Key != "title" {
+		t.Errorf("expected field[0].Key = %q, got %q", "title", jsonAgg.Fields[0].Key)
+	}
+	if jsonAgg.Fields[1].Key != "book_id" {
+		t.Errorf("expected field[1].Key = %q, got %q", "book_id", jsonAgg.Fields[1].Key)
+	}
+	if jsonAgg.Fields[2].Key != "chapters" {
+		t.Errorf("expected field[2].Key = %q, got %q", "chapters", jsonAgg.Fields[2].Key)
+	}
+	if jsonAgg.Fields[2].Expr == nil {
+		t.Error("expected field[2].Expr to be non-nil (subquery)")
+	}
+}
+
 func TestFrom_MultipleJoins(t *testing.T) {
 	authors := mockTable{name: "authors"}
 	books := mockTable{name: "books"}

@@ -272,6 +272,11 @@ func GenerateLLMStreamTypeScript(tools []llmcompile.SerializedToolInfo) string {
 	buf.WriteString("  available: string[];\n")
 	buf.WriteString("  completed: string[];\n")
 	buf.WriteString("  blocked: string[];\n")
+	buf.WriteString("}\n\n")
+
+	buf.WriteString("export interface LLMError {\n")
+	buf.WriteString("  message: string;\n")
+	buf.WriteString("  code?: string;\n")
 	buf.WriteString("}\n")
 
 	return buf.String()

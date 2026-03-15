@@ -49,11 +49,17 @@ func WalkExpr(expr query.Expr, visit ExprVisitor) {
 			WalkAST(e.Subquery, visit)
 		}
 
+	case query.JSONAggExpr:
+		for _, f := range e.Fields {
+			if f.Expr != nil {
+				WalkExpr(f.Expr, visit)
+			}
+		}
+
 		// These expression types have no child expressions:
 		// - ColumnExpr
 		// - ParamExpr
 		// - LiteralExpr
-		// - JSONAggExpr (columns are not expressions)
 	}
 }
 
@@ -91,9 +97,16 @@ func WalkAST(ast *query.AST, visit ExprVisitor) {
 	WalkExpr(ast.Limit, visit)
 	WalkExpr(ast.Offset, visit)
 
-	// Walk INSERT values
-	for _, val := range ast.InsertVals {
-		WalkExpr(val, visit)
+	// Walk INSERT values (all rows)
+	for _, row := range ast.InsertRows {
+		for _, val := range row {
+			WalkExpr(val, visit)
+		}
+	}
+
+	// Walk INSERT source query (INSERT ... SELECT)
+	if ast.InsertSource != nil {
+		WalkAST(ast.InsertSource, visit)
 	}
 
 	// Walk SET clauses

@@ -110,19 +110,57 @@ func (dbs *TestDBs) InsertBook(t *testing.T, publicID string, authorPublicID str
 	}
 }
 
+// InsertChapter inserts a chapter into all databases using the book's public_id
+// to look up the correct book_id in each database (since auto-increment IDs differ).
+func (dbs *TestDBs) InsertChapter(t *testing.T, publicID string, bookPublicID string, title string, pageCount *int) {
+	t.Helper()
+
+	ctx := context.Background()
+
+	// Postgres
+	if _, err := dbs.Postgres.Exec(ctx,
+		`INSERT INTO test_chapters (public_id, book_id, title, page_count)
+		 SELECT $1, id, $2, $3 FROM test_books WHERE public_id = $4`,
+		publicID, title, pageCount, bookPublicID,
+	); err != nil {
+		t.Fatalf("postgres insert chapter failed: %v", err)
+	}
+
+	// MySQL
+	if _, err := dbs.MySQL.Exec(
+		`INSERT INTO test_chapters (public_id, book_id, title, page_count)
+		 SELECT ?, id, ?, ? FROM test_books WHERE public_id = ?`,
+		publicID, title, pageCount, bookPublicID,
+	); err != nil {
+		t.Fatalf("mysql insert chapter failed: %v", err)
+	}
+
+	// SQLite
+	if _, err := dbs.SQLite.Exec(
+		`INSERT INTO test_chapters (public_id, book_id, title, page_count)
+		 SELECT ?, id, ?, ? FROM test_books WHERE public_id = ?`,
+		publicID, title, pageCount, bookPublicID,
+	); err != nil {
+		t.Fatalf("sqlite insert chapter failed: %v", err)
+	}
+}
+
 // ClearAllData removes all test data from all databases
 func (dbs *TestDBs) ClearAllData(t *testing.T) {
 	t.Helper()
 
 	ctx := context.Background()
 
-	// Delete in order due to foreign keys
+	// Delete in order due to foreign keys (children first)
+	dbs.Postgres.Exec(ctx, "DELETE FROM test_chapters")
 	dbs.Postgres.Exec(ctx, "DELETE FROM test_books")
 	dbs.Postgres.Exec(ctx, "DELETE FROM test_authors")
 
+	dbs.MySQL.Exec("DELETE FROM test_chapters")
 	dbs.MySQL.Exec("DELETE FROM test_books")
 	dbs.MySQL.Exec("DELETE FROM test_authors")
 
+	dbs.SQLite.Exec("DELETE FROM test_chapters")
 	dbs.SQLite.Exec("DELETE FROM test_books")
 	dbs.SQLite.Exec("DELETE FROM test_authors")
 }

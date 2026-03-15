@@ -21,6 +21,11 @@ func NewCompiler(dialect Dialect) *Compiler {
 	}
 }
 
+// DialectName returns the name of the dialect this compiler targets.
+func (c *Compiler) DialectName() string {
+	return c.dialect.Name()
+}
+
 // Compile compiles an AST to SQL.
 // Returns the SQL string and the parameter names in order (including duplicates).
 func (c *Compiler) Compile(ast *query.AST) (sql string, paramOrder []string, err error) {
@@ -227,17 +232,32 @@ func (c *Compiler) compileInsert(ast *query.AST) (string, error) {
 		b.WriteString(")")
 	}
 
-	// VALUES clause
-	b.WriteString(" VALUES (")
-	for i, val := range ast.InsertVals {
-		if i > 0 {
-			b.WriteString(", ")
-		}
-		if err := c.writeExpr(&b, val); err != nil {
+	if ast.InsertSource != nil {
+		// INSERT ... SELECT
+		b.WriteString(" ")
+		// Use compileInto so that param numbering is shared with the parent
+		if err := c.compileInto(ast.InsertSource, &b); err != nil {
 			return "", err
 		}
+	} else {
+		// VALUES clause — one or more rows
+		b.WriteString(" VALUES ")
+		for ri, row := range ast.InsertRows {
+			if ri > 0 {
+				b.WriteString(", ")
+			}
+			b.WriteString("(")
+			for ci, val := range row {
+				if ci > 0 {
+					b.WriteString(", ")
+				}
+				if err := c.writeExpr(&b, val); err != nil {
+					return "", err
+				}
+			}
+			b.WriteString(")")
+		}
 	}
-	b.WriteString(")")
 
 	// RETURNING clause (Postgres and SQLite support this, MySQL doesn't)
 	// Note: MySQL codegen handles RETURNING differently by using result.LastInsertId()
@@ -528,9 +548,10 @@ func (c *Compiler) writeFunc(b *strings.Builder, f query.FuncExpr) error {
 }
 
 func (c *Compiler) writeJSONAgg(b *strings.Builder, j query.JSONAggExpr) error {
-	return c.dialect.WriteJSONAgg(b, j.Columns, func(col query.Column) {
-		c.writeColumn(b, col)
-	})
+	return c.dialect.WriteJSONAgg(b, j.Columns, j.Fields,
+		func(col query.Column) { c.writeColumn(b, col) },
+		func(expr query.Expr) error { return c.writeExpr(b, expr) },
+	)
 }
 
 func (c *Compiler) writeOrderByExpr(b *strings.Builder, expr query.Expr) error {

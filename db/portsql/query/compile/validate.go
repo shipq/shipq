@@ -94,10 +94,13 @@ func ValidateAST(ast *query.AST) error {
 		}
 	}
 
-	// Validate INSERT values
-	for i, val := range ast.InsertVals {
-		if err := validateExpr(val, fmt.Sprintf("INSERT value %d", i)); err != nil {
-			return err
+	// Validate INSERT values (all rows)
+	for ri, row := range ast.InsertRows {
+		for ci, val := range row {
+			ctx := fmt.Sprintf("INSERT row %d value %d", ri, ci)
+			if err := validateExpr(val, ctx); err != nil {
+				return err
+			}
 		}
 	}
 
@@ -175,8 +178,15 @@ func validateExpr(expr query.Expr, context string) error {
 		}
 
 	case query.JSONAggExpr:
-		if len(e.Columns) == 0 {
-			return fmt.Errorf("%s: JSON aggregation requires at least one column", context)
+		if len(e.Fields) == 0 && len(e.Columns) == 0 {
+			return fmt.Errorf("%s: JSON aggregation requires at least one column or field", context)
+		}
+		for i, f := range e.Fields {
+			if f.Expr != nil {
+				if err := validateExpr(f.Expr, fmt.Sprintf("%s json_agg field %d", context, i)); err != nil {
+					return err
+				}
+			}
 		}
 
 	case query.BinaryExpr:
@@ -223,15 +233,57 @@ func validateSelect(ast *query.AST) error {
 }
 
 func validateInsert(ast *query.AST) error {
-	// INSERT requires at least one value (DEFAULT VALUES not yet supported)
-	if len(ast.InsertVals) == 0 {
-		return fmt.Errorf("INSERT requires at least one value (DEFAULT VALUES not yet supported)")
+	hasRows := len(ast.InsertRows) > 0
+	hasSource := ast.InsertSource != nil
+
+	// Mutual exclusivity
+	if hasRows && hasSource {
+		return fmt.Errorf(
+			"INSERT cannot have both InsertRows and InsertSource — use VALUES or SELECT, not both")
 	}
-	// If column list is provided, it must match the number of values
-	if len(ast.InsertCols) > 0 && len(ast.InsertCols) != len(ast.InsertVals) {
-		return fmt.Errorf("INSERT column count (%d) does not match value count (%d)",
-			len(ast.InsertCols), len(ast.InsertVals))
+
+	// Must have one or the other
+	if !hasRows && !hasSource {
+		return fmt.Errorf("INSERT requires either VALUES rows or a SELECT source")
 	}
+
+	// Validate VALUES-based insert (existing logic)
+	if hasRows {
+		colCount := len(ast.InsertCols)
+		for i, row := range ast.InsertRows {
+			if len(row) == 0 {
+				return fmt.Errorf("INSERT row %d has no values", i)
+			}
+			if colCount > 0 && len(row) != colCount {
+				return fmt.Errorf(
+					"INSERT row %d: column count (%d) does not match value count (%d)",
+					i, colCount, len(row))
+			}
+		}
+		// All rows must have the same width even without explicit columns.
+		firstWidth := len(ast.InsertRows[0])
+		for i, row := range ast.InsertRows[1:] {
+			if len(row) != firstWidth {
+				return fmt.Errorf(
+					"INSERT row %d has %d values, but row 0 has %d — all rows must match",
+					i+1, len(row), firstWidth)
+			}
+		}
+	}
+
+	// Validate SELECT-based insert
+	if hasSource {
+		if ast.InsertSource.Kind != query.SelectQuery {
+			return fmt.Errorf(
+				"INSERT ... SELECT source must be a SELECT query, got %s",
+				ast.InsertSource.Kind)
+		}
+		// Recursively validate the source query
+		if err := ValidateAST(ast.InsertSource); err != nil {
+			return fmt.Errorf("INSERT source query: %w", err)
+		}
+	}
+
 	return nil
 }
 

@@ -946,6 +946,64 @@ func TestGenerateHTTPTS_NestedStructField(t *testing.T) {
 	}
 }
 
+// ─── Doubly nested struct (nested JSON_AGG) test ───
+
+func TestGenerateHTTPTS_DoublyNestedStructField(t *testing.T) {
+	handlers := []codegen.SerializedHandlerInfo{
+		{
+			Method:      "GET",
+			Path:        "/authors",
+			FuncName:    "ListAuthors",
+			PackagePath: "myapp/api/authors",
+			Response: &codegen.SerializedStructInfo{
+				Name: "ListAuthorsResponse",
+				Fields: []codegen.SerializedFieldInfo{
+					{Name: "Name", Type: "string", JSONName: "name", Required: true},
+					{
+						Name:     "Books",
+						Type:     "[]BookItem",
+						JSONName: "books",
+						Required: true,
+						StructFields: &codegen.SerializedStructInfo{
+							Name: "BookItem",
+							Fields: []codegen.SerializedFieldInfo{
+								{Name: "ID", Type: "int64", JSONName: "id", Required: true},
+								{Name: "Title", Type: "string", JSONName: "title", Required: true},
+								{
+									Name:     "Chapters",
+									Type:     "[]ChapterItem",
+									JSONName: "chapters",
+									Required: true,
+									StructFields: &codegen.SerializedStructInfo{
+										Name: "ChapterItem",
+										Fields: []codegen.SerializedFieldInfo{
+											{Name: "ID", Type: "int64", JSONName: "id", Required: true},
+											{Name: "Title", Type: "string", JSONName: "title", Required: true},
+										},
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+		},
+	}
+
+	result, err := GenerateHTTPTypeScriptClient(handlers)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	output := string(result)
+
+	if !strings.Contains(output, "chapters: { id: number; title: string; }[]") {
+		t.Errorf("should generate doubly-nested inline interface for nested JSON_AGG, got:\n%s", output)
+	}
+	if !strings.Contains(output, "books: { id: number; title: string; chapters: { id: number; title: string; }[]; }[]") {
+		t.Errorf("should generate full nested books type, got:\n%s", output)
+	}
+}
+
 // ─── DetectCRUDRole edge cases ───
 
 func TestDetectCRUDRole_MismatchedFuncName(t *testing.T) {

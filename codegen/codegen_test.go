@@ -280,6 +280,94 @@ func TestEnsureDir(t *testing.T) {
 	}
 }
 
+func TestWriteGeneratedFile(t *testing.T) {
+	header := codegen.GeneratedHeader + "\n"
+
+	t.Run("creates new file", func(t *testing.T) {
+		dir := t.TempDir()
+		p := filepath.Join(dir, "new.go")
+		content := []byte(header + "package foo\n")
+
+		written, err := codegen.WriteGeneratedFile(p, content)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if !written {
+			t.Error("expected written=true for new file")
+		}
+		got, _ := os.ReadFile(p)
+		if string(got) != string(content) {
+			t.Errorf("content mismatch: got %q", got)
+		}
+	})
+
+	t.Run("overwrites file with matching header", func(t *testing.T) {
+		dir := t.TempDir()
+		p := filepath.Join(dir, "existing.go")
+		old := []byte(header + "package old\n")
+		new := []byte(header + "package new\n")
+
+		os.WriteFile(p, old, 0644)
+
+		written, err := codegen.WriteGeneratedFile(p, new)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if !written {
+			t.Error("expected written=true when content changed")
+		}
+		got, _ := os.ReadFile(p)
+		if string(got) != string(new) {
+			t.Errorf("content mismatch: got %q", got)
+		}
+	})
+
+	t.Run("skips unchanged file with matching header", func(t *testing.T) {
+		dir := t.TempDir()
+		p := filepath.Join(dir, "same.go")
+		content := []byte(header + "package same\n")
+
+		os.WriteFile(p, content, 0644)
+
+		written, err := codegen.WriteGeneratedFile(p, content)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if written {
+			t.Error("expected written=false when content unchanged")
+		}
+	})
+
+	t.Run("refuses to overwrite file without header", func(t *testing.T) {
+		dir := t.TempDir()
+		p := filepath.Join(dir, "user.go")
+		userContent := []byte("package user\n\n// my custom queries\n")
+		os.WriteFile(p, userContent, 0644)
+
+		newContent := []byte(header + "package user\n")
+		_, err := codegen.WriteGeneratedFile(p, newContent)
+		if err == nil {
+			t.Fatal("expected error when overwriting user-modified file")
+		}
+		if got, _ := os.ReadFile(p); string(got) != string(userContent) {
+			t.Error("user file should not have been modified")
+		}
+	})
+
+	t.Run("refuses to overwrite file with different header", func(t *testing.T) {
+		dir := t.TempDir()
+		p := filepath.Join(dir, "custom.go")
+		custom := []byte("// My custom header\npackage custom\n")
+		os.WriteFile(p, custom, 0644)
+
+		newContent := []byte(header + "package custom\n")
+		_, err := codegen.WriteGeneratedFile(p, newContent)
+		if err == nil {
+			t.Fatal("expected error when file has non-matching header")
+		}
+	})
+}
+
 func TestWriteFileIfChanged(t *testing.T) {
 	tmpDir := t.TempDir()
 

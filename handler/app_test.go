@@ -2,6 +2,7 @@ package handler
 
 import (
 	"context"
+	"encoding/json"
 	"strings"
 	"testing"
 	"time"
@@ -694,5 +695,38 @@ func TestTypeToString(t *testing.T) {
 			// This is a basic check - the full test is in the extraction tests
 			_ = tt.input
 		})
+	}
+}
+
+func TestJSONRawMessageFieldExtraction(t *testing.T) {
+	type JSONRequest struct {
+		ID string `json:"id"`
+	}
+	type JSONResponse struct {
+		Metadata json.RawMessage  `json:"metadata"`
+		Extra    *json.RawMessage `json:"extra,omitempty"`
+	}
+
+	handler := func(ctx context.Context, req *JSONRequest) (*JSONResponse, error) {
+		return nil, nil
+	}
+
+	app := NewApp()
+	app.Get("/test", handler)
+
+	h := app.registry.Handlers[0]
+	resp := h.Response
+
+	for _, f := range resp.Fields {
+		switch f.Name {
+		case "Metadata":
+			if f.Type != "json.RawMessage" {
+				t.Errorf("Metadata: expected type %q, got %q", "json.RawMessage", f.Type)
+			}
+		case "Extra":
+			if f.Type != "*json.RawMessage" {
+				t.Errorf("Extra: expected type %q, got %q", "*json.RawMessage", f.Type)
+			}
+		}
 	}
 }

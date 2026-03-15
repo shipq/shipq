@@ -100,3 +100,65 @@ func TestProperty_ExistsInSelect_InfersBoolean(t *testing.T) {
 		return true
 	})
 }
+
+func TestProperty_InsertSelect_GeneratesValidGoCode(t *testing.T) {
+	proptest.QuickCheck(t, "INSERT...SELECT generates valid Go", func(g *proptest.Generator) bool {
+		// Generate a random table and column names
+		tableName := g.Identifier(15)
+		if tableName == "" {
+			tableName = "target"
+		}
+		sourceTable := g.Identifier(15)
+		if sourceTable == "" {
+			sourceTable = "source"
+		}
+		colName := g.Identifier(15)
+		if colName == "" {
+			colName = "name"
+		}
+
+		userQuery := query.SerializedQuery{
+			Name:       "InsertFromSource",
+			ReturnType: "exec",
+			AST: &query.SerializedAST{
+				Kind:      "insert",
+				FromTable: query.SerializedTableRef{Name: tableName},
+				InsertCols: []query.SerializedColumn{
+					{Table: tableName, Name: colName, GoType: "string"},
+				},
+				InsertSource: &query.SerializedAST{
+					Kind:      "select",
+					FromTable: query.SerializedTableRef{Name: sourceTable},
+					SelectCols: []query.SerializedSelectExpr{
+						{Expr: query.SerializedExpr{
+							Type:   "column",
+							Column: &query.SerializedColumn{Table: sourceTable, Name: colName, GoType: "string"},
+						}},
+					},
+				},
+			},
+		}
+
+		for _, dialect := range []string{"postgres", "mysql", "sqlite"} {
+			cfg := UnifiedRunnerConfig{
+				ModulePath:  "example.com/myapp",
+				Dialect:     dialect,
+				UserQueries: []query.SerializedQuery{userQuery},
+			}
+
+			runnerCode, err := GenerateUnifiedRunner(cfg)
+			if err != nil {
+				t.Logf("GenerateUnifiedRunner(%s) failed: %v", dialect, err)
+				return false
+			}
+
+			_, parseErr := parser.ParseFile(token.NewFileSet(), "runner.go", runnerCode, parser.AllErrors)
+			if parseErr != nil {
+				t.Logf("[%s] generated runner code is not valid Go: %v\n%s", dialect, parseErr, string(runnerCode))
+				return false
+			}
+		}
+
+		return true
+	})
+}

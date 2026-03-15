@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"reflect"
 	"sort"
 	"strings"
 	"sync"
@@ -1653,3 +1654,394 @@ func (testNoopTransport) GenerateSubscriptionToken(_ string, _ string, _ time.Du
 	return "", nil
 }
 func (testNoopTransport) ConnectionURL() string { return "" }
+
+// ── WithOnText callback tests ─────────────────────────────────────────────────
+
+func TestChatWithOnText_StreamingPath(t *testing.T) {
+	mp := newMockProvider()
+	mp.streamFn = func(_ context.Context, _ *ProviderRequest) (<-chan StreamEvent, error) {
+		ch := make(chan StreamEvent, 10)
+		go func() {
+			defer close(ch)
+			ch <- StreamEvent{Type: StreamTextDelta, Text: "hel"}
+			ch <- StreamEvent{Type: StreamTextDelta, Text: "lo "}
+			ch <- StreamEvent{Type: StreamTextDelta, Text: "world"}
+			ch <- StreamEvent{
+				Type:  StreamDone,
+				Done:  true,
+				Usage: &Usage{InputTokens: 5, OutputTokens: 3},
+			}
+		}()
+		return ch, nil
+	}
+
+	mockCh, _ := newTestChannel(t)
+
+	var deltas []string
+	c := NewClient(mp, WithChannel(mockCh))
+	resp, err := c.Chat(context.Background(), "hi", WithOnText(func(delta string) {
+		deltas = append(deltas, delta)
+	}))
+	if err != nil {
+		t.Fatalf("Chat: %v", err)
+	}
+	if resp.Text != "hello world" {
+		t.Errorf("Text: got %q", resp.Text)
+	}
+	if len(deltas) != 3 {
+		t.Fatalf("expected 3 deltas, got %d: %v", len(deltas), deltas)
+	}
+	if deltas[0] != "hel" || deltas[1] != "lo " || deltas[2] != "world" {
+		t.Errorf("deltas: got %v", deltas)
+	}
+}
+
+func TestChatWithOnText_NonStreamingPath(t *testing.T) {
+	mp := newMockProvider(&ProviderResponse{
+		Text: "complete response",
+		Done: true,
+	})
+
+	var deltas []string
+	c := NewClient(mp)
+	resp, err := c.Chat(context.Background(), "hi", WithOnText(func(delta string) {
+		deltas = append(deltas, delta)
+	}))
+	if err != nil {
+		t.Fatalf("Chat: %v", err)
+	}
+	if resp.Text != "complete response" {
+		t.Errorf("Text: got %q", resp.Text)
+	}
+	// Non-streaming: onText is called once with the full text.
+	if len(deltas) != 1 {
+		t.Fatalf("expected 1 delta, got %d: %v", len(deltas), deltas)
+	}
+	if deltas[0] != "complete response" {
+		t.Errorf("delta: got %q", deltas[0])
+	}
+}
+
+func TestChatWithOnText_NilCallback(t *testing.T) {
+	mp := newMockProvider(&ProviderResponse{
+		Text: "hello",
+		Done: true,
+	})
+
+	c := NewClient(mp)
+	resp, err := c.Chat(context.Background(), "hi")
+	if err != nil {
+		t.Fatalf("Chat: %v", err)
+	}
+	if resp.Text != "hello" {
+		t.Errorf("Text: got %q", resp.Text)
+	}
+}
+
+func TestChatWithHistoryWithOnText(t *testing.T) {
+	mp := newMockProvider(&ProviderResponse{
+		Text: "reply",
+		Done: true,
+	})
+
+	var deltas []string
+	c := NewClient(mp)
+	resp, err := c.ChatWithHistory(context.Background(), []Message{
+		{Role: RoleUser, Text: "hello"},
+	}, WithOnText(func(delta string) {
+		deltas = append(deltas, delta)
+	}))
+	if err != nil {
+		t.Fatalf("ChatWithHistory: %v", err)
+	}
+	if resp.Text != "reply" {
+		t.Errorf("Text: got %q", resp.Text)
+	}
+	if len(deltas) != 1 || deltas[0] != "reply" {
+		t.Errorf("deltas: got %v", deltas)
+	}
+}
+
+// ── Integration: JSONArrayStreamer + WithOnText ────────────────────────────────
+
+type researchResult struct {
+	Title   string `json:"title"`
+	Summary string `json:"summary"`
+}
+
+func TestJSONArrayStreamer_WithOnText_Integration_Streaming(t *testing.T) {
+	// Simulate an LLM that streams a JSON array of research results
+	// in realistic chunks (mid-token splits).
+	mp := newMockProvider()
+	mp.streamFn = func(_ context.Context, _ *ProviderRequest) (<-chan StreamEvent, error) {
+		ch := make(chan StreamEvent, 20)
+		go func() {
+			defer close(ch)
+			chunks := []string{
+				`[{"title":"Source `,
+				`1","summary":"First result"},`,
+				`{"title":"Source 2","su`,
+				`mmary":"Second result"},`,
+				`{"title":"Source 3","summary":"Th`,
+				`ird result"}]`,
+			}
+			for _, c := range chunks {
+				ch <- StreamEvent{Type: StreamTextDelta, Text: c}
+			}
+			ch <- StreamEvent{
+				Type:  StreamDone,
+				Done:  true,
+				Usage: &Usage{InputTokens: 20, OutputTokens: 50},
+			}
+		}()
+		return ch, nil
+	}
+
+	mockCh, _ := newTestChannel(t)
+
+	// Track the order items arrive via the callback.
+	var callbackItems []researchResult
+	var callbackOrder []int
+	streamer := NewJSONArrayStreamer(func(item researchResult) {
+		callbackOrder = append(callbackOrder, len(callbackItems))
+		callbackItems = append(callbackItems, item)
+	})
+
+	c := NewClient(mp, WithChannel(mockCh))
+	resp, err := c.Chat(context.Background(), "research query", WithOnText(streamer.Feed))
+	if err != nil {
+		t.Fatalf("Chat: %v", err)
+	}
+
+	// The full text should be the JSON array.
+	if !strings.Contains(resp.Text, `"Source 1"`) {
+		t.Errorf("response should contain Source 1, got %q", resp.Text)
+	}
+
+	// Streamer should have parsed all 3 items.
+	if err := streamer.Err(); err != nil {
+		t.Fatalf("Streamer.Err: %v", err)
+	}
+	all := streamer.All()
+	if len(all) != 3 {
+		t.Fatalf("expected 3 items, got %d: %+v", len(all), all)
+	}
+
+	// Verify content.
+	wantTitles := []string{"Source 1", "Source 2", "Source 3"}
+	for i, want := range wantTitles {
+		if all[i].Title != want {
+			t.Errorf("item[%d].Title: got %q, want %q", i, all[i].Title, want)
+		}
+	}
+
+	// Verify items arrived incrementally via callback.
+	if len(callbackItems) != 3 {
+		t.Fatalf("expected 3 callback invocations, got %d", len(callbackItems))
+	}
+	if !reflect.DeepEqual(callbackItems, all) {
+		t.Errorf("callback items don't match All(): %+v vs %+v", callbackItems, all)
+	}
+}
+
+func TestJSONArrayStreamer_WithOnText_Integration_NonStreaming(t *testing.T) {
+	// Non-streaming path: entire JSON array delivered at once via onText.
+	mp := newMockProvider(&ProviderResponse{
+		Text: `[{"title":"Alpha","summary":"first"},{"title":"Beta","summary":"second"}]`,
+		Done: true,
+	})
+
+	var callbackItems []researchResult
+	streamer := NewJSONArrayStreamer(func(item researchResult) {
+		callbackItems = append(callbackItems, item)
+	})
+
+	c := NewClient(mp)
+	_, err := c.Chat(context.Background(), "query", WithOnText(streamer.Feed))
+	if err != nil {
+		t.Fatalf("Chat: %v", err)
+	}
+
+	if err := streamer.Err(); err != nil {
+		t.Fatalf("Streamer.Err: %v", err)
+	}
+	all := streamer.All()
+	if len(all) != 2 {
+		t.Fatalf("expected 2 items, got %d", len(all))
+	}
+	if all[0].Title != "Alpha" || all[1].Title != "Beta" {
+		t.Errorf("items: got %+v", all)
+	}
+	if len(callbackItems) != 2 {
+		t.Fatalf("expected 2 callbacks, got %d", len(callbackItems))
+	}
+}
+
+func TestJSONArrayStreamer_WithOnText_Integration_MarkdownFence(t *testing.T) {
+	// LLM wraps JSON in markdown fences.
+	mp := newMockProvider()
+	mp.streamFn = func(_ context.Context, _ *ProviderRequest) (<-chan StreamEvent, error) {
+		ch := make(chan StreamEvent, 10)
+		go func() {
+			defer close(ch)
+			ch <- StreamEvent{Type: StreamTextDelta, Text: "```json\n"}
+			ch <- StreamEvent{Type: StreamTextDelta, Text: `[{"title":"Only","summary":"one"}]`}
+			ch <- StreamEvent{Type: StreamTextDelta, Text: "\n```"}
+			ch <- StreamEvent{Type: StreamDone, Done: true, Usage: &Usage{}}
+		}()
+		return ch, nil
+	}
+
+	mockCh, _ := newTestChannel(t)
+
+	var items []researchResult
+	streamer := NewJSONArrayStreamer(func(item researchResult) {
+		items = append(items, item)
+	})
+
+	c := NewClient(mp, WithChannel(mockCh))
+	_, err := c.Chat(context.Background(), "query", WithOnText(streamer.Feed))
+	if err != nil {
+		t.Fatalf("Chat: %v", err)
+	}
+
+	if err := streamer.Err(); err != nil {
+		t.Fatalf("Streamer.Err: %v", err)
+	}
+	if len(streamer.All()) != 1 {
+		t.Fatalf("expected 1 item, got %d", len(streamer.All()))
+	}
+	if streamer.All()[0].Title != "Only" {
+		t.Errorf("Title: got %q", streamer.All()[0].Title)
+	}
+}
+
+// ── Rate limit retry tests ──────────────────────────────────────────────────
+
+func TestCallProvider_RateLimitRetry_Success(t *testing.T) {
+	// Provider returns RateLimitError twice, then succeeds.
+	var callCount atomic.Int32
+	mp := newMockProvider(&ProviderResponse{Text: "ok", Done: true})
+	mp.sendErr = nil // we'll control this via the custom Send
+
+	origSend := mp.Send
+	_ = origSend // suppress unused
+	mp2 := &rateLimitMockProvider{
+		failCount:  2,
+		retryAfter: 10 * time.Millisecond,
+		successResp: &ProviderResponse{
+			Text: "success after retries",
+			Done: true,
+		},
+		callCount: &callCount,
+	}
+
+	c := NewClient(mp2)
+	resp, err := c.Chat(context.Background(), "hi")
+	if err != nil {
+		t.Fatalf("expected success after retries, got: %v", err)
+	}
+	if resp.Text != "success after retries" {
+		t.Errorf("Text = %q, want 'success after retries'", resp.Text)
+	}
+	if callCount.Load() != 3 {
+		t.Errorf("expected 3 provider calls, got %d", callCount.Load())
+	}
+}
+
+func TestCallProvider_RateLimitRetry_Exhaustion(t *testing.T) {
+	// Provider always returns RateLimitError — should exhaust retries.
+	var callCount atomic.Int32
+	mp := &rateLimitMockProvider{
+		failCount:  100, // always fail
+		retryAfter: 10 * time.Millisecond,
+		callCount:  &callCount,
+	}
+
+	c := NewClient(mp)
+	_, err := c.Chat(context.Background(), "hi")
+	if err == nil {
+		t.Fatal("expected error after retry exhaustion")
+	}
+
+	var rle *RateLimitError
+	if !errors.As(err, &rle) {
+		t.Fatalf("expected *RateLimitError, got %T: %v", err, err)
+	}
+
+	// maxRateLimitRetries is 3, so we expect 4 calls total (initial + 3 retries).
+	if callCount.Load() != 4 {
+		t.Errorf("expected 4 provider calls, got %d", callCount.Load())
+	}
+}
+
+func TestCallProvider_RateLimitRetry_ContextCancel(t *testing.T) {
+	// Provider returns RateLimitError with a long wait; context is cancelled.
+	var callCount atomic.Int32
+	mp := &rateLimitMockProvider{
+		failCount:  100,
+		retryAfter: 10 * time.Minute,
+		callCount:  &callCount,
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	go func() {
+		time.Sleep(50 * time.Millisecond)
+		cancel()
+	}()
+
+	c := NewClient(mp)
+	_, err := c.Chat(ctx, "hi")
+	if err == nil {
+		t.Fatal("expected error after context cancellation")
+	}
+	if !errors.Is(err, context.Canceled) {
+		t.Errorf("expected context.Canceled, got: %v", err)
+	}
+}
+
+func TestCallProvider_NonRateLimitError_NoRetry(t *testing.T) {
+	// Non-rate-limit errors should NOT be retried.
+	mp := newMockProvider()
+	mp.sendErr = fmt.Errorf("openai HTTP 500: internal server error")
+
+	c := NewClient(mp)
+	_, err := c.Chat(context.Background(), "hi")
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	if len(mp.Requests) != 1 {
+		t.Errorf("expected exactly 1 call (no retries), got %d", len(mp.Requests))
+	}
+}
+
+// rateLimitMockProvider is a test helper that returns RateLimitError for the
+// first N calls, then returns successResp.
+type rateLimitMockProvider struct {
+	failCount   int
+	retryAfter  time.Duration
+	successResp *ProviderResponse
+	callCount   *atomic.Int32
+}
+
+func (m *rateLimitMockProvider) Name() string      { return "mock" }
+func (m *rateLimitMockProvider) ModelName() string { return "mock-model" }
+
+func (m *rateLimitMockProvider) Send(_ context.Context, _ *ProviderRequest) (*ProviderResponse, error) {
+	n := int(m.callCount.Add(1))
+	if n <= m.failCount {
+		return nil, &RateLimitError{
+			StatusCode: 429,
+			RetryAfter: m.retryAfter,
+			Message:    "rate limit exceeded",
+		}
+	}
+	if m.successResp != nil {
+		return m.successResp, nil
+	}
+	return nil, fmt.Errorf("mock: no success response configured")
+}
+
+func (m *rateLimitMockProvider) SendStream(_ context.Context, _ *ProviderRequest) (<-chan StreamEvent, error) {
+	return nil, ErrStreamingNotSupported
+}

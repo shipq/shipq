@@ -137,7 +137,7 @@ func testInsert(t *testing.T, dialect Dialect) {
 		Kind:       query.InsertQuery,
 		FromTable:  query.TableRef{Name: "users"},
 		InsertCols: []query.Column{col},
-		InsertVals: []query.Expr{query.ParamExpr{Name: "email", GoType: "string"}},
+		InsertRows: [][]query.Expr{{query.ParamExpr{Name: "email", GoType: "string"}}},
 	}
 
 	compiler := NewCompiler(dialect)

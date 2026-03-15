@@ -272,6 +272,7 @@ func Register(app *channel.App) {
 | `WithErrorStrategy(s)` | What to do when a tool returns an error | `SendErrorToModel` |
 | `WithSequentialToolCalls()` | Execute parallel tool calls sequentially | Parallel |
 | `WithTaskDAG(g)` | Attach a task dependency graph to control tool ordering | No DAG (all tools always available) |
+| `WithLogger(l)` | Structured logger for retry/diagnostic messages | `slog.Default()` |
 
 ### Error strategies
 

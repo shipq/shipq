@@ -74,6 +74,8 @@ func GoTypeStringToTS(goType string) string {
 		return "number"
 	case "bool":
 		return "boolean"
+	case "json.RawMessage":
+		return "any"
 	case "any", "interface{}":
 		return "any"
 	default:

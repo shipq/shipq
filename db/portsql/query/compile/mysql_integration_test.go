@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	_ "github.com/go-sql-driver/mysql"
 	"github.com/shipq/shipq/db/portsql/query"
@@ -998,5 +999,332 @@ func TestMySQLIntegration_CTE(t *testing.T) {
 	}
 	if total != 300.00 {
 		t.Errorf("expected total = 300.00, got %.2f", total)
+	}
+}
+
+// =============================================================================
+// Regression test for Bug 1: [null] from empty LEFT JOINs
+// =============================================================================
+
+// TestMySQLIntegration_JSONAgg_EmptyLeftJoin_ProducesNullEntry verifies that
+// MySQL's JSON_ARRAYAGG(CASE WHEN ... END) produces [null] for authors with no
+// books. This test documents the behaviour so the Go scanner knows to strip
+// null entries before unmarshalling.
+func TestMySQLIntegration_JSONAgg_EmptyLeftJoin_ProducesNullEntry(t *testing.T) {
+	db := connectMySQL(t)
+	if db == nil {
+		return
+	}
+	defer db.Close()
+
+	// Create tables: one author WITH books, one WITHOUT
+	_, err := db.Exec(`
+		DROP TABLE IF EXISTS bug1_books;
+		DROP TABLE IF EXISTS bug1_authors;
+		CREATE TABLE bug1_authors (
+			id BIGINT AUTO_INCREMENT PRIMARY KEY,
+			name VARCHAR(255) NOT NULL
+		);
+		CREATE TABLE bug1_books (
+			id BIGINT AUTO_INCREMENT PRIMARY KEY,
+			author_id BIGINT,
+			title VARCHAR(255) NOT NULL,
+			FOREIGN KEY (author_id) REFERENCES bug1_authors(id)
+		);
+		INSERT INTO bug1_authors (id, name) VALUES (1, 'Alice'), (2, 'Bob');
+		INSERT INTO bug1_books (author_id, title) VALUES (1, 'Book A'), (1, 'Book B');
+	`)
+	if err != nil {
+		t.Fatalf("failed to create test tables: %v", err)
+	}
+	defer db.Exec(`DROP TABLE IF EXISTS bug1_books; DROP TABLE IF EXISTS bug1_authors`)
+
+	// Build query: authors LEFT JOIN books, grouped by author
+	authorID := query.Int64Column{Table: "bug1_authors", Name: "id"}
+	authorName := query.StringColumn{Table: "bug1_authors", Name: "name"}
+	bookID := query.Int64Column{Table: "bug1_books", Name: "id"}
+	bookTitle := query.StringColumn{Table: "bug1_books", Name: "title"}
+	bookAuthorID := query.Int64Column{Table: "bug1_books", Name: "author_id"}
+
+	ast := query.From(mockTable{name: "bug1_authors"}).
+		Select(authorName).
+		SelectJSONAgg("books", bookID, bookTitle).
+		LeftJoin(mockTable{name: "bug1_books"}).On(authorID.Eq(bookAuthorID)).
+		GroupBy(authorName).
+		Build()
+
+	sqlStr, _, err := NewCompiler(MySQL).Compile(ast)
+	if err != nil {
+		t.Fatalf("Compile failed: %v", err)
+	}
+	t.Logf("Compiled SQL: %s", sqlStr)
+
+	rows, err := db.Query(sqlStr)
+	if err != nil {
+		t.Fatalf("query failed: %v", err)
+	}
+	defer rows.Close()
+
+	type result struct {
+		name     string
+		booksRaw string
+	}
+	var results []result
+	for rows.Next() {
+		var r result
+		if err := rows.Scan(&r.name, &r.booksRaw); err != nil {
+			t.Fatalf("scan failed: %v", err)
+		}
+		results = append(results, r)
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("rows.Err: %v", err)
+	}
+
+	if len(results) != 2 {
+		t.Fatalf("expected 2 rows, got %d", len(results))
+	}
+
+	for _, r := range results {
+		if r.name == "Bob" {
+			// Bob has no books — MySQL produces [null] due to CASE WHEN ... END
+			// This is the bug: the raw JSON is [null], not [].
+			// The Go scanner must strip nulls before unmarshal.
+			var items []json.RawMessage
+			if err := json.Unmarshal([]byte(r.booksRaw), &items); err != nil {
+				t.Fatalf("failed to unmarshal Bob's books: %v", err)
+			}
+
+			// Document the MySQL behaviour: [null] contains one null element
+			if len(items) == 0 {
+				t.Log("MySQL returned empty array — bug may be fixed at DB level")
+			} else if len(items) == 1 && string(items[0]) == "null" {
+				t.Log("MySQL returns [null] for empty LEFT JOIN (as expected); scanner must strip nulls")
+			} else {
+				t.Errorf("unexpected books JSON for Bob: %s", r.booksRaw)
+			}
+
+			// Simulate the fix: strip nulls then unmarshal into typed slice
+			filtered := make([]json.RawMessage, 0, len(items))
+			for _, e := range items {
+				if string(e) != "null" {
+					filtered = append(filtered, e)
+				}
+			}
+			if len(filtered) != 0 {
+				t.Errorf("expected 0 non-null books for Bob, got %d", len(filtered))
+			}
+		}
+		if r.name == "Alice" {
+			var books []map[string]any
+			if err := json.Unmarshal([]byte(r.booksRaw), &books); err != nil {
+				t.Fatalf("failed to unmarshal Alice's books: %v", err)
+			}
+			if len(books) != 2 {
+				t.Errorf("expected 2 books for Alice, got %d", len(books))
+			}
+		}
+	}
+}
+
+// =============================================================================
+// Regression test for Bug 2: time.Time fields inside JSONAGG break on MySQL
+// =============================================================================
+
+// TestMySQLIntegration_JSONAgg_DateTimeColumn_RFC3339 verifies that datetime
+// columns inside JSON_OBJECT are formatted as RFC3339 using DATE_FORMAT, so
+// Go's json.Unmarshal into time.Time succeeds.
+// Regression test: without DATE_FORMAT, MySQL serializes datetime as
+// "2026-03-14 18:24:35.908000" which causes a parse error.
+func TestMySQLIntegration_JSONAgg_DateTimeColumn_RFC3339(t *testing.T) {
+	db := connectMySQL(t)
+	if db == nil {
+		return
+	}
+	defer db.Close()
+
+	// Create table with datetime column
+	_, err := db.Exec(`
+		DROP TABLE IF EXISTS bug2_events;
+		DROP TABLE IF EXISTS bug2_projects;
+		CREATE TABLE bug2_projects (
+			id BIGINT AUTO_INCREMENT PRIMARY KEY,
+			name VARCHAR(255) NOT NULL
+		);
+		CREATE TABLE bug2_events (
+			id BIGINT AUTO_INCREMENT PRIMARY KEY,
+			project_id BIGINT NOT NULL,
+			title VARCHAR(255) NOT NULL,
+			created_at DATETIME(3) NOT NULL DEFAULT NOW(3),
+			FOREIGN KEY (project_id) REFERENCES bug2_projects(id)
+		);
+		INSERT INTO bug2_projects (id, name) VALUES (1, 'Project A');
+		INSERT INTO bug2_events (project_id, title, created_at)
+			VALUES (1, 'Event 1', '2026-03-14 18:24:35.908');
+		INSERT INTO bug2_events (project_id, title, created_at)
+			VALUES (1, 'Event 2', '2026-06-01 12:00:00.000');
+	`)
+	if err != nil {
+		t.Fatalf("failed to create test tables: %v", err)
+	}
+	defer db.Exec(`DROP TABLE IF EXISTS bug2_events; DROP TABLE IF EXISTS bug2_projects`)
+
+	// Build query with JSON aggregation including a datetime column
+	projectID := query.Int64Column{Table: "bug2_projects", Name: "id"}
+	projectName := query.StringColumn{Table: "bug2_projects", Name: "name"}
+	eventTitle := query.StringColumn{Table: "bug2_events", Name: "title"}
+	eventCreatedAt := query.TimeColumn{Table: "bug2_events", Name: "created_at"}
+	eventProjectID := query.Int64Column{Table: "bug2_events", Name: "project_id"}
+
+	ast := query.From(mockTable{name: "bug2_projects"}).
+		Select(projectName).
+		SelectJSONAgg("events", eventTitle, eventCreatedAt).
+		LeftJoin(mockTable{name: "bug2_events"}).On(projectID.Eq(eventProjectID)).
+		GroupBy(projectName).
+		Build()
+
+	sqlStr, _, err := NewCompiler(MySQL).Compile(ast)
+	if err != nil {
+		t.Fatalf("Compile failed: %v", err)
+	}
+	t.Logf("Compiled SQL: %s", sqlStr)
+
+	// The SQL should contain DATE_FORMAT for the datetime column
+	if !containsStr(sqlStr, "DATE_FORMAT(") {
+		t.Errorf("expected DATE_FORMAT in compiled SQL: %s", sqlStr)
+	}
+
+	// Execute the query
+	var name string
+	var eventsRaw string
+	err = db.QueryRow(sqlStr).Scan(&name, &eventsRaw)
+	if err != nil {
+		t.Fatalf("query failed: %v", err)
+	}
+
+	t.Logf("Raw JSON: %s", eventsRaw)
+
+	if name != "Project A" {
+		t.Errorf("expected name = %q, got %q", "Project A", name)
+	}
+
+	// The critical test: unmarshal into a struct with time.Time field.
+	// Before the fix, this would fail with:
+	//   parsing time "2026-03-14 18:24:35.908000" as "2006-01-02T15:04:05Z07:00"
+	type EventItem struct {
+		Title     string    `json:"title"`
+		CreatedAt time.Time `json:"created_at"`
+	}
+
+	var events []EventItem
+	if err := json.Unmarshal([]byte(eventsRaw), &events); err != nil {
+		t.Fatalf("json.Unmarshal into []EventItem failed (Bug 2 regression): %v\nRaw JSON: %s", err, eventsRaw)
+	}
+
+	if len(events) != 2 {
+		t.Fatalf("expected 2 events, got %d", len(events))
+	}
+
+	// Verify the first event's time was parsed correctly
+	expected1 := time.Date(2026, 3, 14, 18, 24, 35, 908000000, time.UTC)
+	if !events[0].CreatedAt.Equal(expected1) && events[0].Title == "Event 1" {
+		t.Errorf("Event 1 created_at = %v, expected %v", events[0].CreatedAt, expected1)
+	}
+
+	// Verify events have valid titles
+	titles := map[string]bool{}
+	for _, e := range events {
+		titles[e.Title] = true
+		if e.CreatedAt.IsZero() {
+			t.Errorf("event %q has zero time", e.Title)
+		}
+	}
+	if !titles["Event 1"] || !titles["Event 2"] {
+		t.Errorf("expected events with titles 'Event 1' and 'Event 2', got %v", titles)
+	}
+}
+
+// TestMySQLIntegration_JSONAgg_NullableDateTimeColumn_RFC3339 verifies that
+// nullable datetime columns (*time.Time) inside JSON_OBJECT are also formatted
+// correctly with DATE_FORMAT.
+func TestMySQLIntegration_JSONAgg_NullableDateTimeColumn_RFC3339(t *testing.T) {
+	db := connectMySQL(t)
+	if db == nil {
+		return
+	}
+	defer db.Close()
+
+	_, err := db.Exec(`
+		DROP TABLE IF EXISTS bug2b_tasks;
+		DROP TABLE IF EXISTS bug2b_projects;
+		CREATE TABLE bug2b_projects (
+			id BIGINT AUTO_INCREMENT PRIMARY KEY,
+			name VARCHAR(255) NOT NULL
+		);
+		CREATE TABLE bug2b_tasks (
+			id BIGINT AUTO_INCREMENT PRIMARY KEY,
+			project_id BIGINT NOT NULL,
+			title VARCHAR(255) NOT NULL,
+			completed_at DATETIME(3) DEFAULT NULL,
+			FOREIGN KEY (project_id) REFERENCES bug2b_projects(id)
+		);
+		INSERT INTO bug2b_projects (id, name) VALUES (1, 'Proj');
+		INSERT INTO bug2b_tasks (project_id, title, completed_at)
+			VALUES (1, 'Done', '2026-01-15 09:30:00.000');
+		INSERT INTO bug2b_tasks (project_id, title, completed_at)
+			VALUES (1, 'Pending', NULL);
+	`)
+	if err != nil {
+		t.Fatalf("failed to create test tables: %v", err)
+	}
+	defer db.Exec(`DROP TABLE IF EXISTS bug2b_tasks; DROP TABLE IF EXISTS bug2b_projects`)
+
+	projID := query.Int64Column{Table: "bug2b_projects", Name: "id"}
+	projName := query.StringColumn{Table: "bug2b_projects", Name: "name"}
+	taskTitle := query.StringColumn{Table: "bug2b_tasks", Name: "title"}
+	taskCompleted := query.NullTimeColumn{Table: "bug2b_tasks", Name: "completed_at"}
+	taskProjID := query.Int64Column{Table: "bug2b_tasks", Name: "project_id"}
+
+	ast := query.From(mockTable{name: "bug2b_projects"}).
+		Select(projName).
+		SelectJSONAgg("tasks", taskTitle, taskCompleted).
+		LeftJoin(mockTable{name: "bug2b_tasks"}).On(projID.Eq(taskProjID)).
+		GroupBy(projName).
+		Build()
+
+	sqlStr, _, err := NewCompiler(MySQL).Compile(ast)
+	if err != nil {
+		t.Fatalf("Compile failed: %v", err)
+	}
+	t.Logf("Compiled SQL: %s", sqlStr)
+
+	var name, tasksRaw string
+	err = db.QueryRow(sqlStr).Scan(&name, &tasksRaw)
+	if err != nil {
+		t.Fatalf("query failed: %v", err)
+	}
+	t.Logf("Raw JSON: %s", tasksRaw)
+
+	type TaskItem struct {
+		Title       string     `json:"title"`
+		CompletedAt *time.Time `json:"completed_at"`
+	}
+
+	var tasks []TaskItem
+	if err := json.Unmarshal([]byte(tasksRaw), &tasks); err != nil {
+		t.Fatalf("json.Unmarshal failed (nullable time regression): %v\nRaw JSON: %s", err, tasksRaw)
+	}
+
+	if len(tasks) != 2 {
+		t.Fatalf("expected 2 tasks, got %d", len(tasks))
+	}
+
+	for _, task := range tasks {
+		if task.Title == "Done" && task.CompletedAt == nil {
+			t.Error("Done task should have a non-nil completed_at")
+		}
+		if task.Title == "Pending" && task.CompletedAt != nil {
+			t.Error("Pending task should have nil completed_at")
+		}
 	}
 }
