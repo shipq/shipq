@@ -178,8 +178,15 @@ func validateExpr(expr query.Expr, context string) error {
 		}
 
 	case query.JSONAggExpr:
-		if len(e.Columns) == 0 {
-			return fmt.Errorf("%s: JSON aggregation requires at least one column", context)
+		if len(e.Fields) == 0 && len(e.Columns) == 0 {
+			return fmt.Errorf("%s: JSON aggregation requires at least one column or field", context)
+		}
+		for i, f := range e.Fields {
+			if f.Expr != nil {
+				if err := validateExpr(f.Expr, fmt.Sprintf("%s json_agg field %d", context, i)); err != nil {
+					return err
+				}
+			}
 		}
 
 	case query.BinaryExpr:

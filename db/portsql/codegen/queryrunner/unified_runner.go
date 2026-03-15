@@ -270,9 +270,12 @@ type resultInfo struct {
 }
 
 // jsonAggColInfo describes a single column inside a json_agg aggregate.
+// When Children is non-nil, this field is itself a nested JSON aggregate
+// (e.g. a books field that contains chapters).
 type jsonAggColInfo struct {
-	Name   string // original column name (e.g., "name")
-	GoType string // Go type (e.g., "string", "*string")
+	Name     string           // original column name / key (e.g., "name", "chapters")
+	GoType   string           // Go type (e.g., "string", "*string", "[]XxxItem")
+	Children []jsonAggColInfo // non-nil for nested json_agg fields
 }
 
 // =============================================================================
@@ -696,32 +699,40 @@ func extractResults(ast *query.SerializedAST, queryName string) []resultInfo {
 				colName = name
 			}
 
-			// Handle json_agg: generate typed nested struct slice
-			if col.Expr.Type == "json_agg" && col.Expr.JSONAgg != nil {
-				itemTypeName := queryName + dbstrings.ToPascalCase(col.Expr.JSONAgg.FieldName) + "Item"
+			// Handle json_agg: generate typed nested struct slice.
+			// A json_agg can appear directly (col.Expr.Type == "json_agg") or
+			// wrapped in a scalar subquery (SelectExprAs(SubqueryExpr{...}, alias)).
+			jsonAgg := findNestedJSONAgg(&col.Expr)
+			if jsonAgg != nil {
+				fieldName := jsonAgg.FieldName
+				if fieldName == "" {
+					fieldName = colName
+				}
+				itemTypeName := queryName + dbstrings.ToPascalCase(fieldName) + "Item"
 				goType = "[]" + itemTypeName
 
-				// Disambiguate duplicate column names by prefixing with table name.
-				// e.g., roles.name + organizations.name → "name" and "organization_name"
-				nameCount := make(map[string]int)
-				for _, c := range col.Expr.JSONAgg.Columns {
-					nameCount[c.Name]++
-				}
+				if len(jsonAgg.Fields) > 0 {
+					jsonAggCols = extractJSONAggFields(jsonAgg.Fields, queryName, fieldName)
+				} else {
+					nameCount := make(map[string]int)
+					for _, c := range jsonAgg.Columns {
+						nameCount[c.Name]++
+					}
 
-				jsonAggCols = make([]jsonAggColInfo, len(col.Expr.JSONAgg.Columns))
-				for i, c := range col.Expr.JSONAgg.Columns {
-					colGoType := c.GoType
-					if colGoType == "" {
-						colGoType = "any"
-					}
-					colName := c.Name
-					if nameCount[c.Name] > 1 && c.Table != "" {
-						// Disambiguate: use singular(table)_column (e.g., "organization_name")
-						colName = dbstrings.ToSingular(c.Table) + "_" + c.Name
-					}
-					jsonAggCols[i] = jsonAggColInfo{
-						Name:   colName,
-						GoType: colGoType,
+					jsonAggCols = make([]jsonAggColInfo, len(jsonAgg.Columns))
+					for i, c := range jsonAgg.Columns {
+						colGoType := c.GoType
+						if colGoType == "" {
+							colGoType = "any"
+						}
+						cn := c.Name
+						if nameCount[c.Name] > 1 && c.Table != "" {
+							cn = dbstrings.ToSingular(c.Table) + "_" + c.Name
+						}
+						jsonAggCols[i] = jsonAggColInfo{
+							Name:   cn,
+							GoType: colGoType,
+						}
 					}
 				}
 			}
@@ -778,6 +789,67 @@ func extractResults(ast *query.SerializedAST, queryName string) []resultInfo {
 	return nil
 }
 
+// extractJSONAggFields converts SerializedJSONAggFields into jsonAggColInfo
+// entries, recursively handling nested json_agg expressions.
+// findNestedJSONAgg checks whether a serialized expression contains a JSON_AGG,
+// either directly or wrapped in a scalar subquery (the common pattern for
+// nested aggregations). Returns the inner SerializedJSONAgg if found.
+func findNestedJSONAgg(expr *query.SerializedExpr) *query.SerializedJSONAgg {
+	if expr == nil {
+		return nil
+	}
+	if expr.Type == "json_agg" && expr.JSONAgg != nil {
+		return expr.JSONAgg
+	}
+	// Unwrap a scalar subquery: SELECT json_agg(...) FROM ...
+	if expr.Type == "subquery" && expr.Subquery != nil {
+		if len(expr.Subquery.SelectCols) == 1 {
+			inner := &expr.Subquery.SelectCols[0].Expr
+			if inner.Type == "json_agg" && inner.JSONAgg != nil {
+				return inner.JSONAgg
+			}
+		}
+	}
+	return nil
+}
+
+func extractJSONAggFields(fields []query.SerializedJSONAggField, queryName string, parentFieldName string) []jsonAggColInfo {
+	result := make([]jsonAggColInfo, len(fields))
+	for i, f := range fields {
+		ci := jsonAggColInfo{Name: f.Key}
+		if f.Column != nil {
+			ci.GoType = f.Column.GoType
+			if ci.GoType == "" {
+				ci.GoType = "any"
+			}
+		} else if nested := findNestedJSONAgg(f.Expr); nested != nil {
+			nestedItemType := queryName + dbstrings.ToPascalCase(parentFieldName) + dbstrings.ToPascalCase(f.Key) + "Item"
+			ci.GoType = "[]" + nestedItemType
+			if len(nested.Fields) > 0 {
+				ci.Children = extractJSONAggFields(nested.Fields, queryName, parentFieldName+dbstrings.ToPascalCase(f.Key))
+			} else {
+				ci.Children = make([]jsonAggColInfo, len(nested.Columns))
+				for j, c := range nested.Columns {
+					gt := c.GoType
+					if gt == "" {
+						gt = "any"
+					}
+					ci.Children[j] = jsonAggColInfo{Name: c.Name, GoType: gt}
+				}
+			}
+		} else if f.Expr != nil {
+			ci.GoType = inferGoType(f.Expr)
+			if ci.GoType == "" {
+				ci.GoType = "any"
+			}
+		} else {
+			ci.GoType = "any"
+		}
+		result[i] = ci
+	}
+	return result
+}
+
 func inferGoType(expr *query.SerializedExpr) string {
 	if expr == nil {
 		return "any"
@@ -828,6 +900,30 @@ func inferGoType(expr *query.SerializedExpr) string {
 		}
 	case "exists":
 		return "bool"
+	case "subquery":
+		if expr.Subquery != nil && len(expr.Subquery.SelectCols) == 1 {
+			return inferGoType(&expr.Subquery.SelectCols[0].Expr)
+		}
+	case "binary":
+		if expr.Binary != nil {
+			switch expr.Binary.Op {
+			case "=", "<>", "<", "<=", ">", ">=", "AND", "OR", "LIKE", "IN":
+				return "bool"
+			case "+", "-":
+				return inferGoType(&expr.Binary.Left)
+			}
+		}
+	case "unary":
+		if expr.Unary != nil {
+			switch expr.Unary.Op {
+			case "NOT", "IS NULL", "IS NOT NULL":
+				return "bool"
+			}
+		}
+	case "param":
+		if expr.Param != nil && expr.Param.GoType != "" {
+			return expr.Param.GoType
+		}
 	}
 
 	return "any"
@@ -1855,22 +1951,12 @@ func writeUserQueryTypes(buf *bytes.Buffer, qi userQueryInfo) {
 		}
 		buf.WriteString("}\n\n")
 
-		// Write nested struct types for json_agg fields
+		// Write nested struct types for json_agg fields (recurse for nested aggs)
 		for _, r := range qi.Results {
 			if len(r.JSONAggCols) == 0 {
 				continue
 			}
-			itemTypeName := r.GoType[2:] // strip leading "[]"
-			buf.WriteString(fmt.Sprintf("// %s is a nested type for the %s JSON aggregate.\n", itemTypeName, r.Column))
-			buf.WriteString(fmt.Sprintf("type %s struct {\n", itemTypeName))
-			for _, c := range r.JSONAggCols {
-				jsonTag := c.Name
-				if strings.HasPrefix(c.GoType, "*") {
-					jsonTag += ",omitempty"
-				}
-				buf.WriteString(fmt.Sprintf("\t%s %s `json:%q`\n", dbstrings.ToPascalCase(c.Name), c.GoType, jsonTag))
-			}
-			buf.WriteString("}\n\n")
+			writeJSONAggItemType(buf, r.GoType[2:], r.Column, r.JSONAggCols)
 		}
 	}
 }
@@ -2064,6 +2150,28 @@ func fixJSONBoolFields(raw string, boolFields []string) string {
 }
 
 `)
+}
+
+// writeJSONAggItemType writes a Go struct type for a json_agg item and recurses
+// for any nested json_agg children.
+func writeJSONAggItemType(buf *bytes.Buffer, typeName string, columnName string, cols []jsonAggColInfo) {
+	buf.WriteString(fmt.Sprintf("// %s is a nested type for the %s JSON aggregate.\n", typeName, columnName))
+	buf.WriteString(fmt.Sprintf("type %s struct {\n", typeName))
+	for _, c := range cols {
+		jsonTag := c.Name
+		if strings.HasPrefix(c.GoType, "*") {
+			jsonTag += ",omitempty"
+		}
+		buf.WriteString(fmt.Sprintf("\t%s %s `json:%q`\n", dbstrings.ToPascalCase(c.Name), c.GoType, jsonTag))
+	}
+	buf.WriteString("}\n\n")
+	// Recurse for nested json_agg children
+	for _, c := range cols {
+		if len(c.Children) > 0 {
+			childTypeName := c.GoType[2:] // strip leading "[]"
+			writeJSONAggItemType(buf, childTypeName, c.Name, c.Children)
+		}
+	}
 }
 
 func writeSQLiteScanHelpers(buf *bytes.Buffer) {

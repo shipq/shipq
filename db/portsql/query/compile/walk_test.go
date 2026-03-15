@@ -519,3 +519,116 @@ func TestHasSubqueries_InsertSelect(t *testing.T) {
 		t.Error("expected HasSubqueries to return false for INSERT ... SELECT without SubqueryExpr")
 	}
 }
+
+func TestWalkExpr_JSONAggFieldsWalksNestedExprs(t *testing.T) {
+	// A JSONAggExpr with Fields containing a SubqueryExpr should be walked
+	innerAST := &query.AST{
+		Kind:      query.SelectQuery,
+		FromTable: query.TableRef{Name: "chapters"},
+		SelectCols: []query.SelectExpr{
+			{Expr: query.ColumnExpr{Column: query.StringColumn{Table: "chapters", Name: "title"}}},
+		},
+		Where: query.BinaryExpr{
+			Left:  query.ColumnExpr{Column: query.Int64Column{Table: "chapters", Name: "book_id"}},
+			Op:    query.OpEq,
+			Right: query.ParamExpr{Name: "inner_param", GoType: "int64"},
+		},
+	}
+
+	outerExpr := query.JSONAggExpr{
+		FieldName: "books",
+		Fields: []query.JSONAggField{
+			{Key: "title", Column: query.StringColumn{Table: "books", Name: "title"}},
+			{Key: "chapters", Expr: query.SubqueryExpr{Query: innerAST}},
+		},
+	}
+
+	var foundParam bool
+	WalkExpr(outerExpr, func(expr query.Expr) bool {
+		if p, ok := expr.(query.ParamExpr); ok && p.Name == "inner_param" {
+			foundParam = true
+		}
+		return true
+	})
+
+	if !foundParam {
+		t.Error("WalkExpr should visit params inside JSONAggExpr.Fields subqueries")
+	}
+}
+
+func TestCollectParams_JSONAggFields(t *testing.T) {
+	innerAST := &query.AST{
+		Kind:      query.SelectQuery,
+		FromTable: query.TableRef{Name: "chapters"},
+		SelectCols: []query.SelectExpr{
+			{Expr: query.ColumnExpr{Column: query.StringColumn{Table: "chapters", Name: "title"}}},
+		},
+		Where: query.BinaryExpr{
+			Left:  query.ColumnExpr{Column: query.Int64Column{Table: "chapters", Name: "book_id"}},
+			Op:    query.OpEq,
+			Right: query.ParamExpr{Name: "nested_param", GoType: "int64"},
+		},
+	}
+
+	ast := &query.AST{
+		Kind:      query.SelectQuery,
+		FromTable: query.TableRef{Name: "authors"},
+		SelectCols: []query.SelectExpr{
+			{
+				Expr: query.JSONAggExpr{
+					FieldName: "books",
+					Fields: []query.JSONAggField{
+						{Key: "chapters", Expr: query.SubqueryExpr{Query: innerAST}},
+					},
+				},
+			},
+		},
+		Where: query.BinaryExpr{
+			Left:  query.ColumnExpr{Column: query.StringColumn{Table: "authors", Name: "id"}},
+			Op:    query.OpEq,
+			Right: query.ParamExpr{Name: "author_id", GoType: "int64"},
+		},
+	}
+
+	params := CollectParams(ast)
+	names := make(map[string]bool)
+	for _, p := range params {
+		names[p.Name] = true
+	}
+
+	if !names["author_id"] {
+		t.Error("expected to collect 'author_id' param")
+	}
+	if !names["nested_param"] {
+		t.Error("expected to collect 'nested_param' from inside JSONAggField subquery")
+	}
+}
+
+func TestHasSubqueries_JSONAggFields(t *testing.T) {
+	innerAST := &query.AST{
+		Kind:      query.SelectQuery,
+		FromTable: query.TableRef{Name: "chapters"},
+		SelectCols: []query.SelectExpr{
+			{Expr: query.ColumnExpr{Column: query.StringColumn{Table: "chapters", Name: "title"}}},
+		},
+	}
+
+	ast := &query.AST{
+		Kind:      query.SelectQuery,
+		FromTable: query.TableRef{Name: "authors"},
+		SelectCols: []query.SelectExpr{
+			{
+				Expr: query.JSONAggExpr{
+					FieldName: "books",
+					Fields: []query.JSONAggField{
+						{Key: "chapters", Expr: query.SubqueryExpr{Query: innerAST}},
+					},
+				},
+			},
+		},
+	}
+
+	if !HasSubqueries(ast) {
+		t.Error("HasSubqueries should return true when JSONAggField contains SubqueryExpr")
+	}
+}

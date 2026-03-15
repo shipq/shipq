@@ -49,11 +49,17 @@ func WalkExpr(expr query.Expr, visit ExprVisitor) {
 			WalkAST(e.Subquery, visit)
 		}
 
+	case query.JSONAggExpr:
+		for _, f := range e.Fields {
+			if f.Expr != nil {
+				WalkExpr(f.Expr, visit)
+			}
+		}
+
 		// These expression types have no child expressions:
 		// - ColumnExpr
 		// - ParamExpr
 		// - LiteralExpr
-		// - JSONAggExpr (columns are not expressions)
 	}
 }
 

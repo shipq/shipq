@@ -694,6 +694,711 @@ func TestExtractResults_JSONAgg(t *testing.T) {
 	}
 }
 
+// Regression: a top-level SelectExprAs with a SubqueryExpr on a ReturnMany
+// query must infer the scalar subquery's type — not fall back to "any".
+func TestExtractResults_TopLevelScalarSubquery(t *testing.T) {
+	sq := query.SerializedQuery{
+		Name:       "ListBooksWithChapterCount",
+		ReturnType: query.ReturnMany,
+		AST: &query.SerializedAST{
+			Kind:      "select",
+			FromTable: query.SerializedTableRef{Name: "books"},
+			SelectCols: []query.SerializedSelectExpr{
+				{
+					Expr: query.SerializedExpr{
+						Type:   "column",
+						Column: &query.SerializedColumn{Table: "books", Name: "title", GoType: "string"},
+					},
+				},
+				{
+					// SelectExprAs(SubqueryExpr{...}, "chapter_count")
+					Expr: query.SerializedExpr{
+						Type: "subquery",
+						Subquery: &query.SerializedAST{
+							Kind:      "select",
+							FromTable: query.SerializedTableRef{Name: "chapters"},
+							SelectCols: []query.SerializedSelectExpr{
+								{
+									Expr: query.SerializedExpr{
+										Type:      "aggregate",
+										Aggregate: &query.SerializedAgg{Func: "COUNT"},
+									},
+								},
+							},
+						},
+					},
+					Alias: "chapter_count",
+				},
+			},
+		},
+	}
+
+	results := extractResults(sq.AST, sq.Name)
+	if len(results) != 2 {
+		t.Fatalf("expected 2 results, got %d", len(results))
+	}
+
+	title := results[0]
+	if title.GoType != "string" {
+		t.Errorf("title GoType = %q, want 'string'", title.GoType)
+	}
+
+	cc := results[1]
+	if cc.Name != "ChapterCount" {
+		t.Errorf("expected name ChapterCount, got %s", cc.Name)
+	}
+	if cc.GoType == "any" {
+		t.Fatalf("top-level scalar subquery (SELECT COUNT) resolved to 'any'; should be 'int64'")
+	}
+	if cc.GoType != "int64" {
+		t.Errorf("chapter_count GoType = %q, want 'int64'", cc.GoType)
+	}
+}
+
+// Regression: same as above but with a column-returning subquery.
+func TestExtractResults_TopLevelScalarSubquery_Column(t *testing.T) {
+	sq := query.SerializedQuery{
+		Name:       "ListBooksWithLatestReview",
+		ReturnType: query.ReturnMany,
+		AST: &query.SerializedAST{
+			Kind:      "select",
+			FromTable: query.SerializedTableRef{Name: "books"},
+			SelectCols: []query.SerializedSelectExpr{
+				{
+					Expr: query.SerializedExpr{
+						Type:   "column",
+						Column: &query.SerializedColumn{Table: "books", Name: "title", GoType: "string"},
+					},
+				},
+				{
+					Expr: query.SerializedExpr{
+						Type: "subquery",
+						Subquery: &query.SerializedAST{
+							Kind:      "select",
+							FromTable: query.SerializedTableRef{Name: "reviews"},
+							SelectCols: []query.SerializedSelectExpr{
+								{
+									Expr: query.SerializedExpr{
+										Type:   "column",
+										Column: &query.SerializedColumn{Table: "reviews", Name: "body", GoType: "string"},
+									},
+								},
+							},
+						},
+					},
+					Alias: "latest_review",
+				},
+			},
+		},
+	}
+
+	results := extractResults(sq.AST, sq.Name)
+	if len(results) != 2 {
+		t.Fatalf("expected 2 results, got %d", len(results))
+	}
+
+	review := results[1]
+	if review.Name != "LatestReview" {
+		t.Errorf("expected name LatestReview, got %s", review.Name)
+	}
+	if review.GoType == "any" {
+		t.Fatalf("top-level scalar subquery (SELECT column) resolved to 'any'; should be 'string'")
+	}
+	if review.GoType != "string" {
+		t.Errorf("latest_review GoType = %q, want 'string'", review.GoType)
+	}
+}
+
+// Regression: MIN/MAX aggregate subquery should infer the inner column type.
+func TestExtractResults_TopLevelScalarSubquery_MinMax(t *testing.T) {
+	sq := query.SerializedQuery{
+		Name:       "ListBooksWithMinPrice",
+		ReturnType: query.ReturnMany,
+		AST: &query.SerializedAST{
+			Kind:      "select",
+			FromTable: query.SerializedTableRef{Name: "books"},
+			SelectCols: []query.SerializedSelectExpr{
+				{
+					Expr: query.SerializedExpr{
+						Type:   "column",
+						Column: &query.SerializedColumn{Table: "books", Name: "title", GoType: "string"},
+					},
+				},
+				{
+					Expr: query.SerializedExpr{
+						Type: "subquery",
+						Subquery: &query.SerializedAST{
+							Kind:      "select",
+							FromTable: query.SerializedTableRef{Name: "editions"},
+							SelectCols: []query.SerializedSelectExpr{
+								{
+									Expr: query.SerializedExpr{
+										Type: "aggregate",
+										Aggregate: &query.SerializedAgg{
+											Func: "MIN",
+											Arg: &query.SerializedExpr{
+												Type:   "column",
+												Column: &query.SerializedColumn{Table: "editions", Name: "price", GoType: "float64"},
+											},
+										},
+									},
+								},
+							},
+						},
+					},
+					Alias: "min_price",
+				},
+			},
+		},
+	}
+
+	results := extractResults(sq.AST, sq.Name)
+	if len(results) != 2 {
+		t.Fatalf("expected 2 results, got %d", len(results))
+	}
+
+	price := results[1]
+	if price.Name != "MinPrice" {
+		t.Errorf("expected name MinPrice, got %s", price.Name)
+	}
+	if price.GoType == "any" {
+		t.Fatalf("top-level scalar subquery (SELECT MIN(price)) resolved to 'any'; should be 'float64'")
+	}
+	if price.GoType != "float64" {
+		t.Errorf("min_price GoType = %q, want 'float64'", price.GoType)
+	}
+}
+
+// Regression: SelectExprAs(SubqueryExpr{JSONAggExpr}, "key_facts") on a
+// MustDefineMany query must produce a typed struct slice — not "any".
+// This is the pattern used by keyFactsSubquery() → ListSourcesByDraft.
+func TestExtractResults_SubqueryWrappedJSONAgg_TopLevel(t *testing.T) {
+	sq := query.SerializedQuery{
+		Name:       "ListSourcesByDraft",
+		ReturnType: query.ReturnMany,
+		AST: &query.SerializedAST{
+			Kind:      "select",
+			FromTable: query.SerializedTableRef{Name: "saved_sources"},
+			SelectCols: []query.SerializedSelectExpr{
+				{
+					Expr: query.SerializedExpr{
+						Type:   "column",
+						Column: &query.SerializedColumn{Table: "saved_sources", Name: "headline", GoType: "string"},
+					},
+				},
+				{
+					Expr: query.SerializedExpr{
+						Type:   "column",
+						Column: &query.SerializedColumn{Table: "saved_sources", Name: "url", GoType: "string"},
+					},
+				},
+				{
+					// SelectExprAs(SubqueryExpr{ JSONAggExpr{...} }, "key_facts")
+					Expr: query.SerializedExpr{
+						Type: "subquery",
+						Subquery: &query.SerializedAST{
+							Kind:      "select",
+							FromTable: query.SerializedTableRef{Name: "source_key_facts"},
+							SelectCols: []query.SerializedSelectExpr{
+								{
+									Expr: query.SerializedExpr{
+										Type: "json_agg",
+										JSONAgg: &query.SerializedJSONAgg{
+											FieldName: "key_facts_inner",
+											Columns: []query.SerializedColumn{
+												{Table: "source_key_facts", Name: "fact", GoType: "string"},
+												{Table: "source_key_facts", Name: "source", GoType: "string"},
+											},
+										},
+									},
+								},
+							},
+						},
+					},
+					Alias: "key_facts",
+				},
+			},
+		},
+	}
+
+	results := extractResults(sq.AST, sq.Name)
+	if len(results) != 3 {
+		t.Fatalf("expected 3 results, got %d", len(results))
+	}
+
+	kf := results[2]
+	if kf.Name != "KeyFacts" {
+		t.Errorf("expected name KeyFacts, got %s", kf.Name)
+	}
+	if kf.GoType == "any" {
+		t.Fatalf("SubqueryExpr wrapping JSONAggExpr resolved to 'any'; should be a typed slice")
+	}
+	if !strings.HasPrefix(kf.GoType, "[]") {
+		t.Fatalf("expected slice type, got %q", kf.GoType)
+	}
+	if len(kf.JSONAggCols) != 2 {
+		t.Fatalf("expected 2 JSONAggCols, got %d", len(kf.JSONAggCols))
+	}
+	if kf.JSONAggCols[0].Name != "fact" || kf.JSONAggCols[0].GoType != "string" {
+		t.Errorf("JSONAggCols[0] = %+v, want {fact string}", kf.JSONAggCols[0])
+	}
+	if kf.JSONAggCols[1].Name != "source" || kf.JSONAggCols[1].GoType != "string" {
+		t.Errorf("JSONAggCols[1] = %+v, want {source string}", kf.JSONAggCols[1])
+	}
+}
+
+// Verify the above also generates correct Go structs (not just extractResults).
+func TestGenerateSharedTypes_SubqueryWrappedJSONAgg_TopLevel(t *testing.T) {
+	sq := query.SerializedQuery{
+		Name:       "ListSourcesByDraft",
+		ReturnType: query.ReturnMany,
+		AST: &query.SerializedAST{
+			Kind:      "select",
+			FromTable: query.SerializedTableRef{Name: "saved_sources"},
+			SelectCols: []query.SerializedSelectExpr{
+				{
+					Expr: query.SerializedExpr{
+						Type:   "column",
+						Column: &query.SerializedColumn{Table: "saved_sources", Name: "headline", GoType: "string"},
+					},
+				},
+				{
+					Expr: query.SerializedExpr{
+						Type: "subquery",
+						Subquery: &query.SerializedAST{
+							Kind:      "select",
+							FromTable: query.SerializedTableRef{Name: "source_key_facts"},
+							SelectCols: []query.SerializedSelectExpr{
+								{
+									Expr: query.SerializedExpr{
+										Type: "json_agg",
+										JSONAgg: &query.SerializedJSONAgg{
+											FieldName: "key_facts_inner",
+											Columns: []query.SerializedColumn{
+												{Table: "source_key_facts", Name: "fact", GoType: "string"},
+												{Table: "source_key_facts", Name: "source", GoType: "string"},
+											},
+										},
+									},
+								},
+							},
+						},
+					},
+					Alias: "key_facts",
+				},
+			},
+		},
+	}
+
+	cfg := UnifiedRunnerConfig{
+		ModulePath:  "example.com/myapp",
+		Dialect:     dburl.DialectPostgres,
+		UserQueries: []query.SerializedQuery{sq},
+	}
+
+	code, err := GenerateSharedTypes(cfg)
+	if err != nil {
+		t.Fatalf("GenerateSharedTypes failed: %v", err)
+	}
+
+	codeStr := string(code)
+
+	if strings.Contains(codeStr, "KeyFacts any") {
+		t.Fatalf("KeyFacts resolved to 'any':\n%s", codeStr)
+	}
+
+	if !strings.Contains(codeStr, "KeyFacts []ListSourcesByDraftKeyFactsInnerItem") {
+		t.Errorf("expected KeyFacts []ListSourcesByDraftKeyFactsInnerItem, got:\n%s", codeStr)
+	}
+
+	if !strings.Contains(codeStr, "type ListSourcesByDraftKeyFactsInnerItem struct") {
+		t.Errorf("expected ListSourcesByDraftKeyFactsInnerItem struct, got:\n%s", codeStr)
+	}
+
+	if _, err := format.Source(code); err != nil {
+		t.Errorf("generated types.go is not valid Go: %v\n%s", err, codeStr)
+	}
+}
+
+func TestExtractResults_NestedJSONAgg(t *testing.T) {
+	// The realistic pattern: inner JSON_AGG is wrapped in a scalar subquery
+	// (SubqueryExpr → AST → SelectCols[0] = JSONAggExpr).
+	sq := query.SerializedQuery{
+		Name:       "ListAuthors",
+		ReturnType: query.ReturnMany,
+		AST: &query.SerializedAST{
+			Kind:      "select",
+			FromTable: query.SerializedTableRef{Name: "authors"},
+			SelectCols: []query.SerializedSelectExpr{
+				{
+					Expr: query.SerializedExpr{
+						Type: "column",
+						Column: &query.SerializedColumn{
+							Table: "authors", Name: "name", GoType: "string",
+						},
+					},
+				},
+				{
+					Expr: query.SerializedExpr{
+						Type: "json_agg",
+						JSONAgg: &query.SerializedJSONAgg{
+							FieldName: "books",
+							Fields: []query.SerializedJSONAggField{
+								{
+									Key:    "title",
+									Column: &query.SerializedColumn{Table: "books", Name: "title", GoType: "string"},
+								},
+								{
+									Key: "chapters",
+									Expr: &query.SerializedExpr{
+										Type: "subquery",
+										Subquery: &query.SerializedAST{
+											Kind:      "select",
+											FromTable: query.SerializedTableRef{Name: "chapters"},
+											SelectCols: []query.SerializedSelectExpr{
+												{
+													Expr: query.SerializedExpr{
+														Type: "json_agg",
+														JSONAgg: &query.SerializedJSONAgg{
+															FieldName: "chapters_inner",
+															Columns: []query.SerializedColumn{
+																{Table: "chapters", Name: "title", GoType: "string"},
+																{Table: "chapters", Name: "page_count", GoType: "int"},
+															},
+														},
+													},
+												},
+											},
+										},
+									},
+								},
+							},
+						},
+					},
+					Alias: "books",
+				},
+			},
+		},
+	}
+
+	results := extractResults(sq.AST, sq.Name)
+	if len(results) != 2 {
+		t.Fatalf("expected 2 results, got %d", len(results))
+	}
+
+	r := results[1]
+	if r.Name != "Books" {
+		t.Errorf("expected name Books, got %s", r.Name)
+	}
+	if r.GoType != "[]ListAuthorsBooksItem" {
+		t.Errorf("expected GoType []ListAuthorsBooksItem, got %s", r.GoType)
+	}
+	if len(r.JSONAggCols) != 2 {
+		t.Fatalf("expected 2 JSONAggCols, got %d", len(r.JSONAggCols))
+	}
+	if r.JSONAggCols[0].Name != "title" || r.JSONAggCols[0].GoType != "string" {
+		t.Errorf("JSONAggCols[0] = %+v, want {title string}", r.JSONAggCols[0])
+	}
+
+	chaptersField := r.JSONAggCols[1]
+	if chaptersField.Name != "chapters" {
+		t.Errorf("JSONAggCols[1].Name = %q, want 'chapters'", chaptersField.Name)
+	}
+	// Must NOT be "any" — the nested JSON_AGG should produce a typed slice
+	if chaptersField.GoType == "any" {
+		t.Fatalf("chapters field GoType is 'any'; nested JSON_AGG type was not resolved")
+	}
+	if !strings.HasPrefix(chaptersField.GoType, "[]") {
+		t.Errorf("JSONAggCols[1].GoType should start with '[]', got %q", chaptersField.GoType)
+	}
+	if len(chaptersField.Children) != 2 {
+		t.Fatalf("expected 2 children for chapters field, got %d", len(chaptersField.Children))
+	}
+	if chaptersField.Children[0].Name != "title" || chaptersField.Children[0].GoType != "string" {
+		t.Errorf("chapter child[0] = %+v, want {title string}", chaptersField.Children[0])
+	}
+	if chaptersField.Children[1].Name != "page_count" || chaptersField.Children[1].GoType != "int" {
+		t.Errorf("chapter child[1] = %+v, want {page_count int}", chaptersField.Children[1])
+	}
+}
+
+func TestExtractResults_NestedJSONAgg_ScalarSubquery(t *testing.T) {
+	// A JSONAggField with a scalar subquery (not json_agg) should infer the
+	// type of the subquery's single select column, not fall back to "any".
+	sq := query.SerializedQuery{
+		Name:       "ListAuthors",
+		ReturnType: query.ReturnMany,
+		AST: &query.SerializedAST{
+			Kind:      "select",
+			FromTable: query.SerializedTableRef{Name: "authors"},
+			SelectCols: []query.SerializedSelectExpr{
+				{
+					Expr: query.SerializedExpr{
+						Type: "json_agg",
+						JSONAgg: &query.SerializedJSONAgg{
+							FieldName: "books",
+							Fields: []query.SerializedJSONAggField{
+								{
+									Key:    "title",
+									Column: &query.SerializedColumn{Table: "books", Name: "title", GoType: "string"},
+								},
+								{
+									Key: "chapter_count",
+									Expr: &query.SerializedExpr{
+										Type: "subquery",
+										Subquery: &query.SerializedAST{
+											Kind:      "select",
+											FromTable: query.SerializedTableRef{Name: "chapters"},
+											SelectCols: []query.SerializedSelectExpr{
+												{
+													Expr: query.SerializedExpr{
+														Type: "aggregate",
+														Aggregate: &query.SerializedAgg{
+															Func: "COUNT",
+														},
+													},
+												},
+											},
+										},
+									},
+								},
+							},
+						},
+					},
+					Alias: "books",
+				},
+			},
+		},
+	}
+
+	results := extractResults(sq.AST, sq.Name)
+	if len(results) != 1 {
+		t.Fatalf("expected 1 result, got %d", len(results))
+	}
+
+	r := results[0]
+	if len(r.JSONAggCols) != 2 {
+		t.Fatalf("expected 2 JSONAggCols, got %d", len(r.JSONAggCols))
+	}
+
+	countField := r.JSONAggCols[1]
+	if countField.Name != "chapter_count" {
+		t.Errorf("field[1].Name = %q, want 'chapter_count'", countField.Name)
+	}
+	if countField.GoType == "any" {
+		t.Fatalf("scalar subquery (SELECT COUNT) resolved to 'any'; should be 'int64'")
+	}
+	if countField.GoType != "int64" {
+		t.Errorf("field[1].GoType = %q, want 'int64'", countField.GoType)
+	}
+}
+
+func TestInferGoType_SubqueryColumn(t *testing.T) {
+	expr := &query.SerializedExpr{
+		Type: "subquery",
+		Subquery: &query.SerializedAST{
+			Kind:      "select",
+			FromTable: query.SerializedTableRef{Name: "books"},
+			SelectCols: []query.SerializedSelectExpr{
+				{
+					Expr: query.SerializedExpr{
+						Type:   "column",
+						Column: &query.SerializedColumn{Table: "books", Name: "title", GoType: "string"},
+					},
+				},
+			},
+		},
+	}
+
+	got := inferGoType(expr)
+	if got != "string" {
+		t.Errorf("inferGoType(subquery with string column) = %q, want 'string'", got)
+	}
+}
+
+func TestInferGoType_SubqueryAggregate(t *testing.T) {
+	expr := &query.SerializedExpr{
+		Type: "subquery",
+		Subquery: &query.SerializedAST{
+			Kind:      "select",
+			FromTable: query.SerializedTableRef{Name: "chapters"},
+			SelectCols: []query.SerializedSelectExpr{
+				{
+					Expr: query.SerializedExpr{
+						Type:      "aggregate",
+						Aggregate: &query.SerializedAgg{Func: "COUNT"},
+					},
+				},
+			},
+		},
+	}
+
+	got := inferGoType(expr)
+	if got != "int64" {
+		t.Errorf("inferGoType(subquery with COUNT) = %q, want 'int64'", got)
+	}
+}
+
+func TestInferGoType_BinaryComparison(t *testing.T) {
+	expr := &query.SerializedExpr{
+		Type: "binary",
+		Binary: &query.SerializedBinary{
+			Left: query.SerializedExpr{
+				Type:   "column",
+				Column: &query.SerializedColumn{Table: "x", Name: "a", GoType: "int64"},
+			},
+			Op: "=",
+			Right: query.SerializedExpr{
+				Type:   "column",
+				Column: &query.SerializedColumn{Table: "x", Name: "b", GoType: "int64"},
+			},
+		},
+	}
+
+	got := inferGoType(expr)
+	if got != "bool" {
+		t.Errorf("inferGoType(a = b) = %q, want 'bool'", got)
+	}
+}
+
+func TestInferGoType_BinaryArithmetic(t *testing.T) {
+	expr := &query.SerializedExpr{
+		Type: "binary",
+		Binary: &query.SerializedBinary{
+			Left: query.SerializedExpr{
+				Type:   "column",
+				Column: &query.SerializedColumn{Table: "x", Name: "price", GoType: "float64"},
+			},
+			Op: "+",
+			Right: query.SerializedExpr{
+				Type:    "literal",
+				Literal: float64(1),
+			},
+		},
+	}
+
+	got := inferGoType(expr)
+	if got != "float64" {
+		t.Errorf("inferGoType(price + 1) = %q, want 'float64'", got)
+	}
+}
+
+func TestInferGoType_Param(t *testing.T) {
+	expr := &query.SerializedExpr{
+		Type: "param",
+		Param: &query.SerializedParam{
+			Name:   "user_id",
+			GoType: "int64",
+		},
+	}
+
+	got := inferGoType(expr)
+	if got != "int64" {
+		t.Errorf("inferGoType(param int64) = %q, want 'int64'", got)
+	}
+}
+
+func TestGenerateSharedTypes_NestedJSONAgg(t *testing.T) {
+	// Use the realistic subquery-wrapped pattern for the inner JSON_AGG
+	sq := query.SerializedQuery{
+		Name:       "ListAuthors",
+		ReturnType: query.ReturnMany,
+		AST: &query.SerializedAST{
+			Kind:      "select",
+			FromTable: query.SerializedTableRef{Name: "authors"},
+			SelectCols: []query.SerializedSelectExpr{
+				{
+					Expr: query.SerializedExpr{
+						Type: "column",
+						Column: &query.SerializedColumn{
+							Table: "authors", Name: "name", GoType: "string",
+						},
+					},
+				},
+				{
+					Expr: query.SerializedExpr{
+						Type: "json_agg",
+						JSONAgg: &query.SerializedJSONAgg{
+							FieldName: "books",
+							Fields: []query.SerializedJSONAggField{
+								{
+									Key:    "title",
+									Column: &query.SerializedColumn{Table: "books", Name: "title", GoType: "string"},
+								},
+								{
+									Key: "chapters",
+									Expr: &query.SerializedExpr{
+										Type: "subquery",
+										Subquery: &query.SerializedAST{
+											Kind:      "select",
+											FromTable: query.SerializedTableRef{Name: "chapters"},
+											SelectCols: []query.SerializedSelectExpr{
+												{
+													Expr: query.SerializedExpr{
+														Type: "json_agg",
+														JSONAgg: &query.SerializedJSONAgg{
+															FieldName: "chapters_inner",
+															Columns: []query.SerializedColumn{
+																{Table: "chapters", Name: "title", GoType: "string"},
+															},
+														},
+													},
+												},
+											},
+										},
+									},
+								},
+							},
+						},
+					},
+					Alias: "books",
+				},
+			},
+		},
+	}
+
+	cfg := UnifiedRunnerConfig{
+		ModulePath:  "example.com/myapp",
+		Dialect:     dburl.DialectPostgres,
+		UserQueries: []query.SerializedQuery{sq},
+	}
+
+	code, err := GenerateSharedTypes(cfg)
+	if err != nil {
+		t.Fatalf("GenerateSharedTypes failed: %v", err)
+	}
+
+	codeStr := string(code)
+
+	// Should have the outer item struct
+	if !strings.Contains(codeStr, "type ListAuthorsBooksItem struct") {
+		t.Errorf("expected ListAuthorsBooksItem struct, got:\n%s", codeStr)
+	}
+
+	// Should have a chapters field in the outer item struct — NOT "any"
+	if strings.Contains(codeStr, "Chapters any") {
+		t.Fatalf("chapters field resolved to 'any'; nested JSON_AGG type was not resolved:\n%s", codeStr)
+	}
+	if !strings.Contains(codeStr, `Chapters []ListAuthorsBooksChaptersItem`) {
+		t.Errorf("expected Chapters []ListAuthorsBooksChaptersItem field, got:\n%s", codeStr)
+	}
+
+	// Should have the inner item struct
+	if !strings.Contains(codeStr, "type ListAuthorsBooksChaptersItem struct") {
+		t.Errorf("expected ListAuthorsBooksChaptersItem struct, got:\n%s", codeStr)
+	}
+
+	// Inner struct should have properly typed fields (string, not any)
+	if strings.Contains(codeStr, "Title any") {
+		t.Errorf("inner struct title resolved to 'any':\n%s", codeStr)
+	}
+
+	// Should be valid Go
+	if _, err := format.Source(code); err != nil {
+		t.Errorf("generated types.go is not valid Go: %v\n%s", err, codeStr)
+	}
+}
+
 // TestGenerateSharedTypes_WithJSONAgg verifies that nested struct is generated
 // for json_agg fields with correct field names, types, and json tags.
 func TestGenerateSharedTypes_WithJSONAgg(t *testing.T) {

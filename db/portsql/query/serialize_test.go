@@ -1140,3 +1140,77 @@ func TestSerialize_InsertSelect_WithReturning_RoundTrip(t *testing.T) {
 		t.Errorf("expected no InsertRows, got %d", len(deserialized.InsertRows))
 	}
 }
+
+func TestSerializeExpr_JSONAggWithFields(t *testing.T) {
+	chapterTitle := StringColumn{Table: "chapters", Name: "title"}
+
+	innerSubquery := &AST{
+		Kind:      SelectQuery,
+		FromTable: TableRef{Name: "chapters"},
+		SelectCols: []SelectExpr{
+			{Expr: JSONAggExpr{FieldName: "ch", Columns: []Column{chapterTitle}}},
+		},
+		Where: BinaryExpr{
+			Left:  ColumnExpr{Column: Int64Column{Table: "chapters", Name: "book_id"}},
+			Op:    OpEq,
+			Right: ColumnExpr{Column: Int64Column{Table: "books", Name: "id"}},
+		},
+	}
+
+	original := JSONAggExpr{
+		FieldName: "books",
+		Fields: []JSONAggField{
+			{Key: "title", Column: StringColumn{Table: "books", Name: "title"}},
+			{Key: "chapters", Expr: SubqueryExpr{Query: innerSubquery}},
+		},
+	}
+
+	serialized := SerializeExpr(original)
+	if serialized.Type != "json_agg" {
+		t.Fatalf("expected type 'json_agg', got %q", serialized.Type)
+	}
+	if serialized.JSONAgg == nil {
+		t.Fatal("expected JSONAgg to be non-nil")
+	}
+	if len(serialized.JSONAgg.Fields) != 2 {
+		t.Fatalf("expected 2 fields, got %d", len(serialized.JSONAgg.Fields))
+	}
+	if serialized.JSONAgg.Fields[0].Key != "title" {
+		t.Errorf("expected first field key 'title', got %q", serialized.JSONAgg.Fields[0].Key)
+	}
+	if serialized.JSONAgg.Fields[1].Key != "chapters" {
+		t.Errorf("expected second field key 'chapters', got %q", serialized.JSONAgg.Fields[1].Key)
+	}
+	if serialized.JSONAgg.Fields[1].Expr == nil {
+		t.Fatal("expected second field to have an Expr (subquery)")
+	}
+
+	// Round-trip: deserialize and verify
+	roundTripped := DeserializeExpr(serialized)
+	jsonAgg, ok := roundTripped.(JSONAggExpr)
+	if !ok {
+		t.Fatalf("expected JSONAggExpr, got %T", roundTripped)
+	}
+	if jsonAgg.FieldName != "books" {
+		t.Errorf("expected FieldName 'books', got %q", jsonAgg.FieldName)
+	}
+	if len(jsonAgg.Fields) != 2 {
+		t.Fatalf("expected 2 fields after round-trip, got %d", len(jsonAgg.Fields))
+	}
+	if jsonAgg.Fields[0].Key != "title" {
+		t.Errorf("expected field[0].Key = 'title', got %q", jsonAgg.Fields[0].Key)
+	}
+	if jsonAgg.Fields[1].Key != "chapters" {
+		t.Errorf("expected field[1].Key = 'chapters', got %q", jsonAgg.Fields[1].Key)
+	}
+	if jsonAgg.Fields[1].Expr == nil {
+		t.Error("expected field[1].Expr to be non-nil after round-trip")
+	}
+	sub, ok := jsonAgg.Fields[1].Expr.(SubqueryExpr)
+	if !ok {
+		t.Fatalf("expected SubqueryExpr, got %T", jsonAgg.Fields[1].Expr)
+	}
+	if sub.Query == nil {
+		t.Error("expected subquery Query to be non-nil")
+	}
+}

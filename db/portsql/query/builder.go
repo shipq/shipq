@@ -84,6 +84,40 @@ func (b *SelectBuilder) SelectJSONAgg(fieldName string, cols ...Column) *SelectB
 	return b
 }
 
+// SelectJSONAggFields adds a JSON aggregation with rich field definitions to the
+// SELECT clause. Each field can be a plain column or an arbitrary expression
+// (e.g. a nested JSON_AGG via a scalar subquery). Panics if no fields are provided.
+func (b *SelectBuilder) SelectJSONAggFields(fieldName string, fields ...JSONAggField) *SelectBuilder {
+	if len(fields) == 0 {
+		log.Fatalln("SelectJSONAggFields requires at least one field - please fix your query and try again.")
+	}
+	b.ast.SelectCols = append(b.ast.SelectCols, SelectExpr{
+		Expr: JSONAggExpr{
+			FieldName: fieldName,
+			Fields:    fields,
+		},
+		Alias: fieldName,
+	})
+	return b
+}
+
+// JSONAggCol is a convenience constructor for a JSONAggField backed by a column.
+func JSONAggCol(col Column) JSONAggField {
+	return JSONAggField{Key: col.ColumnName(), Column: col}
+}
+
+// JSONAggColAs is a convenience constructor for a JSONAggField backed by a
+// column with an explicit JSON key name.
+func JSONAggColAs(key string, col Column) JSONAggField {
+	return JSONAggField{Key: key, Column: col}
+}
+
+// JSONAggExprField is a convenience constructor for a JSONAggField backed by an
+// arbitrary expression (e.g. a nested JSON_AGG wrapped in a scalar subquery).
+func JSONAggExprField(key string, expr Expr) JSONAggField {
+	return JSONAggField{Key: key, Expr: expr}
+}
+
 // Join adds an INNER JOIN to the query.
 func (b *SelectBuilder) Join(table Table) *JoinBuilder {
 	return &JoinBuilder{

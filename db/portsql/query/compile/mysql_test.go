@@ -628,6 +628,68 @@ func TestMySQL_JSONAggregation(t *testing.T) {
 	}
 }
 
+func TestMySQL_NestedJSONAgg(t *testing.T) {
+	bookTitle := query.StringColumn{Table: "books", Name: "title"}
+	bookID := query.Int64Column{Table: "books", Name: "id"}
+	chapterTitle := query.StringColumn{Table: "chapters", Name: "title"}
+	chapterBookID := query.Int64Column{Table: "chapters", Name: "book_id"}
+
+	chaptersSubquery := &query.AST{
+		Kind:      query.SelectQuery,
+		FromTable: query.TableRef{Name: "chapters"},
+		SelectCols: []query.SelectExpr{
+			{Expr: query.JSONAggExpr{FieldName: "ch", Columns: []query.Column{chapterTitle}}},
+		},
+		Where: query.BinaryExpr{
+			Left:  query.ColumnExpr{Column: chapterBookID},
+			Op:    query.OpEq,
+			Right: query.ColumnExpr{Column: bookID},
+		},
+	}
+
+	ast := &query.AST{
+		Kind:      query.SelectQuery,
+		FromTable: query.TableRef{Name: "authors"},
+		SelectCols: []query.SelectExpr{
+			{
+				Expr: query.JSONAggExpr{
+					FieldName: "books",
+					Fields: []query.JSONAggField{
+						{Key: "title", Column: bookTitle},
+						{Key: "chapters", Expr: query.SubqueryExpr{Query: chaptersSubquery}},
+					},
+				},
+				Alias: "books",
+			},
+		},
+	}
+
+	sql, _, err := NewCompiler(MySQL).Compile(ast)
+	if err != nil {
+		t.Fatalf("Compile failed: %v", err)
+	}
+
+	if !containsStr(sql, "JSON_ARRAYAGG") {
+		t.Errorf("outer should use JSON_ARRAYAGG: %s", sql)
+	}
+	if !containsStr(sql, "'title'") {
+		t.Errorf("SQL should contain 'title' key: %s", sql)
+	}
+	if !containsStr(sql, "'chapters'") {
+		t.Errorf("SQL should contain 'chapters' key: %s", sql)
+	}
+	// Inner subquery should also have JSON_ARRAYAGG
+	count := 0
+	for i := 0; i+len("JSON_ARRAYAGG") <= len(sql); i++ {
+		if sql[i:i+len("JSON_ARRAYAGG")] == "JSON_ARRAYAGG" {
+			count++
+		}
+	}
+	if count < 2 {
+		t.Errorf("SQL should contain at least 2 JSON_ARRAYAGG calls (nested), found %d: %s", count, sql)
+	}
+}
+
 func TestMySQL_StringEscaping(t *testing.T) {
 	name := query.StringColumn{Table: "users", Name: "name"}
 

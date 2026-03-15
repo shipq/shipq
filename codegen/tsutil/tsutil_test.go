@@ -301,6 +301,39 @@ func TestGoTypeToTS_NestedStructSlice(t *testing.T) {
 	}
 }
 
+func TestGoTypeToTS_DoublyNestedStructSlice(t *testing.T) {
+	// Simulates the nested JSON_AGG case: books -> chapters
+	field := codegen.SerializedFieldInfo{
+		Name: "Books",
+		Type: "[]BookItem",
+		StructFields: &codegen.SerializedStructInfo{
+			Name: "BookItem",
+			Fields: []codegen.SerializedFieldInfo{
+				{Name: "ID", Type: "int64", JSONName: "id", Required: true},
+				{Name: "Title", Type: "string", JSONName: "title", Required: true},
+				{
+					Name:     "Chapters",
+					Type:     "[]ChapterItem",
+					JSONName: "chapters",
+					Required: true,
+					StructFields: &codegen.SerializedStructInfo{
+						Name: "ChapterItem",
+						Fields: []codegen.SerializedFieldInfo{
+							{Name: "ID", Type: "int64", JSONName: "id", Required: true},
+							{Name: "Title", Type: "string", JSONName: "title", Required: true},
+						},
+					},
+				},
+			},
+		},
+	}
+	result := GoTypeToTS(field)
+	expected := "{ id: number; title: string; chapters: { id: number; title: string; }[]; }[]"
+	if result != expected {
+		t.Errorf("GoTypeToTS doubly-nested = %q, want %q", result, expected)
+	}
+}
+
 func TestGoTypeStringToTS_NestedMap(t *testing.T) {
 	result := GoTypeStringToTS("map[string]map[string]int")
 	if result != "Record<string, Record<string, number>>" {

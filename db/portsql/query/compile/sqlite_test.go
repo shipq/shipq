@@ -625,6 +625,67 @@ func TestSQLite_JSONAggregation(t *testing.T) {
 	}
 }
 
+func TestSQLite_NestedJSONAgg(t *testing.T) {
+	bookTitle := query.StringColumn{Table: "books", Name: "title"}
+	bookID := query.Int64Column{Table: "books", Name: "id"}
+	chapterTitle := query.StringColumn{Table: "chapters", Name: "title"}
+	chapterBookID := query.Int64Column{Table: "chapters", Name: "book_id"}
+
+	chaptersSubquery := &query.AST{
+		Kind:      query.SelectQuery,
+		FromTable: query.TableRef{Name: "chapters"},
+		SelectCols: []query.SelectExpr{
+			{Expr: query.JSONAggExpr{FieldName: "ch", Columns: []query.Column{chapterTitle}}},
+		},
+		Where: query.BinaryExpr{
+			Left:  query.ColumnExpr{Column: chapterBookID},
+			Op:    query.OpEq,
+			Right: query.ColumnExpr{Column: bookID},
+		},
+	}
+
+	ast := &query.AST{
+		Kind:      query.SelectQuery,
+		FromTable: query.TableRef{Name: "authors"},
+		SelectCols: []query.SelectExpr{
+			{
+				Expr: query.JSONAggExpr{
+					FieldName: "books",
+					Fields: []query.JSONAggField{
+						{Key: "title", Column: bookTitle},
+						{Key: "chapters", Expr: query.SubqueryExpr{Query: chaptersSubquery}},
+					},
+				},
+				Alias: "books",
+			},
+		},
+	}
+
+	sql, _, err := NewCompiler(SQLite).Compile(ast)
+	if err != nil {
+		t.Fatalf("Compile failed: %v", err)
+	}
+
+	if !containsStr(sql, "JSON_GROUP_ARRAY") {
+		t.Errorf("outer should use JSON_GROUP_ARRAY: %s", sql)
+	}
+	if !containsStr(sql, "'title'") {
+		t.Errorf("SQL should contain 'title' key: %s", sql)
+	}
+	if !containsStr(sql, "'chapters'") {
+		t.Errorf("SQL should contain 'chapters' key: %s", sql)
+	}
+	count := 0
+	for i := 0; i+len("JSON_GROUP_ARRAY") <= len(sql); i++ {
+		if sql[i:i+len("JSON_GROUP_ARRAY")] == "JSON_GROUP_ARRAY" {
+			count++
+		}
+	}
+	if count < 2 {
+		t.Errorf("SQL should contain at least 2 JSON_GROUP_ARRAY calls (nested), found %d: %s", count, sql)
+	}
+}
+
 func TestSQLite_StringEscaping(t *testing.T) {
 	name := query.StringColumn{Table: "users", Name: "name"}
 

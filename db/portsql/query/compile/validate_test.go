@@ -296,6 +296,54 @@ func TestValidate_EmptyJSONAggColumns(t *testing.T) {
 	}
 }
 
+func TestValidate_EmptyJSONAggFieldsAndColumns(t *testing.T) {
+	ast := &query.AST{
+		Kind:      query.SelectQuery,
+		FromTable: query.TableRef{Name: "authors"},
+		SelectCols: []query.SelectExpr{
+			{
+				Expr: query.JSONAggExpr{
+					FieldName: "books",
+					// Both Columns and Fields empty
+				},
+				Alias: "books",
+			},
+		},
+	}
+
+	err := ValidateAST(ast)
+	if err == nil {
+		t.Error("Expected error for empty JSON agg columns and fields")
+	}
+}
+
+func TestValidate_JSONAggFieldsRecursesIntoExpr(t *testing.T) {
+	ast := &query.AST{
+		Kind:      query.SelectQuery,
+		FromTable: query.TableRef{Name: "authors"},
+		SelectCols: []query.SelectExpr{
+			{
+				Expr: query.JSONAggExpr{
+					FieldName: "books",
+					Fields: []query.JSONAggField{
+						{Key: "title", Column: query.StringColumn{Table: "books", Name: "title"}},
+						{
+							Key: "bad_subquery",
+							Expr: query.SubqueryExpr{Query: nil}, // nil subquery should fail
+						},
+					},
+				},
+				Alias: "books",
+			},
+		},
+	}
+
+	err := ValidateAST(ast)
+	if err == nil {
+		t.Error("Expected error for nil subquery inside JSON agg field")
+	}
+}
+
 func TestValidate_SetOpNilLeftBranch(t *testing.T) {
 	ast := &query.AST{
 		Kind: query.SelectQuery,

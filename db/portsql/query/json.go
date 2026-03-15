@@ -123,8 +123,16 @@ type ExprJson struct {
 	Negated  bool     `json:"negated,omitempty"`
 
 	// For JSONAggExpr
-	JSONFieldName string        `json:"json_field_name,omitempty"`
-	JSONColumns   []*ColumnJson `json:"json_columns,omitempty"`
+	JSONFieldName string              `json:"json_field_name,omitempty"`
+	JSONColumns   []*ColumnJson       `json:"json_columns,omitempty"`
+	JSONFields    []*JSONAggFieldJson `json:"json_fields,omitempty"`
+}
+
+// JSONAggFieldJson is the JSON-serializable form of a JSONAggField.
+type JSONAggFieldJson struct {
+	Key    string      `json:"key"`
+	Column *ColumnJson `json:"column,omitempty"`
+	Expr   *ExprJson   `json:"expr,omitempty"`
 }
 
 // =============================================================================
@@ -423,6 +431,29 @@ func exprToJSON(expr Expr) (*ExprJson, error) {
 		}, nil
 
 	case JSONAggExpr:
+		if len(e.Fields) > 0 {
+			fields := make([]*JSONAggFieldJson, len(e.Fields))
+			for i, f := range e.Fields {
+				fj := &JSONAggFieldJson{Key: f.Key}
+				if f.Column != nil {
+					cj := columnToJSON(f.Column)
+					fj.Column = &cj
+				}
+				if f.Expr != nil {
+					ej, err := exprToJSON(f.Expr)
+					if err != nil {
+						return nil, err
+					}
+					fj.Expr = ej
+				}
+				fields[i] = fj
+			}
+			return &ExprJson{
+				Type:          "json_agg",
+				JSONFieldName: e.FieldName,
+				JSONFields:    fields,
+			}, nil
+		}
 		var cols []*ColumnJson
 		for _, col := range e.Columns {
 			colJson := columnToJSON(col)
@@ -747,6 +778,27 @@ func (e *ExprJson) FromJSON() (Expr, error) {
 		}, nil
 
 	case "json_agg":
+		if len(e.JSONFields) > 0 {
+			fields := make([]JSONAggField, len(e.JSONFields))
+			for i, fj := range e.JSONFields {
+				f := JSONAggField{Key: fj.Key}
+				if fj.Column != nil {
+					f.Column = fj.Column.ToColumn()
+				}
+				if fj.Expr != nil {
+					expr, err := fj.Expr.FromJSON()
+					if err != nil {
+						return nil, err
+					}
+					f.Expr = expr
+				}
+				fields[i] = f
+			}
+			return JSONAggExpr{
+				FieldName: e.JSONFieldName,
+				Fields:    fields,
+			}, nil
+		}
 		var cols []Column
 		for _, col := range e.JSONColumns {
 			cols = append(cols, col.ToColumn())

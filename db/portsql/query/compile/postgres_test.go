@@ -773,6 +773,82 @@ func TestPostgres_JSONAgg(t *testing.T) {
 	}
 }
 
+func TestPostgres_NestedJSONAgg(t *testing.T) {
+	bookTitle := query.StringColumn{Table: "books", Name: "title"}
+	bookID := query.Int64Column{Table: "books", Name: "id"}
+	chapterTitle := query.StringColumn{Table: "chapters", Name: "title"}
+	chapterBookID := query.Int64Column{Table: "chapters", Name: "book_id"}
+
+	chaptersSubquery := &query.AST{
+		Kind:      query.SelectQuery,
+		FromTable: query.TableRef{Name: "chapters"},
+		SelectCols: []query.SelectExpr{
+			{Expr: query.JSONAggExpr{FieldName: "ch", Columns: []query.Column{chapterTitle}}},
+		},
+		Where: query.BinaryExpr{
+			Left:  query.ColumnExpr{Column: chapterBookID},
+			Op:    query.OpEq,
+			Right: query.ColumnExpr{Column: bookID},
+		},
+	}
+
+	ast := &query.AST{
+		Kind:      query.SelectQuery,
+		FromTable: query.TableRef{Name: "authors"},
+		SelectCols: []query.SelectExpr{
+			{
+				Expr: query.JSONAggExpr{
+					FieldName: "books",
+					Fields: []query.JSONAggField{
+						{Key: "title", Column: bookTitle},
+						{Key: "chapters", Expr: query.SubqueryExpr{Query: chaptersSubquery}},
+					},
+				},
+				Alias: "books",
+			},
+		},
+	}
+
+	sql, _, err := NewCompiler(Postgres).Compile(ast)
+	if err != nil {
+		t.Fatalf("Compile failed: %v", err)
+	}
+
+	if !containsStr(sql, "COALESCE(JSON_AGG(JSON_BUILD_OBJECT(") {
+		t.Errorf("outer JSON_AGG should use JSON_BUILD_OBJECT: %s", sql)
+	}
+	if !containsStr(sql, "'title'") {
+		t.Errorf("SQL should contain 'title' key: %s", sql)
+	}
+	if !containsStr(sql, "'chapters'") {
+		t.Errorf("SQL should contain 'chapters' key: %s", sql)
+	}
+	// The inner subquery should also have a JSON_AGG
+	// Count occurrences of JSON_AGG - should be at least 2 (outer + inner)
+	count := 0
+	idx := 0
+	for {
+		i := indexStr(sql[idx:], "JSON_AGG(")
+		if i < 0 {
+			break
+		}
+		count++
+		idx += i + 1
+	}
+	if count < 2 {
+		t.Errorf("SQL should contain at least 2 JSON_AGG calls (nested), found %d: %s", count, sql)
+	}
+}
+
+func indexStr(s, substr string) int {
+	for i := 0; i+len(substr) <= len(s); i++ {
+		if s[i:i+len(substr)] == substr {
+			return i
+		}
+	}
+	return -1
+}
+
 func TestPostgres_StringEscaping(t *testing.T) {
 	name := query.StringColumn{Table: "users", Name: "name"}
 

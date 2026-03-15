@@ -548,9 +548,10 @@ func (c *Compiler) writeFunc(b *strings.Builder, f query.FuncExpr) error {
 }
 
 func (c *Compiler) writeJSONAgg(b *strings.Builder, j query.JSONAggExpr) error {
-	return c.dialect.WriteJSONAgg(b, j.Columns, func(col query.Column) {
-		c.writeColumn(b, col)
-	})
+	return c.dialect.WriteJSONAgg(b, j.Columns, j.Fields,
+		func(col query.Column) { c.writeColumn(b, col) },
+		func(expr query.Expr) error { return c.writeExpr(b, expr) },
+	)
 }
 
 func (c *Compiler) writeOrderByExpr(b *strings.Builder, expr query.Expr) error {
