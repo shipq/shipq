@@ -35,6 +35,11 @@ func GeneratePersisterAdapter(modulePath string, hasAuth bool) ([]byte, error) {
 	fmt.Fprintf(&buf, "\t%q\n", queriesPkg)
 	buf.WriteString(")\n\n")
 
+	buf.WriteString("// sqlDatetimeFormat is the Go time format string for MySQL DATETIME columns.\n")
+	buf.WriteString("// MySQL strict mode rejects RFC 3339 (\"2006-01-02T15:04:05Z\"); it requires\n")
+	buf.WriteString("// the space-separated format without a trailing timezone indicator.\n")
+	buf.WriteString("const sqlDatetimeFormat = \"2006-01-02 15:04:05\"\n\n")
+
 	// Persister struct
 	buf.WriteString("// Persister wraps queries.Runner to satisfy llm.Persister.\n")
 	buf.WriteString("type Persister struct {\n")
@@ -78,7 +83,7 @@ func GeneratePersisterAdapter(modulePath string, hasAuth bool) ([]byte, error) {
 	buf.WriteString("\t\tProvider:    params.Provider,\n")
 	buf.WriteString("\t\tModel:       params.Model,\n")
 	buf.WriteString("\t\tStatus:      string(params.Status),\n")
-	buf.WriteString("\t\tStartedAt:   startedAt.Format(\"2006-01-02T15:04:05.000Z07:00\"),\n")
+	buf.WriteString("\t\tStartedAt:   startedAt.Format(sqlDatetimeFormat),\n")
 	buf.WriteString("\t})\n")
 	buf.WriteString("\tif err != nil {\n")
 	buf.WriteString("\t\treturn llm.ConversationRow{}, err\n")
@@ -92,7 +97,7 @@ func GeneratePersisterAdapter(modulePath string, hasAuth bool) ([]byte, error) {
 	buf.WriteString("func (p *Persister) UpdateConversation(ctx context.Context, params llm.UpdateConversationParams) error {\n")
 	buf.WriteString("\tvar completedAt *string\n")
 	buf.WriteString("\tif !params.CompletedAt.IsZero() {\n")
-	buf.WriteString("\t\ts := params.CompletedAt.Format(\"2006-01-02T15:04:05.000Z07:00\")\n")
+	buf.WriteString("\t\ts := params.CompletedAt.Format(sqlDatetimeFormat)\n")
 	buf.WriteString("\t\tcompletedAt = &s\n")
 	buf.WriteString("\t}\n\n")
 	buf.WriteString("\tvar errorMessage *string\n")
