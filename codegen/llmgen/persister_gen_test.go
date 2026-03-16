@@ -533,6 +533,74 @@ func TestGeneratePersisterAdapter_ListCompletedTools_HasComment(t *testing.T) {
 	}
 }
 
+// ── MySQL datetime format regression tests ────────────────────────────────────
+// MySQL strict mode rejects RFC 3339 timestamps (the "T" separator and "Z"
+// suffix). The generated code must use "2006-01-02 15:04:05".
+
+func TestGeneratePersisterAdapter_DatetimeFormat_NoRFC3339InFormatCalls(t *testing.T) {
+	for _, hasAuth := range []bool{false, true} {
+		src, err := GeneratePersisterAdapter("myapp", hasAuth)
+		if err != nil {
+			t.Fatalf("GeneratePersisterAdapter(hasAuth=%v) failed: %v", hasAuth, err)
+		}
+
+		code := string(src)
+
+		// .Format("2006-01-02T... is the bug pattern — an RFC 3339 literal
+		// passed to time.Format. Comments mentioning the format are fine.
+		if strings.Contains(code, `.Format("2006-01-02T`) {
+			t.Errorf("hasAuth=%v: generated code passes RFC 3339 format to .Format(); MySQL strict mode will reject it", hasAuth)
+		}
+		if strings.Contains(code, `.Format("`) && strings.Contains(code, `Z07:00")`) {
+			t.Errorf("hasAuth=%v: generated code passes 'Z07:00' timezone suffix to .Format(); MySQL DATETIME columns do not accept it", hasAuth)
+		}
+	}
+}
+
+func TestGeneratePersisterAdapter_DatetimeFormat_UsesMySQLFormat(t *testing.T) {
+	for _, hasAuth := range []bool{false, true} {
+		src, err := GeneratePersisterAdapter("myapp", hasAuth)
+		if err != nil {
+			t.Fatalf("GeneratePersisterAdapter(hasAuth=%v) failed: %v", hasAuth, err)
+		}
+
+		code := string(src)
+
+		if !strings.Contains(code, `"2006-01-02 15:04:05"`) {
+			t.Errorf("hasAuth=%v: generated code does not contain MySQL-compatible datetime format \"2006-01-02 15:04:05\"", hasAuth)
+		}
+	}
+}
+
+func TestGeneratePersisterAdapter_DatetimeFormat_BothMethodsUseSqlDatetimeFormat(t *testing.T) {
+	src, err := GeneratePersisterAdapter("myapp", false)
+	if err != nil {
+		t.Fatalf("GeneratePersisterAdapter failed: %v", err)
+	}
+
+	code := string(src)
+
+	if !strings.Contains(code, "startedAt.Format(sqlDatetimeFormat)") {
+		t.Error("InsertConversation: expected startedAt.Format(sqlDatetimeFormat)")
+	}
+	if !strings.Contains(code, "params.CompletedAt.Format(sqlDatetimeFormat)") {
+		t.Error("UpdateConversation: expected params.CompletedAt.Format(sqlDatetimeFormat)")
+	}
+}
+
+func TestGeneratePersisterAdapter_DatetimeFormat_ConstantDefined(t *testing.T) {
+	src, err := GeneratePersisterAdapter("myapp", false)
+	if err != nil {
+		t.Fatalf("GeneratePersisterAdapter failed: %v", err)
+	}
+
+	code := string(src)
+
+	if !strings.Contains(code, `const sqlDatetimeFormat = "2006-01-02 15:04:05"`) {
+		t.Error("expected sqlDatetimeFormat constant with MySQL-compatible format in generated code")
+	}
+}
+
 func TestGeneratePersisterAdapter_DifferentAuthProducesDifferentOutput(t *testing.T) {
 	src1, err := GeneratePersisterAdapter("myapp", false)
 	if err != nil {
